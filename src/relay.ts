@@ -19,6 +19,7 @@ import { join } from "path";
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
 const ALLOWED_USER_ID = process.env.TELEGRAM_USER_ID || "";
 const CLAUDE_PATH = process.env.CLAUDE_PATH || "claude";
+const PROJECT_DIR = process.env.PROJECT_DIR || "";
 const RELAY_DIR = process.env.RELAY_DIR || join(process.env.HOME || "~", ".claude-relay");
 
 // Directories
@@ -165,6 +166,7 @@ async function callClaude(
     const proc = spawn(args, {
       stdout: "pipe",
       stderr: "pipe",
+      cwd: PROJECT_DIR || undefined,
       env: {
         ...process.env,
         // Pass through any env vars Claude might need
@@ -373,6 +375,7 @@ async function sendResponse(ctx: Context, response: string): Promise<void> {
 
 console.log("Starting Claude Telegram Relay...");
 console.log(`Authorized user: ${ALLOWED_USER_ID || "ANY (not recommended)"}`);
+console.log(`Project directory: ${PROJECT_DIR || "(relay working directory)"}`);
 
 bot.start({
   onStart: () => {
