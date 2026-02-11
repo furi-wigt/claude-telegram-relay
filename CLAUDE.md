@@ -36,7 +36,11 @@ If this is a fresh clone, run `bun run setup` first to install dependencies and 
 
 ---
 
-## Phase 2: Database — Supabase (~8 min)
+## Phase 2: Database & Memory — Supabase (~12 min)
+
+Your bot's memory lives in Supabase: conversation history, facts, goals, and semantic search.
+
+### Step 1: Create Supabase Project
 
 **You need from the user:**
 - Supabase Project URL
@@ -51,18 +55,60 @@ If this is a fresh clone, run `bun run setup` first to install dependencies and 
 
 **What you do:**
 1. Save `SUPABASE_URL` and `SUPABASE_ANON_KEY` to `.env`
-2. Tell the user to open the SQL Editor in their Supabase dashboard
-3. Show them the contents of `db/schema.sql` and tell them to paste and run it
-4. Run `bun run test:supabase` to verify tables exist
 
-**Optional — Supabase MCP:**
-If the user wants Claude Code to manage the database directly, guide them:
+### Step 2: Connect Supabase MCP
+
+This lets Claude Code manage the database directly — run queries, deploy functions, apply migrations.
+
+**What to tell them:**
+1. Go to supabase.com/dashboard/account/tokens
+2. Create an access token, copy it
+
+**What you do:**
 ```
 claude mcp add supabase -- npx -y @supabase/mcp-server-supabase@latest --access-token ACCESS_TOKEN
 ```
-They get their access token at supabase.com/dashboard/account/tokens.
 
-**Done when:** `bun run test:supabase` passes.
+### Step 3: Create Tables
+
+Use the Supabase MCP to run the schema:
+1. Read `db/schema.sql`
+2. Execute it via `execute_sql` (or tell the user to paste it in the SQL Editor)
+3. Run `bun run test:supabase` to verify tables exist
+
+### Step 4: Set Up Semantic Search
+
+This gives your bot real memory — it finds relevant past conversations automatically.
+
+**You need from the user:**
+- An OpenAI API key (for generating text embeddings)
+
+**What to tell them:**
+1. Go to platform.openai.com, create an account
+2. Go to API keys, create a new key, copy it
+3. The key will be stored in Supabase, not on your computer. It stays with your database.
+
+**What you do:**
+1. Deploy the embed Edge Function via Supabase MCP (`deploy_edge_function` with `supabase/functions/embed/index.ts`)
+2. Deploy the search Edge Function (`supabase/functions/search/index.ts`)
+3. Tell the user to store their OpenAI key in Supabase:
+   - Go to Supabase dashboard > Project Settings > Edge Functions
+   - Under Secrets, add: `OPENAI_API_KEY` = their key
+4. Set up database webhooks so embeddings are generated automatically:
+   - Go to Supabase dashboard > Database > Webhooks > Create webhook
+   - Name: `embed_messages`, Table: `messages`, Events: INSERT
+   - Type: Supabase Edge Function, Function: `embed`
+   - Create a second webhook: `embed_memory`, Table: `memory`, Events: INSERT
+   - Same Edge Function: `embed`
+
+### Step 5: Verify
+
+Run `bun run test:supabase` to confirm:
+- Tables exist (messages, memory, logs)
+- Edge Functions respond
+- Embedding generation works
+
+**Done when:** `bun run test:supabase` passes and a test insert into `messages` gets an embedding.
 
 ---
 
@@ -148,23 +194,38 @@ bun run setup:services -- --service all
 
 ---
 
-## Phase 7: Voice Transcription (Optional, ~3 min)
+## Phase 7: Voice Transcription (Optional, ~5 min)
 
-Lets the bot understand voice messages via Google Gemini.
+Lets the bot understand voice messages sent on Telegram.
 
-**You need from the user:**
-- Google Gemini API key (free tier: 15 req/min, 1M tokens/mo)
+**Ask the user which option they prefer:**
+
+### Option A: Groq (Recommended — free cloud API)
+- State-of-the-art Whisper model, sub-second speed
+- Free: 2,000 transcriptions per day, no credit card
+- Requires internet connection
 
 **What to tell them:**
-1. Go to ai.google.dev
-2. Click "Get API key" or go to aistudio.google.com/app/apikey
-3. Create a key, copy it
+1. Go to console.groq.com and create a free account
+2. Go to API Keys, create a new key, copy it
 
 **What you do:**
-1. Save `GEMINI_API_KEY` to `.env`
-2. The voice handler in `src/relay.ts` currently returns a placeholder. Wire in Gemini transcription: download the audio, send to Gemini, pass the transcription to Claude.
+1. Save `VOICE_PROVIDER=groq` and `GROQ_API_KEY` to `.env`
+2. Run `bun run test:voice` to verify
 
-**Done when:** Key is saved, and voice handler is wired up.
+### Option B: Local Whisper (offline, private)
+- Runs entirely on their computer, no account needed
+- Requires ffmpeg and whisper-cpp installed
+- First run downloads a 142MB model file
+
+**What you do:**
+1. Check ffmpeg: `ffmpeg -version` (install: `brew install ffmpeg` or `apt install ffmpeg`)
+2. Check whisper-cpp: `whisper-cpp --help` (install: `brew install whisper-cpp` or build from source)
+3. Download model: `curl -L -o ~/whisper-models/ggml-base.en.bin https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin`
+4. Save `VOICE_PROVIDER=local`, `WHISPER_BINARY`, `WHISPER_MODEL_PATH` to `.env`
+5. Run `bun run test:voice` to verify
+
+**Done when:** `bun run test:voice` passes.
 
 ---
 
@@ -196,7 +257,7 @@ This free relay covers the essentials. The full version unlocks:
 
 **Get the full course with video walkthroughs:**
 - YouTube: youtube.com/@GodaGo (subscribe for tutorials)
-- Community: skool.com/ai-productivity-hub (full course, direct support, help personalizing for your business)
+- Community: skool.com/autonomee (full course, direct support, help personalizing for your business)
 
 We also help you personalize the full version for your specific business and workflow. Or package it as a product you sell to your own clients.
 

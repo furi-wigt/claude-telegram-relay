@@ -4,7 +4,7 @@ A personal AI assistant on Telegram powered by Claude Code.
 
 You message it. Claude responds. Text, photos, documents, voice. It remembers across sessions, checks in proactively, and runs in the background.
 
-**Created by [Goda Go](https://youtube.com/@GodaGo)** | [AI Productivity Hub Community](https://skool.com/ai-productivity-hub)
+**Created by [Goda Go](https://youtube.com/@GodaGo)** | [AI Productivity Hub Community](https://skool.com/autonomee)
 
 ```
 You ──▶ Telegram ──▶ Relay ──▶ Claude Code CLI ──▶ Response
@@ -15,10 +15,10 @@ You ──▶ Telegram ──▶ Relay ──▶ Claude Code CLI ──▶ Respo
 ## What You Get
 
 - **Relay**: Send messages on Telegram, get Claude responses back
-- **Memory**: Persistent facts, goals, and conversation history via Supabase
+- **Memory**: Semantic search over conversation history, persistent facts and goals via Supabase
 - **Proactive**: Smart check-ins that know when to reach out (and when not to)
 - **Briefings**: Daily morning summary with goals and schedule
-- **Voice**: Transcribe voice messages via Gemini (optional)
+- **Voice**: Transcribe voice messages (Groq cloud or local Whisper — your choice)
 - **Always On**: Runs in the background, starts on boot, restarts on crash
 - **Guided Setup**: Claude Code reads CLAUDE.md and walks you through everything
 
@@ -88,6 +88,8 @@ bun run setup:services     # Configure PM2 (Windows/Linux)
 CLAUDE.md                    # Guided setup (Claude Code reads this)
 src/
   relay.ts                   # Core relay daemon
+  transcribe.ts              # Voice transcription (Groq / whisper.cpp)
+  memory.ts                  # Persistent memory (facts, goals, semantic search)
 examples/
   smart-checkin.ts           # Proactive check-ins
   morning-briefing.ts        # Daily briefing
@@ -96,10 +98,15 @@ config/
   profile.example.md         # Personalization template
 db/
   schema.sql                 # Supabase database schema
+supabase/
+  functions/
+    embed/index.ts           # Auto-embedding Edge Function
+    search/index.ts          # Semantic search Edge Function
 setup/
   install.ts                 # Prerequisites checker
   test-telegram.ts           # Telegram connectivity test
   test-supabase.ts           # Supabase connectivity test
+  test-voice.ts              # Voice transcription test
   configure-launchd.ts       # macOS service setup
   configure-services.ts      # Windows/Linux service setup
   verify.ts                  # Full health check
@@ -118,7 +125,7 @@ The relay does three things:
 
 Claude Code gives you full power: tools, MCP servers, web search, file access. Not just a model — an AI with hands.
 
-Your bot remembers between sessions via Supabase: conversation history, facts you share, goals you track. The smart check-in script gathers this context and lets Claude decide whether to reach out.
+Your bot remembers between sessions via Supabase. Every message gets an embedding (via OpenAI, stored in Supabase) so the bot can semantically search past conversations for relevant context. It also tracks facts and goals — Claude detects when you mention something worth remembering and stores it automatically.
 
 ## Environment Variables
 
@@ -135,13 +142,17 @@ SUPABASE_ANON_KEY=      # From Supabase dashboard
 USER_NAME=              # Your first name
 USER_TIMEZONE=          # e.g., America/New_York
 
-# Optional
-GEMINI_API_KEY=         # Voice transcription (free tier)
+# Optional — Voice
+VOICE_PROVIDER=         # "groq" or "local"
+GROQ_API_KEY=           # For Groq (free at console.groq.com)
+
+# Note: OpenAI key for embeddings is stored in Supabase
+# (Edge Function secrets), not in this .env file.
 ```
 
 ## The Full Version
 
-This free relay covers the essentials. The full version in the [AI Productivity Hub](https://skool.com/ai-productivity-hub) community unlocks:
+This free relay covers the essentials. The full version in the [AI Productivity Hub](https://skool.com/autonomee) community unlocks:
 
 - **6 Specialized AI Agents** — Research, Content, Finance, Strategy, Critic + General orchestrator via Telegram forum topics
 - **VPS Deployment** — Always-on cloud server with hybrid mode ($2-5/month)
@@ -154,7 +165,7 @@ This free relay covers the essentials. The full version in the [AI Productivity 
 We also help you personalize it for your business, or package it as a product for your clients.
 
 **Subscribe on YouTube:** [youtube.com/@GodaGo](https://youtube.com/@GodaGo)
-**Join the community:** [skool.com/ai-productivity-hub](https://skool.com/ai-productivity-hub)
+**Join the community:** [skool.com/autonomee](https://skool.com/autonomee)
 
 ## License
 

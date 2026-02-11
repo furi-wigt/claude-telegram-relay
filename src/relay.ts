@@ -11,6 +11,13 @@ import { Bot, Context } from "grammy";
 import { spawn } from "bun";
 import { writeFile, mkdir, readFile, unlink } from "fs/promises";
 import { join, dirname } from "path";
+import { createClient, SupabaseClient } from "@supabase/supabase-js";
+import { transcribe } from "./transcribe.ts";
+import {
+  processMemoryIntents,
+  getMemoryContext,
+  getRelevantContext,
+} from "./memory.ts";
 
 const PROJECT_ROOT = dirname(dirname(import.meta.path));
 
@@ -120,6 +127,33 @@ if (!BOT_TOKEN) {
 await mkdir(TEMP_DIR, { recursive: true });
 await mkdir(UPLOADS_DIR, { recursive: true });
 
+// ============================================================
+// SUPABASE (optional — only if configured)
+// ============================================================
+
+const supabase: SupabaseClient | null =
+  process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY
+    ? createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY)
+    : null;
+
+async function saveMessage(
+  role: string,
+  content: string,
+  metadata?: Record<string, unknown>
+): Promise<void> {
+  if (!supabase) return;
+  try {
+    await supabase.from("messages").insert({
+      role,
+      content,
+      channel: "telegram",
+      metadata: metadata || {},
+    });
+  } catch (error) {
+    console.error("Supabase save error:", error);
+  }
+}
+
 // Acquire lock
 if (!(await acquireLock())) {
   console.error("Could not acquire lock. Another instance may be running.");
@@ -211,33 +245,71 @@ bot.on("message:text", async (ctx) => {
 
   await ctx.replyWithChatAction("typing");
 
-  // Add any context you want here
-  const enrichedPrompt = buildPrompt(text);
+  await saveMessage("user", text);
 
-  const response = await callClaude(enrichedPrompt, { resume: true });
+  // Gather context: semantic search + facts/goals
+  const [relevantContext, memoryContext] = await Promise.all([
+    getRelevantContext(supabase, text),
+    getMemoryContext(supabase),
+  ]);
+
+  const enrichedPrompt = buildPrompt(text, relevantContext, memoryContext);
+  const rawResponse = await callClaude(enrichedPrompt, { resume: true });
+
+  // Parse and save any memory intents, strip tags from response
+  const response = await processMemoryIntents(supabase, rawResponse);
+
+  await saveMessage("assistant", response);
   await sendResponse(ctx, response);
 });
 
-// Voice messages (optional - requires transcription)
+// Voice messages
 bot.on("message:voice", async (ctx) => {
-  console.log("Voice message received");
+  const voice = ctx.message.voice;
+  console.log(`Voice message: ${voice.duration}s`);
   await ctx.replyWithChatAction("typing");
 
-  // To handle voice, you need a transcription service
-  // Options: Whisper API, Gemini, AssemblyAI, etc.
-  //
-  // Example flow:
-  // 1. Download the voice file
-  // 2. Send to transcription service
-  // 3. Pass transcription to Claude
-  //
-  // const transcription = await transcribe(voiceFile);
-  // const response = await callClaude(`[Voice]: ${transcription}`);
+  if (!process.env.VOICE_PROVIDER) {
+    await ctx.reply(
+      "Voice transcription is not set up yet. " +
+        "Run the setup again and choose a voice provider (Groq or local Whisper)."
+    );
+    return;
+  }
 
-  await ctx.reply(
-    "Voice messages require a transcription service. " +
-      "Add Whisper, Gemini, or similar to handle voice."
-  );
+  try {
+    const file = await ctx.getFile();
+    const url = `https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`;
+    const response = await fetch(url);
+    const buffer = Buffer.from(await response.arrayBuffer());
+
+    const transcription = await transcribe(buffer);
+    if (!transcription) {
+      await ctx.reply("Could not transcribe voice message.");
+      return;
+    }
+
+    await saveMessage("user", `[Voice ${voice.duration}s]: ${transcription}`);
+
+    const [relevantContext, memoryContext] = await Promise.all([
+      getRelevantContext(supabase, transcription),
+      getMemoryContext(supabase),
+    ]);
+
+    const enrichedPrompt = buildPrompt(
+      `[Voice message transcribed]: ${transcription}`,
+      relevantContext,
+      memoryContext
+    );
+    const rawResponse = await callClaude(enrichedPrompt, { resume: true });
+    const claudeResponse = await processMemoryIntents(supabase, rawResponse);
+
+    await saveMessage("assistant", claudeResponse);
+    await sendResponse(ctx, claudeResponse);
+  } catch (error) {
+    console.error("Voice error:", error);
+    await ctx.reply("Could not process voice message. Check logs for details.");
+  }
 });
 
 // Photos/Images
@@ -265,12 +337,16 @@ bot.on("message:photo", async (ctx) => {
     const caption = ctx.message.caption || "Analyze this image.";
     const prompt = `[Image: ${filePath}]\n\n${caption}`;
 
+    await saveMessage("user", `[Image]: ${caption}`);
+
     const claudeResponse = await callClaude(prompt, { resume: true });
 
     // Cleanup after processing
     await unlink(filePath).catch(() => {});
 
-    await sendResponse(ctx, claudeResponse);
+    const cleanResponse = await processMemoryIntents(supabase, claudeResponse);
+    await saveMessage("assistant", cleanResponse);
+    await sendResponse(ctx, cleanResponse);
   } catch (error) {
     console.error("Image error:", error);
     await ctx.reply("Could not process image.");
@@ -298,11 +374,15 @@ bot.on("message:document", async (ctx) => {
     const caption = ctx.message.caption || `Analyze: ${doc.file_name}`;
     const prompt = `[File: ${filePath}]\n\n${caption}`;
 
+    await saveMessage("user", `[Document: ${doc.file_name}]: ${caption}`);
+
     const claudeResponse = await callClaude(prompt, { resume: true });
 
     await unlink(filePath).catch(() => {});
 
-    await sendResponse(ctx, claudeResponse);
+    const cleanResponse = await processMemoryIntents(supabase, claudeResponse);
+    await saveMessage("assistant", cleanResponse);
+    await sendResponse(ctx, cleanResponse);
   } catch (error) {
     console.error("Document error:", error);
     await ctx.reply("Could not process document.");
@@ -324,7 +404,11 @@ try {
 const USER_NAME = process.env.USER_NAME || "";
 const USER_TIMEZONE = process.env.USER_TIMEZONE || Intl.DateTimeFormat().resolvedOptions().timeZone;
 
-function buildPrompt(userMessage: string): string {
+function buildPrompt(
+  userMessage: string,
+  relevantContext?: string,
+  memoryContext?: string
+): string {
   const now = new Date();
   const timeStr = now.toLocaleString("en-US", {
     timeZone: USER_TIMEZONE,
@@ -343,6 +427,18 @@ function buildPrompt(userMessage: string): string {
   if (USER_NAME) parts.push(`You are speaking with ${USER_NAME}.`);
   parts.push(`Current time: ${timeStr}`);
   if (profileContext) parts.push(`\nProfile:\n${profileContext}`);
+  if (memoryContext) parts.push(`\n${memoryContext}`);
+  if (relevantContext) parts.push(`\n${relevantContext}`);
+
+  parts.push(
+    "\nMEMORY MANAGEMENT:" +
+      "\nWhen the user shares something worth remembering, sets goals, or completes goals, " +
+      "include these tags in your response (they are processed automatically and hidden from the user):" +
+      "\n[REMEMBER: fact to store]" +
+      "\n[GOAL: goal text | DEADLINE: optional date]" +
+      "\n[DONE: search text for completed goal]"
+  );
+
   parts.push(`\nUser: ${userMessage}`);
 
   return parts.join("\n");
