@@ -1,5 +1,0 @@
-{
-  "hooks": {
-    "user-prompt-submit": ".claude/tools/hooks/user-prompt-submit-hook.sh"
-  }
-}

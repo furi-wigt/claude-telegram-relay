@@ -15,7 +15,7 @@ import { homedir } from "os";
 const PROJECT_ROOT = dirname(import.meta.dir);
 const HOME = homedir();
 const LOGS_DIR = join(PROJECT_ROOT, "logs");
-const ECOSYSTEM_FILE = join(PROJECT_ROOT, "ecosystem.config.js");
+const ECOSYSTEM_FILE = join(PROJECT_ROOT, "ecosystem.config.cjs");
 
 // Colors
 const green = (s: string) => `\x1b[32m${s}\x1b[0m`;
@@ -57,7 +57,7 @@ interface ServiceConfig {
 const SERVICES: Record<string, ServiceConfig> = {
   relay: {
     name: "telegram-relay",
-    script: "src/relay.ts",
+    script: "relay-wrapper.js",
     autorestart: true,
     watch: false,
     instances: 1,
@@ -107,6 +107,7 @@ function generateEcosystem(services: ServiceConfig[], bunPath: string): string {
       name: svc.name,
       script: svc.script,
       interpreter: bunPath,
+      exec_mode: "fork", // Bun doesn't support PM2 cluster mode
       cwd: PROJECT_ROOT,
       instances: svc.instances,
       autorestart: svc.autorestart,
@@ -114,8 +115,9 @@ function generateEcosystem(services: ServiceConfig[], bunPath: string): string {
       max_memory_restart: "500M",
       env: {
         NODE_ENV: "production",
-        PATH: `${HOME}/.bun/bin:/usr/local/bin:/usr/bin:/bin`,
+        PATH: `${HOME}/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin`,
         HOME: HOME,
+        CLAUDECODE: "", // Unset to allow Claude CLI to run
       },
       error_file: join(LOGS_DIR, `${svc.name}.error.log`),
       out_file: join(LOGS_DIR, `${svc.name}.log`),

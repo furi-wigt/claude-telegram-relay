@@ -10,6 +10,7 @@
 import { Bot, Context } from "grammy";
 import { spawn } from "bun";
 import { writeFile, mkdir, readFile, unlink } from "fs/promises";
+import { readFileSync } from "fs";
 import { join, dirname } from "path";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import { transcribe } from "./transcribe.ts";
@@ -21,6 +22,26 @@ import {
 import { callOllama, checkOllamaAvailable } from "./fallback.ts";
 
 const PROJECT_ROOT = dirname(dirname(import.meta.path));
+
+// Load .env file explicitly (for launchd and other non-interactive contexts)
+try {
+  const envPath = join(PROJECT_ROOT, ".env");
+  const envFile = readFileSync(envPath, "utf-8");
+  for (const line of envFile.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const [key, ...valueParts] = trimmed.split("=");
+    if (key && valueParts.length > 0) {
+      const value = valueParts.join("=").trim();
+      // Only set if not already in environment
+      if (!process.env[key.trim()]) {
+        process.env[key.trim()] = value;
+      }
+    }
+  }
+} catch (err) {
+  // .env file might not exist or be readable - continue anyway
+}
 
 // ============================================================
 // CONFIGURATION
@@ -523,9 +544,40 @@ async function sendResponse(ctx: Context, response: string): Promise<void> {
 console.log("Starting Claude Telegram Relay...");
 console.log(`Authorized user: ${ALLOWED_USER_ID || "ANY (not recommended)"}`);
 console.log(`Project directory: ${PROJECT_DIR || "(relay working directory)"}`);
+console.log(`Bot token configured: ${BOT_TOKEN ? "YES" : "NO"}`);
+console.log(`Attempting to start Telegram bot...`);
 
-bot.start({
-  onStart: () => {
-    console.log("Bot is running!");
-  },
+// Handle process signals to keep bot running
+process.on('SIGINT', () => {
+  console.log('Received SIGINT, shutting down gracefully...');
+  bot.stop();
+  process.exit(0);
 });
+
+process.on('SIGTERM', () => {
+  console.log('Received SIGTERM, shutting down gracefully...');
+  bot.stop();
+  process.exit(0);
+});
+
+// Catch unhandled errors
+process.on('uncaughtException', (error) => {
+  console.error('Uncaught exception:', error);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled rejection at:', promise, 'reason:', reason);
+});
+
+// Start bot without await so launchd doesn't time out
+bot.start({
+  onStart: (botInfo) => {
+    console.log("✓ Bot is running!");
+    console.log(`Bot username: @${botInfo.username}`);
+  },
+}).catch((error) => {
+  console.error("ERROR starting bot:", error);
+  process.exit(1);
+});
+
+console.log("bot.start() initiated - waiting for connection...")
