@@ -11,6 +11,7 @@ bun.lockb
 # Personal config (keep examples, ignore actual)
 config/profile.md
 config/schedule.json
+ecosystem.config.js
 
 # Runtime files
 *.lock

@@ -152,19 +152,19 @@ Run `bun run test:supabase` to confirm:
 
 Make the bot run in the background, start on boot, restart on crash.
 
-**macOS:**
+**Recommended — PM2 (Cross-platform):**
+```
+bun run setup:pm2 -- --service relay
+```
+Works on macOS, Linux, and Windows. Easiest to manage and monitor.
+
+**Alternative — launchd (macOS only):**
 ```
 bun run setup:launchd -- --service relay
 ```
-This auto-generates a plist with correct paths and loads it into launchd.
+Native macOS integration, but PM2 is more user-friendly.
 
-**Linux/Windows:**
-```
-bun run setup:services -- --service relay
-```
-Uses PM2 for process management.
-
-**Verify:** `launchctl list | grep com.claude` (macOS) or `npx pm2 status` (Linux/Windows)
+**Verify:** `npx pm2 status` (PM2) or `launchctl list | grep com.claude` (launchd)
 
 **Done when:** Bot runs in the background and survives a terminal close.
 
@@ -180,14 +180,14 @@ Two features that turn a chatbot into an assistant.
 ### Morning Briefing
 `examples/morning-briefing.ts` — sends a daily summary. Pattern file with placeholder data fetchers.
 
-**macOS — schedule both:**
+**Recommended — PM2 (Cross-platform):**
 ```
-bun run setup:launchd -- --service all
+bun run setup:pm2 -- --service all
 ```
 
-**Linux/Windows — schedule both:**
+**Alternative — launchd (macOS only):**
 ```
-bun run setup:services -- --service all
+bun run setup:launchd -- --service all
 ```
 
 **Done when:** User has scheduled services running, or explicitly skips this phase.

@@ -18,6 +18,7 @@ import {
   getMemoryContext,
   getRelevantContext,
 } from "./memory.ts";
+import { callOllama, checkOllamaAvailable } from "./fallback.ts";
 
 const PROJECT_ROOT = dirname(dirname(import.meta.path));
 
@@ -160,6 +161,17 @@ if (!(await acquireLock())) {
   process.exit(1);
 }
 
+// Check fallback availability at startup
+let fallbackAvailable = false;
+if (process.env.FALLBACK_MODEL) {
+  fallbackAvailable = await checkOllamaAvailable();
+  if (fallbackAvailable) {
+    console.log(`Fallback model available: ${process.env.FALLBACK_MODEL}`);
+  } else {
+    console.warn("Fallback model configured but not available. Claude will be used exclusively.");
+  }
+}
+
 const bot = new Bot(BOT_TOKEN);
 
 // ============================================================
@@ -216,6 +228,19 @@ async function callClaude(
 
     if (exitCode !== 0) {
       console.error("Claude error:", stderr);
+
+      // Try fallback if available
+      if (fallbackAvailable && process.env.FALLBACK_MODEL) {
+        console.log("Claude failed, trying fallback model...");
+        try {
+          const fallbackResponse = await callOllama(prompt);
+          return `[via ${process.env.FALLBACK_MODEL}]\n\n${fallbackResponse}`;
+        } catch (fallbackError) {
+          console.error("Fallback also failed:", fallbackError);
+          return `Error: Both Claude and fallback failed. Claude: ${stderr}`;
+        }
+      }
+
       return `Error: ${stderr || "Claude exited with code " + exitCode}`;
     }
 
@@ -230,6 +255,19 @@ async function callClaude(
     return output.trim();
   } catch (error) {
     console.error("Spawn error:", error);
+
+    // Try fallback if available
+    if (fallbackAvailable && process.env.FALLBACK_MODEL) {
+      console.log("Claude spawn failed, trying fallback model...");
+      try {
+        const fallbackResponse = await callOllama(prompt);
+        return `[via ${process.env.FALLBACK_MODEL}]\n\n${fallbackResponse}`;
+      } catch (fallbackError) {
+        console.error("Fallback also failed:", fallbackError);
+        return `Error: Both Claude and fallback failed`;
+      }
+    }
+
     return `Error: Could not run Claude CLI`;
   }
 }

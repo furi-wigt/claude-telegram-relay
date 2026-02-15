@@ -19,6 +19,7 @@ You ──▶ Telegram ──▶ Relay ──▶ Claude Code CLI ──▶ Respo
 - **Proactive**: Smart check-ins that know when to reach out (and when not to)
 - **Briefings**: Daily morning summary with goals and schedule
 - **Voice**: Transcribe voice messages (Groq cloud or local Whisper — your choice)
+- **Fallback AI**: Auto-switches to local Ollama model when Claude is down (zero-cost resilience)
 - **Always On**: Runs in the background, starts on boot, restarts on crash
 - **Guided Setup**: Claude Code reads CLAUDE.md and walks you through everything
 
@@ -71,6 +72,7 @@ bun run dev                # Start with auto-reload
 bun run setup              # Install dependencies, create .env
 bun run test:telegram      # Test Telegram connection
 bun run test:supabase      # Test Supabase connection
+bun run test:fallback      # Test fallback model (optional)
 bun run setup:verify       # Full health check
 
 # Always-On Services
@@ -150,6 +152,16 @@ GROQ_API_KEY=           # For Groq (free at console.groq.com)
 # (Edge Function secrets), not in this .env file.
 ```
 
+## Production Features
+
+This relay includes production-ready features:
+
+- **Watchdog Monitoring** — Automatically monitors all scheduled jobs (morning briefing, night summary) and alerts you via Telegram if anything fails. Runs 6x daily. See [docs/WATCHDOG.md](docs/WATCHDOG.md)
+- **Service Management** — All scripts run as background services via PM2 (cross-platform) or launchd (macOS). Start on boot, restart on crash. See [docs/SERVICE-STATUS.md](docs/SERVICE-STATUS.md)
+- **Semantic Memory** — Conversation history with vector search via Supabase. Bot remembers context from weeks ago.
+- **Voice Transcription** — Groq (cloud) or local whisper.cpp support for voice messages.
+- **Proactive AI** — Morning briefings and night summaries with context from your actual data.
+
 ## The Full Version
 
 This free relay covers the essentials. The full version in the [AI Productivity Hub](https://skool.com/autonomee) community unlocks:
@@ -160,7 +172,7 @@ This free relay covers the essentials. The full version in the [AI Productivity 
 - **Human-in-the-Loop** — Claude asks before taking actions via inline buttons
 - **Voice & Phone Calls** — Bot speaks back via ElevenLabs, calls when urgent
 - **Fallback AI Models** — Auto-switch to OpenRouter or Ollama when Claude is down
-- **Production Infrastructure** — Auto-deploy, watchdog, uninstall scripts
+- **Advanced Infrastructure** — Auto-deploy from GitHub, custom domain, SSL certificates
 
 We also help you personalize it for your business, or package it as a product for your clients.
 
