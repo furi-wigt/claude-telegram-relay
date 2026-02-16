@@ -86,54 +86,6 @@ async function saveSession(state: SessionState): Promise<void> {
 let session = await loadSession();
 
 // ============================================================
-// LOCK FILE (prevent multiple instances)
-// ============================================================
-
-const LOCK_FILE = join(RELAY_DIR, "bot.lock");
-
-async function acquireLock(): Promise<boolean> {
-  try {
-    const existingLock = await readFile(LOCK_FILE, "utf-8").catch(() => null);
-
-    if (existingLock) {
-      const pid = parseInt(existingLock);
-      try {
-        process.kill(pid, 0); // Check if process exists
-        console.log(`Another instance running (PID: ${pid})`);
-        return false;
-      } catch {
-        console.log("Stale lock found, taking over...");
-      }
-    }
-
-    await writeFile(LOCK_FILE, process.pid.toString());
-    return true;
-  } catch (error) {
-    console.error("Lock error:", error);
-    return false;
-  }
-}
-
-async function releaseLock(): Promise<void> {
-  await unlink(LOCK_FILE).catch(() => {});
-}
-
-// Cleanup on exit
-process.on("exit", () => {
-  try {
-    require("fs").unlinkSync(LOCK_FILE);
-  } catch {}
-});
-process.on("SIGINT", async () => {
-  await releaseLock();
-  process.exit(0);
-});
-process.on("SIGTERM", async () => {
-  await releaseLock();
-  process.exit(0);
-});
-
-// ============================================================
 // SETUP
 // ============================================================
 
@@ -175,12 +127,6 @@ async function saveMessage(
   } catch (error) {
     console.error("Supabase save error:", error);
   }
-}
-
-// Acquire lock
-if (!(await acquireLock())) {
-  console.error("Could not acquire lock. Another instance may be running.");
-  process.exit(1);
 }
 
 // Check fallback availability at startup
@@ -307,6 +253,49 @@ async function callClaude(
 }
 
 // ============================================================
+// MESSAGE QUEUE — serialize Claude invocations
+// ============================================================
+
+interface QueueTask {
+  label: string;
+  run: () => Promise<void>;
+}
+
+class MessageQueue {
+  private queue: QueueTask[] = [];
+  private processing = false;
+
+  get length(): number {
+    return this.queue.length;
+  }
+
+  enqueue(task: QueueTask): void {
+    this.queue.push(task);
+    console.log(`[queue] +${task.label} (depth: ${this.queue.length})`);
+    if (!this.processing) this.processQueue();
+  }
+
+  private async processQueue(): Promise<void> {
+    this.processing = true;
+    while (this.queue.length > 0) {
+      const task = this.queue.shift()!;
+      const start = Date.now();
+      try {
+        console.log(`[queue] processing: ${task.label} (remaining: ${this.queue.length})`);
+        await task.run();
+      } catch (error) {
+        console.error(`[queue] task failed (${task.label}):`, error);
+      } finally {
+        console.log(`[queue] done: ${task.label} (${Date.now() - start}ms)`);
+      }
+    }
+    this.processing = false;
+  }
+}
+
+const messageQueue = new MessageQueue();
+
+// ============================================================
 // MESSAGE HANDLERS
 // ============================================================
 
@@ -319,190 +308,200 @@ function startTypingIndicator(ctx: Context): ReturnType<typeof setInterval> {
 
 // Text messages
 bot.on("message:text", async (ctx) => {
-  const typingInterval = startTypingIndicator(ctx);
-  try {
-    const text = ctx.message.text;
-    console.log(`Message: ${text.substring(0, 50)}...`);
+  const text = ctx.message.text;
+  messageQueue.enqueue({
+    label: `text: ${text.substring(0, 40)}`,
+    run: async () => {
+      const typingInterval = startTypingIndicator(ctx);
+      try {
+        console.log(`Message: ${text.substring(0, 50)}...`);
+        await ctx.replyWithChatAction("typing");
+        await saveMessage("user", text);
 
-    await ctx.replyWithChatAction("typing");
+        const [relevantContext, memoryContext] = await Promise.all([
+          getRelevantContext(supabase, text),
+          getMemoryContext(supabase),
+        ]);
 
-    await saveMessage("user", text);
+        const enrichedPrompt = buildPrompt(text, relevantContext, memoryContext);
+        const rawResponse = await callClaude(enrichedPrompt, { resume: true });
+        console.log(`Claude raw response length: ${rawResponse.length}`);
 
-    // Gather context: semantic search + facts/goals
-    const [relevantContext, memoryContext] = await Promise.all([
-      getRelevantContext(supabase, text),
-      getMemoryContext(supabase),
-    ]);
+        const response = await processMemoryIntents(supabase, rawResponse);
+        console.log(`Processed response length: ${response.length}`);
 
-    const enrichedPrompt = buildPrompt(text, relevantContext, memoryContext);
-    const rawResponse = await callClaude(enrichedPrompt, { resume: true });
-
-    console.log(`Claude raw response length: ${rawResponse.length}`);
-
-    // Parse and save any memory intents, strip tags from response
-    const response = await processMemoryIntents(supabase, rawResponse);
-
-    console.log(`Processed response length: ${response.length}`);
-
-    await saveMessage("assistant", response || rawResponse);
-    await sendResponse(ctx, response || rawResponse || "No response generated");
-  } catch (error) {
-    console.error("Text handler error:", error);
-    try {
-      await ctx.reply("Something went wrong processing your message. Please try again.");
-    } catch (replyError) {
-      console.error("Failed to send error reply:", replyError);
-    }
-  } finally {
-    clearInterval(typingInterval);
-  }
+        await saveMessage("assistant", response || rawResponse);
+        await sendResponse(ctx, response || rawResponse || "No response generated");
+      } catch (error) {
+        console.error("Text handler error:", error);
+        try {
+          await ctx.reply("Something went wrong processing your message. Please try again.");
+        } catch (replyError) {
+          console.error("Failed to send error reply:", replyError);
+        }
+      } finally {
+        clearInterval(typingInterval);
+      }
+    },
+  });
 });
 
 // Voice messages
 bot.on("message:voice", async (ctx) => {
-  const typingInterval = startTypingIndicator(ctx);
-  try {
-    const voice = ctx.message.voice;
-    console.log(`Voice message: ${voice.duration}s`);
-    await ctx.replyWithChatAction("typing");
+  const voice = ctx.message.voice;
+  messageQueue.enqueue({
+    label: `voice: ${voice.duration}s`,
+    run: async () => {
+      const typingInterval = startTypingIndicator(ctx);
+      try {
+        console.log(`Voice message: ${voice.duration}s`);
+        await ctx.replyWithChatAction("typing");
 
-    if (!process.env.VOICE_PROVIDER) {
-      await ctx.reply(
-        "Voice transcription is not set up yet. " +
-          "Run the setup again and choose a voice provider (Groq or local Whisper)."
-      );
-      return;
-    }
+        if (!process.env.VOICE_PROVIDER) {
+          await ctx.reply(
+            "Voice transcription is not set up yet. " +
+              "Run the setup again and choose a voice provider (Groq or local Whisper)."
+          );
+          return;
+        }
 
-    const file = await ctx.getFile();
-    const url = `https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`;
-    const response = await fetch(url);
-    const buffer = Buffer.from(await response.arrayBuffer());
+        const file = await ctx.getFile();
+        const url = `https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`;
+        const response = await fetch(url);
+        const buffer = Buffer.from(await response.arrayBuffer());
 
-    const transcription = await transcribe(buffer);
-    if (!transcription) {
-      await ctx.reply("Could not transcribe voice message.");
-      return;
-    }
+        const transcription = await transcribe(buffer);
+        if (!transcription) {
+          await ctx.reply("Could not transcribe voice message.");
+          return;
+        }
 
-    await saveMessage("user", `[Voice ${voice.duration}s]: ${transcription}`);
+        await saveMessage("user", `[Voice ${voice.duration}s]: ${transcription}`);
 
-    const [relevantContext, memoryContext] = await Promise.all([
-      getRelevantContext(supabase, transcription),
-      getMemoryContext(supabase),
-    ]);
+        const [relevantContext, memoryContext] = await Promise.all([
+          getRelevantContext(supabase, transcription),
+          getMemoryContext(supabase),
+        ]);
 
-    const enrichedPrompt = buildPrompt(
-      `[Voice message transcribed]: ${transcription}`,
-      relevantContext,
-      memoryContext
-    );
-    const rawResponse = await callClaude(enrichedPrompt, { resume: true });
-    const claudeResponse = await processMemoryIntents(supabase, rawResponse);
+        const enrichedPrompt = buildPrompt(
+          `[Voice message transcribed]: ${transcription}`,
+          relevantContext,
+          memoryContext
+        );
+        const rawResponse = await callClaude(enrichedPrompt, { resume: true });
+        const claudeResponse = await processMemoryIntents(supabase, rawResponse);
 
-    await saveMessage("assistant", claudeResponse);
-    await sendResponse(ctx, claudeResponse);
-  } catch (error) {
-    console.error("Voice handler error:", error);
-    try {
-      await ctx.reply("Could not process voice message. Please try again.");
-    } catch (replyError) {
-      console.error("Failed to send error reply:", replyError);
-    }
-  } finally {
-    clearInterval(typingInterval);
-  }
+        await saveMessage("assistant", claudeResponse);
+        await sendResponse(ctx, claudeResponse);
+      } catch (error) {
+        console.error("Voice handler error:", error);
+        try {
+          await ctx.reply("Could not process voice message. Please try again.");
+        } catch (replyError) {
+          console.error("Failed to send error reply:", replyError);
+        }
+      } finally {
+        clearInterval(typingInterval);
+      }
+    },
+  });
 });
 
 // Photos/Images
 bot.on("message:photo", async (ctx) => {
-  const typingInterval = startTypingIndicator(ctx);
-  try {
-    console.log("Image received");
-    await ctx.replyWithChatAction("typing");
+  messageQueue.enqueue({
+    label: "photo",
+    run: async () => {
+      const typingInterval = startTypingIndicator(ctx);
+      try {
+        console.log("Image received");
+        await ctx.replyWithChatAction("typing");
 
-    // Get highest resolution photo
-    const photos = ctx.message.photo;
-    const photo = photos[photos.length - 1];
-    const file = await ctx.api.getFile(photo.file_id);
+        const photos = ctx.message.photo;
+        const photo = photos[photos.length - 1];
+        const file = await ctx.api.getFile(photo.file_id);
 
-    // Download the image
-    const timestamp = Date.now();
-    const filePath = join(UPLOADS_DIR, `image_${timestamp}.jpg`);
+        const timestamp = Date.now();
+        const filePath = join(UPLOADS_DIR, `image_${timestamp}.jpg`);
 
-    const response = await fetch(
-      `https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`
-    );
-    const buffer = await response.arrayBuffer();
-    await writeFile(filePath, Buffer.from(buffer));
+        const response = await fetch(
+          `https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`
+        );
+        const buffer = await response.arrayBuffer();
+        await writeFile(filePath, Buffer.from(buffer));
 
-    // Claude Code can see images via file path
-    const caption = ctx.message.caption || "Analyze this image.";
-    const prompt = `[Image: ${filePath}]\n\n${caption}`;
+        const caption = ctx.message.caption || "Analyze this image.";
+        const prompt = `[Image: ${filePath}]\n\n${caption}`;
 
-    await saveMessage("user", `[Image]: ${caption}`);
+        await saveMessage("user", `[Image]: ${caption}`);
 
-    const claudeResponse = await callClaude(prompt, { resume: true });
+        const claudeResponse = await callClaude(prompt, { resume: true });
 
-    // Cleanup after processing
-    await unlink(filePath).catch(() => {});
+        await unlink(filePath).catch(() => {});
 
-    const cleanResponse = await processMemoryIntents(supabase, claudeResponse);
-    await saveMessage("assistant", cleanResponse);
-    await sendResponse(ctx, cleanResponse);
-  } catch (error) {
-    console.error("Photo handler error:", error);
-    try {
-      await ctx.reply("Could not process image. Please try again.");
-    } catch (replyError) {
-      console.error("Failed to send error reply:", replyError);
-    }
-  } finally {
-    clearInterval(typingInterval);
-  }
+        const cleanResponse = await processMemoryIntents(supabase, claudeResponse);
+        await saveMessage("assistant", cleanResponse);
+        await sendResponse(ctx, cleanResponse);
+      } catch (error) {
+        console.error("Photo handler error:", error);
+        try {
+          await ctx.reply("Could not process image. Please try again.");
+        } catch (replyError) {
+          console.error("Failed to send error reply:", replyError);
+        }
+      } finally {
+        clearInterval(typingInterval);
+      }
+    },
+  });
 });
 
 // Documents
 bot.on("message:document", async (ctx) => {
-  const typingInterval = startTypingIndicator(ctx);
-  try {
-    const doc = ctx.message.document;
-    console.log(`Document: ${doc.file_name}`);
-    await ctx.replyWithChatAction("typing");
+  const doc = ctx.message.document;
+  messageQueue.enqueue({
+    label: `doc: ${doc.file_name}`,
+    run: async () => {
+      const typingInterval = startTypingIndicator(ctx);
+      try {
+        console.log(`Document: ${doc.file_name}`);
+        await ctx.replyWithChatAction("typing");
 
-    const file = await ctx.getFile();
-    const timestamp = Date.now();
-    const fileName = doc.file_name || `file_${timestamp}`;
-    const filePath = join(UPLOADS_DIR, `${timestamp}_${fileName}`);
+        const file = await ctx.getFile();
+        const timestamp = Date.now();
+        const fileName = doc.file_name || `file_${timestamp}`;
+        const filePath = join(UPLOADS_DIR, `${timestamp}_${fileName}`);
 
-    const response = await fetch(
-      `https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`
-    );
-    const buffer = await response.arrayBuffer();
-    await writeFile(filePath, Buffer.from(buffer));
+        const response = await fetch(
+          `https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`
+        );
+        const buffer = await response.arrayBuffer();
+        await writeFile(filePath, Buffer.from(buffer));
 
-    const caption = ctx.message.caption || `Analyze: ${doc.file_name}`;
-    const prompt = `[File: ${filePath}]\n\n${caption}`;
+        const caption = ctx.message.caption || `Analyze: ${doc.file_name}`;
+        const prompt = `[File: ${filePath}]\n\n${caption}`;
 
-    await saveMessage("user", `[Document: ${doc.file_name}]: ${caption}`);
+        await saveMessage("user", `[Document: ${doc.file_name}]: ${caption}`);
 
-    const claudeResponse = await callClaude(prompt, { resume: true });
+        const claudeResponse = await callClaude(prompt, { resume: true });
 
-    await unlink(filePath).catch(() => {});
+        await unlink(filePath).catch(() => {});
 
-    const cleanResponse = await processMemoryIntents(supabase, claudeResponse);
-    await saveMessage("assistant", cleanResponse);
-    await sendResponse(ctx, cleanResponse);
-  } catch (error) {
-    console.error("Document handler error:", error);
-    try {
-      await ctx.reply("Could not process document. Please try again.");
-    } catch (replyError) {
-      console.error("Failed to send error reply:", replyError);
-    }
-  } finally {
-    clearInterval(typingInterval);
-  }
+        const cleanResponse = await processMemoryIntents(supabase, claudeResponse);
+        await saveMessage("assistant", cleanResponse);
+        await sendResponse(ctx, cleanResponse);
+      } catch (error) {
+        console.error("Document handler error:", error);
+        try {
+          await ctx.reply("Could not process document. Please try again.");
+        } catch (replyError) {
+          console.error("Failed to send error reply:", replyError);
+        }
+      } finally {
+        clearInterval(typingInterval);
+      }
+    },
+  });
 });
 
 // ============================================================
