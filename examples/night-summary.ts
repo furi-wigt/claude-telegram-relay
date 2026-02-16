@@ -17,6 +17,7 @@
  */
 
 import { createClient } from "@supabase/supabase-js";
+import { callOllama } from "../src/fallback";
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
 const CHAT_ID = process.env.TELEGRAM_USER_ID || "";
@@ -175,7 +176,7 @@ async function analyzeDay(
   activeGoals: Goal[],
   completedGoals: Goal[]
 ): Promise<string> {
-  // Build context for Claude
+  // Build context for Ollama
   const messagesSummary =
     messages.length > 0
       ? messages
@@ -222,40 +223,12 @@ Keep it concise but actionable. Use a reflective, coaching tone. Focus on what m
 If today was light on activity, be brief and encouraging. If it was significant, provide detailed analysis.`;
 
   try {
-    // Call Claude via API (assuming you have @anthropic-ai/sdk installed)
-    // For this example, we'll use a simple fetch to Claude API
-    const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "";
-
-    if (!ANTHROPIC_API_KEY) {
-      console.error("Missing ANTHROPIC_API_KEY");
-      return "⚠️ Cannot generate summary - API key not configured";
-    }
-
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": ANTHROPIC_API_KEY,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model: "claude-3-5-sonnet-20241022",
-        max_tokens: 1024,
-        messages: [{ role: "user", content: prompt }],
-      }),
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error("Claude API error:", errorText);
-      return "⚠️ Failed to generate summary";
-    }
-
-    const data = await response.json();
-    return data.content[0].text;
+    // Use Ollama for analysis
+    const response = await callOllama(prompt);
+    return response;
   } catch (error) {
     console.error("Analysis error:", error);
-    return "⚠️ Analysis failed";
+    return "⚠️ Analysis failed - Ollama unavailable";
   }
 }
 

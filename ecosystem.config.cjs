@@ -14,6 +14,9 @@ module.exports = {
     "autorestart": true,
     "watch": false,
     "max_memory_restart": "500M",
+    "kill_timeout": 10000,
+    "wait_ready": true,
+    "listen_timeout": 15000,
     "env": {
       "NODE_ENV": "production",
       "PATH": "/Users/furi/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",

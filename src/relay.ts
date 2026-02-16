@@ -52,6 +52,7 @@ const ALLOWED_USER_ID = process.env.TELEGRAM_USER_ID || "";
 const CLAUDE_PATH = process.env.CLAUDE_PATH || "claude";
 const PROJECT_DIR = process.env.PROJECT_DIR || "";
 const RELAY_DIR = process.env.RELAY_DIR || join(process.env.HOME || "~", ".claude-relay");
+const CLAUDE_TIMEOUT = parseInt(process.env.CLAUDE_TIMEOUT || "180000", 10);
 
 // Directories
 const TEMP_DIR = join(RELAY_DIR, "temp");
@@ -242,10 +243,22 @@ async function callClaude(
       },
     });
 
-    const output = await new Response(proc.stdout).text();
-    const stderr = await new Response(proc.stderr).text();
+    // Add configurable timeout to prevent infinite hangs
+    const timeout = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`Claude timeout after ${CLAUDE_TIMEOUT / 1000}s`)), CLAUDE_TIMEOUT)
+    );
 
-    const exitCode = await proc.exited;
+    const [output, stderr, exitCode] = await Promise.race([
+      Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+        proc.exited
+      ]),
+      timeout
+    ]).catch(error => {
+      proc.kill();
+      throw error;
+    });
 
     if (exitCode !== 0) {
       console.error("Claude error:", stderr);
@@ -297,46 +310,70 @@ async function callClaude(
 // MESSAGE HANDLERS
 // ============================================================
 
+/** Send "typing" action every 5s until cleared. */
+function startTypingIndicator(ctx: Context): ReturnType<typeof setInterval> {
+  return setInterval(() => {
+    ctx.replyWithChatAction("typing").catch(() => {});
+  }, 5000);
+}
+
 // Text messages
 bot.on("message:text", async (ctx) => {
-  const text = ctx.message.text;
-  console.log(`Message: ${text.substring(0, 50)}...`);
+  const typingInterval = startTypingIndicator(ctx);
+  try {
+    const text = ctx.message.text;
+    console.log(`Message: ${text.substring(0, 50)}...`);
 
-  await ctx.replyWithChatAction("typing");
+    await ctx.replyWithChatAction("typing");
 
-  await saveMessage("user", text);
+    await saveMessage("user", text);
 
-  // Gather context: semantic search + facts/goals
-  const [relevantContext, memoryContext] = await Promise.all([
-    getRelevantContext(supabase, text),
-    getMemoryContext(supabase),
-  ]);
+    // Gather context: semantic search + facts/goals
+    const [relevantContext, memoryContext] = await Promise.all([
+      getRelevantContext(supabase, text),
+      getMemoryContext(supabase),
+    ]);
 
-  const enrichedPrompt = buildPrompt(text, relevantContext, memoryContext);
-  const rawResponse = await callClaude(enrichedPrompt, { resume: true });
+    const enrichedPrompt = buildPrompt(text, relevantContext, memoryContext);
+    const rawResponse = await callClaude(enrichedPrompt, { resume: true });
 
-  // Parse and save any memory intents, strip tags from response
-  const response = await processMemoryIntents(supabase, rawResponse);
+    console.log(`Claude raw response length: ${rawResponse.length}`);
 
-  await saveMessage("assistant", response);
-  await sendResponse(ctx, response);
+    // Parse and save any memory intents, strip tags from response
+    const response = await processMemoryIntents(supabase, rawResponse);
+
+    console.log(`Processed response length: ${response.length}`);
+
+    await saveMessage("assistant", response || rawResponse);
+    await sendResponse(ctx, response || rawResponse || "No response generated");
+  } catch (error) {
+    console.error("Text handler error:", error);
+    try {
+      await ctx.reply("Something went wrong processing your message. Please try again.");
+    } catch (replyError) {
+      console.error("Failed to send error reply:", replyError);
+    }
+  } finally {
+    clearInterval(typingInterval);
+  }
 });
 
 // Voice messages
 bot.on("message:voice", async (ctx) => {
-  const voice = ctx.message.voice;
-  console.log(`Voice message: ${voice.duration}s`);
-  await ctx.replyWithChatAction("typing");
-
-  if (!process.env.VOICE_PROVIDER) {
-    await ctx.reply(
-      "Voice transcription is not set up yet. " +
-        "Run the setup again and choose a voice provider (Groq or local Whisper)."
-    );
-    return;
-  }
-
+  const typingInterval = startTypingIndicator(ctx);
   try {
+    const voice = ctx.message.voice;
+    console.log(`Voice message: ${voice.duration}s`);
+    await ctx.replyWithChatAction("typing");
+
+    if (!process.env.VOICE_PROVIDER) {
+      await ctx.reply(
+        "Voice transcription is not set up yet. " +
+          "Run the setup again and choose a voice provider (Groq or local Whisper)."
+      );
+      return;
+    }
+
     const file = await ctx.getFile();
     const url = `https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`;
     const response = await fetch(url);
@@ -366,17 +403,24 @@ bot.on("message:voice", async (ctx) => {
     await saveMessage("assistant", claudeResponse);
     await sendResponse(ctx, claudeResponse);
   } catch (error) {
-    console.error("Voice error:", error);
-    await ctx.reply("Could not process voice message. Check logs for details.");
+    console.error("Voice handler error:", error);
+    try {
+      await ctx.reply("Could not process voice message. Please try again.");
+    } catch (replyError) {
+      console.error("Failed to send error reply:", replyError);
+    }
+  } finally {
+    clearInterval(typingInterval);
   }
 });
 
 // Photos/Images
 bot.on("message:photo", async (ctx) => {
-  console.log("Image received");
-  await ctx.replyWithChatAction("typing");
-
+  const typingInterval = startTypingIndicator(ctx);
   try {
+    console.log("Image received");
+    await ctx.replyWithChatAction("typing");
+
     // Get highest resolution photo
     const photos = ctx.message.photo;
     const photo = photos[photos.length - 1];
@@ -407,18 +451,25 @@ bot.on("message:photo", async (ctx) => {
     await saveMessage("assistant", cleanResponse);
     await sendResponse(ctx, cleanResponse);
   } catch (error) {
-    console.error("Image error:", error);
-    await ctx.reply("Could not process image.");
+    console.error("Photo handler error:", error);
+    try {
+      await ctx.reply("Could not process image. Please try again.");
+    } catch (replyError) {
+      console.error("Failed to send error reply:", replyError);
+    }
+  } finally {
+    clearInterval(typingInterval);
   }
 });
 
 // Documents
 bot.on("message:document", async (ctx) => {
-  const doc = ctx.message.document;
-  console.log(`Document: ${doc.file_name}`);
-  await ctx.replyWithChatAction("typing");
-
+  const typingInterval = startTypingIndicator(ctx);
   try {
+    const doc = ctx.message.document;
+    console.log(`Document: ${doc.file_name}`);
+    await ctx.replyWithChatAction("typing");
+
     const file = await ctx.getFile();
     const timestamp = Date.now();
     const fileName = doc.file_name || `file_${timestamp}`;
@@ -443,8 +494,14 @@ bot.on("message:document", async (ctx) => {
     await saveMessage("assistant", cleanResponse);
     await sendResponse(ctx, cleanResponse);
   } catch (error) {
-    console.error("Document error:", error);
-    await ctx.reply("Could not process document.");
+    console.error("Document handler error:", error);
+    try {
+      await ctx.reply("Could not process document. Please try again.");
+    } catch (replyError) {
+      console.error("Failed to send error reply:", replyError);
+    }
+  } finally {
+    clearInterval(typingInterval);
   }
 });
 
@@ -504,6 +561,13 @@ function buildPrompt(
 }
 
 async function sendResponse(ctx: Context, response: string): Promise<void> {
+  // Handle empty responses
+  if (!response || response.trim().length === 0) {
+    console.error("Warning: Attempted to send empty response, using fallback");
+    await ctx.reply("(Processing completed but no response generated)");
+    return;
+  }
+
   // Telegram has a 4096 character limit
   const MAX_LENGTH = 4000;
 
@@ -571,9 +635,14 @@ process.on('unhandledRejection', (reason, promise) => {
 
 // Start bot without await so launchd doesn't time out
 bot.start({
+  drop_pending_updates: true,
   onStart: (botInfo) => {
-    console.log("✓ Bot is running!");
+    console.log("Bot is running!");
     console.log(`Bot username: @${botInfo.username}`);
+    // Signal PM2 that the bot is ready (wait_ready mode)
+    if (typeof process.send === "function") {
+      process.send("ready");
+    }
   },
 }).catch((error) => {
   console.error("ERROR starting bot:", error);
