@@ -69,10 +69,17 @@ async function getActiveGoals(): Promise<string> {
 }
 
 async function getWeather(): Promise<string> {
-  // Optional: Weather API
-
-  // Placeholder
-  return "Sunny, 22°C";
+  // Use real weather from Singapore NEA or Open-Meteo
+  try {
+    const { getSingaporeWeather } = await import("../src/utils/weather.ts");
+    const weather = await getSingaporeWeather();
+    // Extract just the forecast part: "Singapore 2-hour forecast: Cloudy" → "Cloudy"
+    const match = weather.match(/forecast: (.+)$/);
+    return match ? match[1] : weather;
+  } catch (error) {
+    console.error("Weather fetch error:", error);
+    return "Weather unavailable";
+  }
 }
 
 async function getAINews(): Promise<string> {

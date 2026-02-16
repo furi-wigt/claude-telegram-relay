@@ -19,6 +19,11 @@ export interface SessionState {
   agentId: string;
   sessionId: string | null;
   lastActivity: string;
+  topicKeywords: string[];        // extracted keywords for context relevance
+  messageCount: number;           // total messages in this session
+  startedAt: string;              // ISO date when session started
+  pendingContextSwitch: boolean;  // awaiting user's yes/no on context switch
+  lastUserMessages: string[];     // last 3 user messages for context comparison
 }
 
 /** In-memory cache of active sessions keyed by chat ID */
@@ -56,6 +61,11 @@ export async function loadSession(chatId: number, agentId: string): Promise<Sess
       agentId,
       sessionId: null,
       lastActivity: new Date().toISOString(),
+      topicKeywords: [],
+      messageCount: 0,
+      startedAt: new Date().toISOString(),
+      pendingContextSwitch: false,
+      lastUserMessages: [],
     };
     sessions.set(chatId, state);
     return state;
@@ -122,7 +132,16 @@ export async function loadAllSessions(): Promise<number> {
       if (!file.endsWith(".json")) continue;
       try {
         const content = await readFile(join(SESSIONS_DIR, file), "utf-8");
-        const state: SessionState = JSON.parse(content);
+        const raw = JSON.parse(content);
+        // Backwards compatibility: fill in missing fields with defaults
+        const state: SessionState = {
+          ...raw,
+          topicKeywords: raw.topicKeywords ?? [],
+          messageCount: raw.messageCount ?? 0,
+          startedAt: raw.startedAt ?? raw.lastActivity ?? new Date().toISOString(),
+          pendingContextSwitch: raw.pendingContextSwitch ?? false,
+          lastUserMessages: raw.lastUserMessages ?? [],
+        };
         if (state.chatId) {
           sessions.set(state.chatId, state);
           loaded++;
@@ -148,4 +167,30 @@ export async function resetSession(chatId: number): Promise<void> {
     session.lastActivity = new Date().toISOString();
     await saveSession(session);
   }
+}
+
+/**
+ * Return a human-readable summary of the current session state for a chat.
+ * Includes duration, message count, topic keywords, idle time, and
+ * whether a Claude Code session is active.
+ */
+export function getSessionSummary(chatId: number): string {
+  const session = sessions.get(chatId);
+  if (!session) return "No active session";
+
+  const started = new Date(session.startedAt);
+  const duration = Math.round((Date.now() - started.getTime()) / 60000);
+  const idle = Math.round((Date.now() - new Date(session.lastActivity).getTime()) / 60000);
+
+  const parts = [
+    `Session active for ${duration}m`,
+    `Messages: ${session.messageCount}`,
+    session.topicKeywords.length > 0
+      ? `Topics: ${session.topicKeywords.slice(0, 5).join(', ')}`
+      : 'No topic context yet',
+    `Last activity: ${idle}m ago`,
+    session.sessionId ? `Claude session: active` : `Claude session: not started`,
+  ];
+
+  return parts.join('\n');
 }

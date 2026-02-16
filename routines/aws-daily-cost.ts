@@ -1,6 +1,13 @@
 #!/usr/bin/env bun
 
 /**
+ * @routine aws-daily-cost
+ * @description Daily AWS cost alert with spend analysis
+ * @schedule 0 9 * * *
+ * @target AWS Architect group
+ */
+
+/**
  * AWS Daily Cost Alert Routine
  *
  * Schedule: 9:00 AM daily

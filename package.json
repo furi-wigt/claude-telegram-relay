@@ -11,6 +11,7 @@
     "test:voice": "bun run setup/test-voice.ts",
     "test:fallback": "bun run setup/test-fallback.ts",
     "test:groups": "bun run setup/test-groups.ts",
+    "test:weather": "bun run setup/test-weather.ts",
     "setup:launchd": "bun run setup/configure-launchd.ts",
     "setup:services": "bun run setup/configure-services.ts",
     "setup:pm2": "bun run setup/configure-pm2.ts",
@@ -18,6 +19,7 @@
     "setup:verify": "bun run setup/verify.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.74.0",
     "@supabase/supabase-js": "^2.95.3",
     "grammy": "^1.21.1",
     "groq-sdk": "^0.8.0"

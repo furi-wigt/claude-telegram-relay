@@ -21,9 +21,16 @@ import {
 } from "./memory.ts";
 import { callOllama, checkOllamaAvailable } from "./fallback.ts";
 import { getAgentForChat, autoDiscoverGroup, loadGroupMappings } from "./routing/groupRouter.ts";
-import { loadSession as loadGroupSession, updateSessionId, initSessions } from "./session/groupSessions.ts";
+import { loadSession as loadGroupSession, updateSessionId, initSessions, saveSession } from "./session/groupSessions.ts";
 import { buildAgentPrompt } from "./agents/promptBuilder.ts";
 import { GroupQueueManager } from "./queue/groupQueueManager.ts";
+import { checkContextRelevanceSmart, updateTopicKeywords } from "./session/contextRelevance.ts";
+import { registerCommands, buildProgressFooter, buildContextSwitchPrompt } from "./commands/botCommands.ts";
+import { detectAndHandle, registerCallbackHandler } from "./routines/routineHandler.ts";
+import { CodingSessionManager } from "./coding/sessionManager.ts";
+import { InputRouter } from "./coding/inputRouter.ts";
+import { ReminderManager } from "./coding/reminderManager.ts";
+import { registerCodingCommands } from "./coding/codingCommands.ts";
 
 const PROJECT_ROOT = dirname(dirname(import.meta.path));
 
@@ -56,13 +63,16 @@ const ALLOWED_USER_ID = process.env.TELEGRAM_USER_ID || "";
 const CLAUDE_PATH = process.env.CLAUDE_PATH || "claude";
 const PROJECT_DIR = process.env.PROJECT_DIR || "";
 const RELAY_DIR = process.env.RELAY_DIR || join(process.env.HOME || "~", ".claude-relay");
-const CLAUDE_TIMEOUT = parseInt(process.env.CLAUDE_TIMEOUT || "180000", 10);
+const CLAUDE_TIMEOUT = parseInt(process.env.CLAUDE_TIMEOUT || "900000", 10);
 
 // Queue Configuration
 const QUEUE_MAX_DEPTH = parseInt(process.env.QUEUE_MAX_DEPTH || "50", 10);
 const QUEUE_IDLE_TIMEOUT = parseInt(process.env.QUEUE_IDLE_TIMEOUT_MS || "86400000", 10);
 const QUEUE_STATS_INTERVAL = parseInt(process.env.QUEUE_STATS_LOG_INTERVAL_MS || "300000", 10);
 const QUEUE_SHUTDOWN_GRACE = parseInt(process.env.QUEUE_SHUTDOWN_GRACE_MS || "30000", 10);
+
+// Agentic Coding
+const CODING_AUTO_SCAN_INTERVAL = parseInt(process.env.CODING_AUTO_SCAN_INTERVAL || "300000", 10);
 
 // Directories
 const TEMP_DIR = join(RELAY_DIR, "temp");
@@ -153,6 +163,13 @@ bot.use(async (ctx, next) => {
   await autoDiscoverGroup(ctx);
   await next();
 });
+
+// Register session management commands (/status, /new, /memory, /history, /help)
+// NOTE: Registered AFTER security middleware so commands are protected
+registerCommands(bot, { supabase });
+
+// Register routine creation callback handler (inline keyboard for output target)
+registerCallbackHandler(bot);
 
 // ============================================================
 // CORE: Call Claude CLI
@@ -249,6 +266,42 @@ const queueManager = new GroupQueueManager({
 });
 
 // ============================================================
+// AGENTIC CODING
+// ============================================================
+
+const sessionManager = new CodingSessionManager(bot);
+const inputRouter = new InputRouter();
+const reminderManager = new ReminderManager();
+
+// Initialize: load persisted sessions
+await sessionManager.init();
+
+// Register /code command
+registerCodingCommands(bot, sessionManager, inputRouter);
+
+// Background: auto-scan for desktop sessions
+if (CODING_AUTO_SCAN_INTERVAL > 0 && ALLOWED_USER_ID) {
+  const allowedChatId = parseInt(ALLOWED_USER_ID, 10);
+  setInterval(() => {
+    sessionManager.syncDesktopSessions(allowedChatId).catch(console.error);
+  }, CODING_AUTO_SCAN_INTERVAL);
+}
+
+// Handle coding session callback queries (answer, plan, dashboard only — NOT code_perm:)
+// code_perm: is handled exclusively in registerCodingCommands via handlePermCallback
+bot.on("callback_query:data", async (ctx) => {
+  const data = ctx.callbackQuery.data || "";
+  if (
+    data.startsWith("code_answer:") ||
+    data.startsWith("code_plan:") ||
+    data.startsWith("code_dash:")
+  ) {
+    await inputRouter.handleCallbackQuery(ctx, sessionManager);
+    await ctx.answerCallbackQuery().catch(() => {});
+  }
+});
+
+// ============================================================
 // MESSAGE HANDLERS
 // ============================================================
 
@@ -266,6 +319,18 @@ bot.on("message:text", async (ctx) => {
 
   if (!chatId) return;
 
+  // Priority 1: /code answer explicit routing to coding sessions
+  if (text.startsWith("/code answer ")) {
+    await sessionManager.answerCurrentWaiting(chatId, text.slice(13).trim());
+    return;
+  }
+
+  // Priority 2: Reply-to-message routing to coding sessions
+  if (await inputRouter.tryRouteReply(ctx, sessionManager)) return;
+
+  // Priority 3: Check for routine creation intent before normal Claude processing
+  if (await detectAndHandle(ctx, text)) return;
+
   if (!queueManager.hasCapacity(chatId)) {
     await ctx.reply("Too many pending messages. Please wait for the current ones to complete.");
     return;
@@ -281,6 +346,34 @@ bot.on("message:text", async (ctx) => {
         await ctx.replyWithChatAction("typing");
 
         const session = await loadGroupSession(chatId, agent.id);
+
+        // ── Context Relevance Check ──────────────────────────────────────
+        // If a session is active and has context, check if this message
+        // belongs to the same topic. Low relevance triggers a soft prompt
+        // asking the user if they want to start fresh, without assuming.
+        if (session.sessionId && session.messageCount > 0) {
+          if (session.pendingContextSwitch) {
+            // User sent a message after context-switch prompt: clear flag and continue.
+            // They can always use /new to explicitly start a new session.
+            session.pendingContextSwitch = false;
+            await saveSession(session);
+          } else {
+            const relevance = await checkContextRelevanceSmart(text, {
+              topicKeywords: session.topicKeywords,
+              lastUserMessages: session.lastUserMessages,
+              lastActivity: session.lastActivity,
+            });
+            console.log(`Context relevance [${relevance.method}]: ${relevance.score.toFixed(2)} — ${relevance.reason}`);
+
+            if (!relevance.isRelevant) {
+              // Prompt user: new topic or continue?
+              session.pendingContextSwitch = true;
+              await saveSession(session);
+              await ctx.reply(buildContextSwitchPrompt(session.topicKeywords.slice(0, 5)));
+              return; // Don't process with Claude until user decides
+            }
+          }
+        }
 
         const [relevantContext, memoryContext] = await Promise.all([
           getRelevantContext(supabase, text),
@@ -306,11 +399,13 @@ bot.on("message:text", async (ctx) => {
           timeStr,
         });
 
+        const callStart = Date.now();
         const rawResponse = await callClaude(enrichedPrompt, {
           resume: !!session.sessionId,
           sessionId: session.sessionId,
         });
-        console.log(`Claude raw response length: ${rawResponse.length}`);
+        const callDurationMs = Date.now() - callStart;
+        console.log(`Claude raw response length: ${rawResponse.length} (${callDurationMs}ms)`);
 
         // Extract and update session ID if present
         const sessionMatch = rawResponse.match(/Session ID: ([a-f0-9-]+)/i);
@@ -321,9 +416,22 @@ bot.on("message:text", async (ctx) => {
         const response = await processMemoryIntents(supabase, rawResponse, chatId);
         console.log(`Processed response length: ${response.length}`);
 
+        // ── Update session metadata ──────────────────────────────────────
+        session.topicKeywords = updateTopicKeywords(session.topicKeywords, text);
+        session.messageCount = (session.messageCount || 0) + 1;
+        session.lastUserMessages = [...(session.lastUserMessages || []), text].slice(-3);
+        session.lastActivity = new Date().toISOString();
+        await saveSession(session);
+
         await saveMessage("user", text, undefined, chatId, agent.id);
         await saveMessage("assistant", response || rawResponse, undefined, chatId, agent.id);
-        await sendResponse(ctx, response || rawResponse || "No response generated");
+
+        // Append progress footer for slow Claude calls (>30s)
+        const footer = buildProgressFooter(chatId, callDurationMs);
+        const finalResponse = (response || rawResponse || "No response generated") +
+          (footer ? `\n\n${footer}` : "");
+
+        await sendResponse(ctx, finalResponse);
       } catch (error) {
         console.error("Text handler error:", error);
         try {
@@ -406,10 +514,12 @@ bot.on("message:voice", async (ctx) => {
           timeStr,
         });
 
+        const voiceCallStart = Date.now();
         const rawResponse = await callClaude(enrichedPrompt, {
           resume: !!session.sessionId,
           sessionId: session.sessionId,
         });
+        const voiceCallDurationMs = Date.now() - voiceCallStart;
 
         const sessionMatch = rawResponse.match(/Session ID: ([a-f0-9-]+)/i);
         if (sessionMatch) {
@@ -418,8 +528,18 @@ bot.on("message:voice", async (ctx) => {
 
         const claudeResponse = await processMemoryIntents(supabase, rawResponse, chatId);
 
+        // Update session metadata
+        session.topicKeywords = updateTopicKeywords(session.topicKeywords, transcription);
+        session.messageCount = (session.messageCount || 0) + 1;
+        session.lastUserMessages = [...(session.lastUserMessages || []), transcription].slice(-3);
+        session.lastActivity = new Date().toISOString();
+        await saveSession(session);
+
         await saveMessage("assistant", claudeResponse, undefined, chatId, agent.id);
-        await sendResponse(ctx, claudeResponse);
+
+        const voiceFooter = buildProgressFooter(chatId, voiceCallDurationMs);
+        const finalVoiceResponse = claudeResponse + (voiceFooter ? `\n\n${voiceFooter}` : "");
+        await sendResponse(ctx, finalVoiceResponse);
       } catch (error) {
         console.error("Voice handler error:", error);
         try {
@@ -649,6 +769,8 @@ console.log("Groups not pre-configured will be auto-discovered by title match");
 // Handle process signals to keep bot running
 process.on('SIGINT', async () => {
   console.log('Received SIGINT, shutting down gracefully...');
+  reminderManager.cancelAll();
+  await sessionManager.pauseAllRunning();
   await queueManager.shutdown(QUEUE_SHUTDOWN_GRACE);
   bot.stop();
   process.exit(0);
@@ -656,6 +778,8 @@ process.on('SIGINT', async () => {
 
 process.on('SIGTERM', async () => {
   console.log('Received SIGTERM, shutting down gracefully...');
+  reminderManager.cancelAll();
+  await sessionManager.pauseAllRunning();
   await queueManager.shutdown(QUEUE_SHUTDOWN_GRACE);
   bot.stop();
   process.exit(0);
@@ -669,6 +793,9 @@ process.on('uncaughtException', (error) => {
 process.on('unhandledRejection', (reason, promise) => {
   console.error('Unhandled rejection at:', promise, 'reason:', reason);
 });
+
+// Catch grammY-level errors (network issues, middleware failures, etc.)
+bot.catch((err) => console.error("Bot error:", err));
 
 // Start bot without await so launchd doesn't time out
 bot.start({

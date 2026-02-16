@@ -1,6 +1,13 @@
 #!/usr/bin/env bun
 
 /**
+ * @routine security-daily-scan
+ * @description Daily security scan and vulnerability report
+ * @schedule 0 8 * * *
+ * @target Security group
+ */
+
+/**
  * Security Daily Scan Summary Routine
  *
  * Schedule: 8:00 AM daily
