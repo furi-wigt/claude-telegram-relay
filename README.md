@@ -92,6 +92,12 @@ src/
   relay.ts                   # Core relay daemon
   transcribe.ts              # Voice transcription (Groq / whisper.cpp)
   memory.ts                  # Persistent memory (facts, goals, semantic search)
+  agents/
+    config.ts                # Agent definitions and system prompts
+  routing/
+    groupRouter.ts           # Chat ID → agent mapping and auto-discovery
+  session/
+    groupSessions.ts         # Per-group session state management
 examples/
   smart-checkin.ts           # Proactive check-ins
   morning-briefing.ts        # Daily briefing
@@ -129,6 +135,73 @@ Claude Code gives you full power: tools, MCP servers, web search, file access. N
 
 Your bot remembers between sessions via Supabase. Every message gets an embedding (via OpenAI, stored in Supabase) so the bot can semantically search past conversations for relevant context. It also tracks facts and goals — Claude detects when you mention something worth remembering and stores it automatically.
 
+## Multi-Agent Architecture
+
+Instead of a single bot, you can run 5 specialized agents -- each in its own Telegram group with isolated memory and a dedicated Claude Code session.
+
+```
+AWS Group          ──▶ AWS Cloud Architect agent      ──▶ Claude Code --agent architect.md
+Security Group     ──▶ Security & Compliance agent    ──▶ Claude Code --agent security.md
+Docs Group         ──▶ Technical Documentation agent  ──▶ Claude Code --agent documentation-writer.md
+Code Quality Group ──▶ Code Quality & TDD agent       ──▶ Claude Code --agent reviewer.md
+General Group      ──▶ General AI Assistant            ──▶ Claude Code (default)
+```
+
+### The 5 Agents
+
+| Agent | Group Name | Specialty |
+|-------|-----------|-----------|
+| AWS Cloud Architect | "AWS Cloud Architect" | Infrastructure design, cost optimization, AWS service recommendations |
+| Security & Compliance Analyst | "Security & Compliance" | Security audits, PDPA compliance, threat modeling |
+| Technical Documentation Specialist | "Technical Documentation" | ADRs, system design docs, runbooks |
+| Code Quality & TDD Coach | "Code Quality & TDD" | Code reviews, test coverage, refactoring suggestions |
+| General AI Assistant | "General AI Assistant" | Everything else -- meeting notes, quick questions, task breakdown |
+
+### Group Setup
+
+1. Create 5 Telegram groups with the exact names listed in the table above.
+2. Add your bot to each group (you and the bot are the only members).
+3. Start the bot -- it auto-discovers groups by matching the group title to the expected agent name.
+
+```bash
+bun run start
+# Send a test message in each group
+# Bot logs: "Auto-registered: "AWS Cloud Architect" → AWS Cloud Architect"
+```
+
+If auto-discovery does not work (e.g. you renamed a group), set the chat IDs explicitly in `.env`:
+
+```bash
+GROUP_AWS_CHAT_ID=-1001234567890
+GROUP_SECURITY_CHAT_ID=-1001234567891
+GROUP_DOCS_CHAT_ID=-1001234567892
+GROUP_CODE_CHAT_ID=-1001234567893
+GROUP_GENERAL_CHAT_ID=-1001234567894
+```
+
+To find a group's chat ID, run `bun run test:groups` and send a message in each group.
+
+### Memory Isolation
+
+Each group maintains its own:
+
+- **Conversation history** -- messages are tagged with the group's `chat_id`
+- **Stored facts and goals** -- a fact saved in the AWS group is not visible in the Security group
+- **Claude Code session** -- each agent keeps its own session state on disk
+
+This means asking "What AWS region do we use?" in the Security group returns nothing, even if you told the AWS group "We use us-east-1 for production" five minutes earlier. Isolation keeps each agent focused on its domain.
+
+### How Routing Works
+
+1. A message arrives from Telegram with a `chat_id`.
+2. The group router looks up which agent owns that `chat_id` (via `.env` mapping or auto-discovery from the group title).
+3. The matched agent's system prompt, capabilities, and Claude Code agent file are loaded.
+4. Memory queries (semantic search, facts, goals) are filtered to only return results for that `chat_id`.
+5. Claude Code runs with the agent-specific prompt and returns a response.
+6. The response and the original message are saved to Supabase, tagged with `chat_id` and `agent_id`.
+
+If a message arrives from an unregistered group, it falls back to the General AI Assistant.
+
 ## Environment Variables
 
 See `.env.example` for all options. The essentials:
@@ -148,6 +221,13 @@ USER_TIMEZONE=          # e.g., America/New_York
 VOICE_PROVIDER=         # "groq" or "local"
 GROQ_API_KEY=           # For Groq (free at console.groq.com)
 
+# Optional — Multi-Agent Groups (auto-discovered if not set)
+GROUP_AWS_CHAT_ID=      # "AWS Cloud Architect" group
+GROUP_SECURITY_CHAT_ID= # "Security & Compliance" group
+GROUP_DOCS_CHAT_ID=     # "Technical Documentation" group
+GROUP_CODE_CHAT_ID=     # "Code Quality & TDD" group
+GROUP_GENERAL_CHAT_ID=  # "General AI Assistant" group
+
 # Note: OpenAI key for embeddings is stored in Supabase
 # (Edge Function secrets), not in this .env file.
 ```
@@ -166,7 +246,7 @@ This relay includes production-ready features:
 
 This free relay covers the essentials. The full version in the [AI Productivity Hub](https://skool.com/autonomee) community unlocks:
 
-- **6 Specialized AI Agents** — Research, Content, Finance, Strategy, Critic + General orchestrator via Telegram forum topics
+- **6 Specialized AI Agents** — Research, Content, Finance, Strategy, Critic + General orchestrator via Telegram forum topics (extends the 5-agent architecture included in the free version)
 - **VPS Deployment** — Always-on cloud server with hybrid mode ($2-5/month)
 - **Real Integrations** — Gmail, Calendar, Notion connected via MCP
 - **Human-in-the-Loop** — Claude asks before taking actions via inline buttons

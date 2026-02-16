@@ -9,6 +9,8 @@
  *
  * The relay parses these tags, saves to Supabase, and strips them
  * from the response before sending to the user.
+ *
+ * All memory is isolated per chat (group) via the chat_id column.
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -16,10 +18,13 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 /**
  * Parse Claude's response for memory intent tags.
  * Saves facts/goals to Supabase and returns the cleaned response.
+ * When chatId is provided, all stored memory is tagged with that chat
+ * so it stays isolated to the originating group.
  */
 export async function processMemoryIntents(
   supabase: SupabaseClient | null,
-  response: string
+  response: string,
+  chatId?: number
 ): Promise<string> {
   if (!supabase) return response;
 
@@ -30,6 +35,7 @@ export async function processMemoryIntents(
     await supabase.from("memory").insert({
       type: "fact",
       content: match[1],
+      chat_id: chatId ?? null,
     });
     clean = clean.replace(match[0], "");
   }
@@ -42,18 +48,24 @@ export async function processMemoryIntents(
       type: "goal",
       content: match[1],
       deadline: match[2] || null,
+      chat_id: chatId ?? null,
     });
     clean = clean.replace(match[0], "");
   }
 
   // [DONE: search text for completed goal]
   for (const match of response.matchAll(/\[DONE:\s*(.+?)\]/gi)) {
-    const { data } = await supabase
+    let query = supabase
       .from("memory")
       .select("id")
       .eq("type", "goal")
-      .ilike("content", `%${match[1]}%`)
-      .limit(1);
+      .ilike("content", `%${match[1]}%`);
+
+    if (chatId != null) {
+      query = query.eq("chat_id", chatId);
+    }
+
+    const { data } = await query.limit(1);
 
     if (data?.[0]) {
       await supabase
@@ -72,16 +84,36 @@ export async function processMemoryIntents(
 
 /**
  * Get all facts and active goals for prompt context.
+ * When chatId is provided, only returns memory for that specific chat/group.
  */
 export async function getMemoryContext(
-  supabase: SupabaseClient | null
+  supabase: SupabaseClient | null,
+  chatId?: number
 ): Promise<string> {
   if (!supabase) return "";
 
   try {
+    let factsQuery = supabase
+      .from("memory")
+      .select("id, content")
+      .eq("type", "fact")
+      .order("created_at", { ascending: false });
+
+    let goalsQuery = supabase
+      .from("memory")
+      .select("id, content, deadline, priority")
+      .eq("type", "goal")
+      .order("priority", { ascending: false })
+      .order("created_at", { ascending: false });
+
+    if (chatId != null) {
+      factsQuery = factsQuery.eq("chat_id", chatId);
+      goalsQuery = goalsQuery.eq("chat_id", chatId);
+    }
+
     const [factsResult, goalsResult] = await Promise.all([
-      supabase.rpc("get_facts"),
-      supabase.rpc("get_active_goals"),
+      factsQuery,
+      goalsQuery,
     ]);
 
     const parts: string[] = [];
@@ -117,16 +149,27 @@ export async function getMemoryContext(
 /**
  * Semantic search for relevant past messages via the search Edge Function.
  * The Edge Function handles embedding generation (OpenAI key stays in Supabase).
+ * When chatId is provided, results are filtered to that chat/group only.
  */
 export async function getRelevantContext(
   supabase: SupabaseClient | null,
-  query: string
+  query: string,
+  chatId?: number
 ): Promise<string> {
   if (!supabase) return "";
 
   try {
+    const body: Record<string, unknown> = {
+      query,
+      match_count: 5,
+      table: "messages",
+    };
+    if (chatId != null) {
+      body.chat_id = chatId;
+    }
+
     const { data, error } = await supabase.functions.invoke("search", {
-      body: { query, match_count: 5, table: "messages" },
+      body,
     });
 
     if (error || !data?.length) return "";

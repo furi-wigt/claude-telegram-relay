@@ -20,6 +20,10 @@ import {
   getRelevantContext,
 } from "./memory.ts";
 import { callOllama, checkOllamaAvailable } from "./fallback.ts";
+import { getAgentForChat, autoDiscoverGroup, loadGroupMappings } from "./routing/groupRouter.ts";
+import { loadSession as loadGroupSession, updateSessionId, initSessions } from "./session/groupSessions.ts";
+import { buildAgentPrompt } from "./agents/promptBuilder.ts";
+import { GroupQueueManager } from "./queue/groupQueueManager.ts";
 
 const PROJECT_ROOT = dirname(dirname(import.meta.path));
 
@@ -54,36 +58,17 @@ const PROJECT_DIR = process.env.PROJECT_DIR || "";
 const RELAY_DIR = process.env.RELAY_DIR || join(process.env.HOME || "~", ".claude-relay");
 const CLAUDE_TIMEOUT = parseInt(process.env.CLAUDE_TIMEOUT || "180000", 10);
 
+// Queue Configuration
+const QUEUE_MAX_DEPTH = parseInt(process.env.QUEUE_MAX_DEPTH || "50", 10);
+const QUEUE_IDLE_TIMEOUT = parseInt(process.env.QUEUE_IDLE_TIMEOUT_MS || "86400000", 10);
+const QUEUE_STATS_INTERVAL = parseInt(process.env.QUEUE_STATS_LOG_INTERVAL_MS || "300000", 10);
+const QUEUE_SHUTDOWN_GRACE = parseInt(process.env.QUEUE_SHUTDOWN_GRACE_MS || "30000", 10);
+
 // Directories
 const TEMP_DIR = join(RELAY_DIR, "temp");
 const UPLOADS_DIR = join(RELAY_DIR, "uploads");
 
-// Session tracking for conversation continuity
-const SESSION_FILE = join(RELAY_DIR, "session.json");
-
-interface SessionState {
-  sessionId: string | null;
-  lastActivity: string;
-}
-
-// ============================================================
-// SESSION MANAGEMENT
-// ============================================================
-
-async function loadSession(): Promise<SessionState> {
-  try {
-    const content = await readFile(SESSION_FILE, "utf-8");
-    return JSON.parse(content);
-  } catch {
-    return { sessionId: null, lastActivity: new Date().toISOString() };
-  }
-}
-
-async function saveSession(state: SessionState): Promise<void> {
-  await writeFile(SESSION_FILE, JSON.stringify(state, null, 2));
-}
-
-let session = await loadSession();
+// Session management is now per-group — see src/session/groupSessions.ts
 
 // ============================================================
 // SETUP
@@ -114,7 +99,9 @@ const supabase: SupabaseClient | null =
 async function saveMessage(
   role: string,
   content: string,
-  metadata?: Record<string, unknown>
+  metadata?: Record<string, unknown>,
+  chatId?: number,
+  agentId?: string
 ): Promise<void> {
   if (!supabase) return;
   try {
@@ -122,6 +109,8 @@ async function saveMessage(
       role,
       content,
       channel: "telegram",
+      chat_id: chatId ?? null,
+      agent_id: agentId ?? null,
       metadata: metadata || {},
     });
   } catch (error) {
@@ -159,19 +148,25 @@ bot.use(async (ctx, next) => {
   await next();
 });
 
+// Auto-discover and register groups by matching title to agent
+bot.use(async (ctx, next) => {
+  await autoDiscoverGroup(ctx);
+  await next();
+});
+
 // ============================================================
 // CORE: Call Claude CLI
 // ============================================================
 
 async function callClaude(
   prompt: string,
-  options?: { resume?: boolean; imagePath?: string }
+  options?: { resume?: boolean; sessionId?: string | null; imagePath?: string }
 ): Promise<string> {
   const args = [CLAUDE_PATH, "-p", prompt];
 
   // Resume previous session if available and requested
-  if (options?.resume && session.sessionId) {
-    args.push("--resume", session.sessionId);
+  if (options?.resume && options?.sessionId) {
+    args.push("--resume", options.sessionId);
   }
 
   args.push("--output-format", "text");
@@ -185,7 +180,6 @@ async function callClaude(
       cwd: PROJECT_DIR || undefined,
       env: {
         ...process.env,
-        // Pass through any env vars Claude might need
       },
     });
 
@@ -224,14 +218,6 @@ async function callClaude(
       return `Error: ${stderr || "Claude exited with code " + exitCode}`;
     }
 
-    // Extract session ID from output if present (for --resume)
-    const sessionMatch = output.match(/Session ID: ([a-f0-9-]+)/i);
-    if (sessionMatch) {
-      session.sessionId = sessionMatch[1];
-      session.lastActivity = new Date().toISOString();
-      await saveSession(session);
-    }
-
     return output.trim();
   } catch (error) {
     console.error("Spawn error:", error);
@@ -253,47 +239,14 @@ async function callClaude(
 }
 
 // ============================================================
-// MESSAGE QUEUE — serialize Claude invocations
+// MESSAGE QUEUE — per-group queues for concurrent processing
 // ============================================================
 
-interface QueueTask {
-  label: string;
-  run: () => Promise<void>;
-}
-
-class MessageQueue {
-  private queue: QueueTask[] = [];
-  private processing = false;
-
-  get length(): number {
-    return this.queue.length;
-  }
-
-  enqueue(task: QueueTask): void {
-    this.queue.push(task);
-    console.log(`[queue] +${task.label} (depth: ${this.queue.length})`);
-    if (!this.processing) this.processQueue();
-  }
-
-  private async processQueue(): Promise<void> {
-    this.processing = true;
-    while (this.queue.length > 0) {
-      const task = this.queue.shift()!;
-      const start = Date.now();
-      try {
-        console.log(`[queue] processing: ${task.label} (remaining: ${this.queue.length})`);
-        await task.run();
-      } catch (error) {
-        console.error(`[queue] task failed (${task.label}):`, error);
-      } finally {
-        console.log(`[queue] done: ${task.label} (${Date.now() - start}ms)`);
-      }
-    }
-    this.processing = false;
-  }
-}
-
-const messageQueue = new MessageQueue();
+const queueManager = new GroupQueueManager({
+  maxDepth: QUEUE_MAX_DEPTH,
+  idleTimeout: QUEUE_IDLE_TIMEOUT,
+  statsInterval: QUEUE_STATS_INTERVAL,
+});
 
 // ============================================================
 // MESSAGE HANDLERS
@@ -309,28 +262,67 @@ function startTypingIndicator(ctx: Context): ReturnType<typeof setInterval> {
 // Text messages
 bot.on("message:text", async (ctx) => {
   const text = ctx.message.text;
-  messageQueue.enqueue({
-    label: `text: ${text.substring(0, 40)}`,
+  const chatId = ctx.chat?.id;
+
+  if (!chatId) return;
+
+  if (!queueManager.hasCapacity(chatId)) {
+    await ctx.reply("Too many pending messages. Please wait for the current ones to complete.");
+    return;
+  }
+
+  queueManager.getOrCreate(chatId).enqueue({
+    label: `[chat:${chatId}] ${text.substring(0, 30)}`,
     run: async () => {
       const typingInterval = startTypingIndicator(ctx);
       try {
-        console.log(`Message: ${text.substring(0, 50)}...`);
+        const agent = getAgentForChat(chatId);
+        console.log(`[${agent.name}] Message from chat ${chatId}: ${text.substring(0, 50)}...`);
         await ctx.replyWithChatAction("typing");
-        await saveMessage("user", text);
+
+        const session = await loadGroupSession(chatId, agent.id);
 
         const [relevantContext, memoryContext] = await Promise.all([
           getRelevantContext(supabase, text),
-          getMemoryContext(supabase),
+          getMemoryContext(supabase, chatId),
         ]);
 
-        const enrichedPrompt = buildPrompt(text, relevantContext, memoryContext);
-        const rawResponse = await callClaude(enrichedPrompt, { resume: true });
+        const now = new Date();
+        const timeStr = now.toLocaleString("en-US", {
+          timeZone: USER_TIMEZONE,
+          weekday: "long",
+          year: "numeric",
+          month: "long",
+          day: "numeric",
+          hour: "2-digit",
+          minute: "2-digit",
+        });
+
+        const enrichedPrompt = buildAgentPrompt(agent, text, {
+          relevantContext,
+          memoryContext,
+          profileContext,
+          userName: USER_NAME,
+          timeStr,
+        });
+
+        const rawResponse = await callClaude(enrichedPrompt, {
+          resume: !!session.sessionId,
+          sessionId: session.sessionId,
+        });
         console.log(`Claude raw response length: ${rawResponse.length}`);
 
-        const response = await processMemoryIntents(supabase, rawResponse);
+        // Extract and update session ID if present
+        const sessionMatch = rawResponse.match(/Session ID: ([a-f0-9-]+)/i);
+        if (sessionMatch) {
+          await updateSessionId(chatId, sessionMatch[1]);
+        }
+
+        const response = await processMemoryIntents(supabase, rawResponse, chatId);
         console.log(`Processed response length: ${response.length}`);
 
-        await saveMessage("assistant", response || rawResponse);
+        await saveMessage("user", text, undefined, chatId, agent.id);
+        await saveMessage("assistant", response || rawResponse, undefined, chatId, agent.id);
         await sendResponse(ctx, response || rawResponse || "No response generated");
       } catch (error) {
         console.error("Text handler error:", error);
@@ -349,12 +341,22 @@ bot.on("message:text", async (ctx) => {
 // Voice messages
 bot.on("message:voice", async (ctx) => {
   const voice = ctx.message.voice;
-  messageQueue.enqueue({
-    label: `voice: ${voice.duration}s`,
+  const chatId = ctx.chat?.id;
+
+  if (!chatId) return;
+
+  if (!queueManager.hasCapacity(chatId)) {
+    await ctx.reply("Too many pending messages. Please wait for the current ones to complete.");
+    return;
+  }
+
+  queueManager.getOrCreate(chatId).enqueue({
+    label: `[chat:${chatId}] voice: ${voice.duration}s`,
     run: async () => {
       const typingInterval = startTypingIndicator(ctx);
       try {
-        console.log(`Voice message: ${voice.duration}s`);
+        const agent = getAgentForChat(chatId);
+        console.log(`[${agent.name}] Voice message: ${voice.duration}s`);
         await ctx.replyWithChatAction("typing");
 
         if (!process.env.VOICE_PROVIDER) {
@@ -376,22 +378,47 @@ bot.on("message:voice", async (ctx) => {
           return;
         }
 
-        await saveMessage("user", `[Voice ${voice.duration}s]: ${transcription}`);
+        const session = await loadGroupSession(chatId, agent.id);
+
+        await saveMessage("user", `[Voice ${voice.duration}s]: ${transcription}`, undefined, chatId, agent.id);
 
         const [relevantContext, memoryContext] = await Promise.all([
           getRelevantContext(supabase, transcription),
-          getMemoryContext(supabase),
+          getMemoryContext(supabase, chatId),
         ]);
 
-        const enrichedPrompt = buildPrompt(
-          `[Voice message transcribed]: ${transcription}`,
-          relevantContext,
-          memoryContext
-        );
-        const rawResponse = await callClaude(enrichedPrompt, { resume: true });
-        const claudeResponse = await processMemoryIntents(supabase, rawResponse);
+        const now = new Date();
+        const timeStr = now.toLocaleString("en-US", {
+          timeZone: USER_TIMEZONE,
+          weekday: "long",
+          year: "numeric",
+          month: "long",
+          day: "numeric",
+          hour: "2-digit",
+          minute: "2-digit",
+        });
 
-        await saveMessage("assistant", claudeResponse);
+        const enrichedPrompt = buildAgentPrompt(agent, `[Voice message transcribed]: ${transcription}`, {
+          relevantContext,
+          memoryContext,
+          profileContext,
+          userName: USER_NAME,
+          timeStr,
+        });
+
+        const rawResponse = await callClaude(enrichedPrompt, {
+          resume: !!session.sessionId,
+          sessionId: session.sessionId,
+        });
+
+        const sessionMatch = rawResponse.match(/Session ID: ([a-f0-9-]+)/i);
+        if (sessionMatch) {
+          await updateSessionId(chatId, sessionMatch[1]);
+        }
+
+        const claudeResponse = await processMemoryIntents(supabase, rawResponse, chatId);
+
+        await saveMessage("assistant", claudeResponse, undefined, chatId, agent.id);
         await sendResponse(ctx, claudeResponse);
       } catch (error) {
         console.error("Voice handler error:", error);
@@ -409,12 +436,22 @@ bot.on("message:voice", async (ctx) => {
 
 // Photos/Images
 bot.on("message:photo", async (ctx) => {
-  messageQueue.enqueue({
-    label: "photo",
+  const chatId = ctx.chat?.id;
+
+  if (!chatId) return;
+
+  if (!queueManager.hasCapacity(chatId)) {
+    await ctx.reply("Too many pending messages. Please wait for the current ones to complete.");
+    return;
+  }
+
+  queueManager.getOrCreate(chatId).enqueue({
+    label: `[chat:${chatId}] photo`,
     run: async () => {
       const typingInterval = startTypingIndicator(ctx);
       try {
-        console.log("Image received");
+        const agent = getAgentForChat(chatId);
+        console.log(`[${agent.name}] Image received`);
         await ctx.replyWithChatAction("typing");
 
         const photos = ctx.message.photo;
@@ -433,14 +470,24 @@ bot.on("message:photo", async (ctx) => {
         const caption = ctx.message.caption || "Analyze this image.";
         const prompt = `[Image: ${filePath}]\n\n${caption}`;
 
-        await saveMessage("user", `[Image]: ${caption}`);
+        const session = await loadGroupSession(chatId, agent.id);
 
-        const claudeResponse = await callClaude(prompt, { resume: true });
+        await saveMessage("user", `[Image]: ${caption}`, undefined, chatId, agent.id);
+
+        const claudeResponse = await callClaude(prompt, {
+          resume: !!session.sessionId,
+          sessionId: session.sessionId,
+        });
 
         await unlink(filePath).catch(() => {});
 
-        const cleanResponse = await processMemoryIntents(supabase, claudeResponse);
-        await saveMessage("assistant", cleanResponse);
+        const sessionMatch = claudeResponse.match(/Session ID: ([a-f0-9-]+)/i);
+        if (sessionMatch) {
+          await updateSessionId(chatId, sessionMatch[1]);
+        }
+
+        const cleanResponse = await processMemoryIntents(supabase, claudeResponse, chatId);
+        await saveMessage("assistant", cleanResponse, undefined, chatId, agent.id);
         await sendResponse(ctx, cleanResponse);
       } catch (error) {
         console.error("Photo handler error:", error);
@@ -459,12 +506,22 @@ bot.on("message:photo", async (ctx) => {
 // Documents
 bot.on("message:document", async (ctx) => {
   const doc = ctx.message.document;
-  messageQueue.enqueue({
-    label: `doc: ${doc.file_name}`,
+  const chatId = ctx.chat?.id;
+
+  if (!chatId) return;
+
+  if (!queueManager.hasCapacity(chatId)) {
+    await ctx.reply("Too many pending messages. Please wait for the current ones to complete.");
+    return;
+  }
+
+  queueManager.getOrCreate(chatId).enqueue({
+    label: `[chat:${chatId}] doc: ${doc.file_name}`,
     run: async () => {
       const typingInterval = startTypingIndicator(ctx);
       try {
-        console.log(`Document: ${doc.file_name}`);
+        const agent = getAgentForChat(chatId);
+        console.log(`[${agent.name}] Document: ${doc.file_name}`);
         await ctx.replyWithChatAction("typing");
 
         const file = await ctx.getFile();
@@ -481,14 +538,24 @@ bot.on("message:document", async (ctx) => {
         const caption = ctx.message.caption || `Analyze: ${doc.file_name}`;
         const prompt = `[File: ${filePath}]\n\n${caption}`;
 
-        await saveMessage("user", `[Document: ${doc.file_name}]: ${caption}`);
+        const session = await loadGroupSession(chatId, agent.id);
 
-        const claudeResponse = await callClaude(prompt, { resume: true });
+        await saveMessage("user", `[Document: ${doc.file_name}]: ${caption}`, undefined, chatId, agent.id);
+
+        const claudeResponse = await callClaude(prompt, {
+          resume: !!session.sessionId,
+          sessionId: session.sessionId,
+        });
 
         await unlink(filePath).catch(() => {});
 
-        const cleanResponse = await processMemoryIntents(supabase, claudeResponse);
-        await saveMessage("assistant", cleanResponse);
+        const sessionMatch = claudeResponse.match(/Session ID: ([a-f0-9-]+)/i);
+        if (sessionMatch) {
+          await updateSessionId(chatId, sessionMatch[1]);
+        }
+
+        const cleanResponse = await processMemoryIntents(supabase, claudeResponse, chatId);
+        await saveMessage("assistant", cleanResponse, undefined, chatId, agent.id);
         await sendResponse(ctx, cleanResponse);
       } catch (error) {
         console.error("Document handler error:", error);
@@ -519,45 +586,7 @@ try {
 const USER_NAME = process.env.USER_NAME || "";
 const USER_TIMEZONE = process.env.USER_TIMEZONE || Intl.DateTimeFormat().resolvedOptions().timeZone;
 
-function buildPrompt(
-  userMessage: string,
-  relevantContext?: string,
-  memoryContext?: string
-): string {
-  const now = new Date();
-  const timeStr = now.toLocaleString("en-US", {
-    timeZone: USER_TIMEZONE,
-    weekday: "long",
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-
-  const parts = [
-    "You are a personal AI assistant responding via Telegram. Keep responses concise and conversational.",
-  ];
-
-  if (USER_NAME) parts.push(`You are speaking with ${USER_NAME}.`);
-  parts.push(`Current time: ${timeStr}`);
-  if (profileContext) parts.push(`\nProfile:\n${profileContext}`);
-  if (memoryContext) parts.push(`\n${memoryContext}`);
-  if (relevantContext) parts.push(`\n${relevantContext}`);
-
-  parts.push(
-    "\nMEMORY MANAGEMENT:" +
-      "\nWhen the user shares something worth remembering, sets goals, or completes goals, " +
-      "include these tags in your response (they are processed automatically and hidden from the user):" +
-      "\n[REMEMBER: fact to store]" +
-      "\n[GOAL: goal text | DEADLINE: optional date]" +
-      "\n[DONE: search text for completed goal]"
-  );
-
-  parts.push(`\nUser: ${userMessage}`);
-
-  return parts.join("\n");
-}
+// Prompt building is now handled by src/agents/promptBuilder.ts (buildAgentPrompt)
 
 async function sendResponse(ctx: Context, response: string): Promise<void> {
   // Handle empty responses
@@ -604,21 +633,30 @@ async function sendResponse(ctx: Context, response: string): Promise<void> {
 // START
 // ============================================================
 
+// Initialize per-group sessions directory
+await initSessions();
+
+// Load pre-configured group mappings from .env
+loadGroupMappings();
+
 console.log("Starting Claude Telegram Relay...");
 console.log(`Authorized user: ${ALLOWED_USER_ID || "ANY (not recommended)"}`);
 console.log(`Project directory: ${PROJECT_DIR || "(relay working directory)"}`);
 console.log(`Bot token configured: ${BOT_TOKEN ? "YES" : "NO"}`);
-console.log(`Attempting to start Telegram bot...`);
+console.log("Group-based multi-agent routing enabled");
+console.log("Groups not pre-configured will be auto-discovered by title match");
 
 // Handle process signals to keep bot running
-process.on('SIGINT', () => {
+process.on('SIGINT', async () => {
   console.log('Received SIGINT, shutting down gracefully...');
+  await queueManager.shutdown(QUEUE_SHUTDOWN_GRACE);
   bot.stop();
   process.exit(0);
 });
 
-process.on('SIGTERM', () => {
+process.on('SIGTERM', async () => {
   console.log('Received SIGTERM, shutting down gracefully...');
+  await queueManager.shutdown(QUEUE_SHUTDOWN_GRACE);
   bot.stop();
   process.exit(0);
 });

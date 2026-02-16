@@ -10,9 +10,11 @@
     "test:supabase": "bun run setup/test-supabase.ts",
     "test:voice": "bun run setup/test-voice.ts",
     "test:fallback": "bun run setup/test-fallback.ts",
+    "test:groups": "bun run setup/test-groups.ts",
     "setup:launchd": "bun run setup/configure-launchd.ts",
     "setup:services": "bun run setup/configure-services.ts",
     "setup:pm2": "bun run setup/configure-pm2.ts",
+    "setup:routines": "bun run setup/configure-routines.ts",
     "setup:verify": "bun run setup/verify.ts"
   },
   "dependencies": {

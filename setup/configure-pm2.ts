@@ -99,6 +99,33 @@ const SERVICES: Record<string, ServiceConfig> = {
     instances: 1,
     description: "Watchdog (monitors all jobs, runs 6x daily)",
   },
+  "morning-summary": {
+    name: "morning-summary",
+    script: "routines/morning-summary.ts",
+    cron: "0 7 * * *", // Daily at 7:00 AM
+    autorestart: false,
+    watch: false,
+    instances: 1,
+    description: "Morning summary to General group (daily at 7am)",
+  },
+  "aws-cost": {
+    name: "aws-daily-cost",
+    script: "routines/aws-daily-cost.ts",
+    cron: "0 9 * * *", // Daily at 9:00 AM
+    autorestart: false,
+    watch: false,
+    instances: 1,
+    description: "AWS cost alert to AWS Architect group (daily at 9am)",
+  },
+  "security-scan": {
+    name: "security-daily-scan",
+    script: "routines/security-daily-scan.ts",
+    cron: "0 8 * * *", // Daily at 8:00 AM
+    autorestart: false,
+    watch: false,
+    instances: 1,
+    description: "Security scan to Security group (daily at 8am)",
+  },
 };
 
 function generateEcosystem(services: ServiceConfig[], bunPath: string): string {
@@ -300,7 +327,7 @@ async function main() {
     if (!SERVICES[name]) {
       console.log(`  ${FAIL} Unknown service: ${name}`);
       console.log(
-        `      ${dim("Available: relay, checkin, briefing, summary, watchdog, all")}`
+        `      ${dim("Available: relay, checkin, briefing, summary, watchdog, morning-summary, aws-cost, security-scan, all")}`
       );
       process.exit(1);
     }
