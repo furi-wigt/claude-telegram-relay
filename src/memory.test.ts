@@ -5,7 +5,7 @@
  */
 
 import { describe, test, expect, mock, beforeEach } from "bun:test";
-import { getMemoryContext, processMemoryIntents } from "./memory.ts";
+import { getMemoryContext, processMemoryIntents, detectMemoryCategory } from "./memory.ts";
 
 // ============================================================
 // Supabase client mock factory
@@ -161,30 +161,90 @@ describe("processMemoryIntents", () => {
     expect(insertFn).toHaveBeenCalled();
   });
 
-  test("strips [GOAL: ...] tags", async () => {
+  test("[REMEMBER:] inserts with detected category 'personal' for generic facts", async () => {
+    const insertFn = mock(() => Promise.resolve({ data: null, error: null }));
+    const sb = mockSupabase({ insertFn });
+    const response = "Noted [REMEMBER: User lives in Singapore]";
+    await processMemoryIntents(sb, response, 12345);
+    const inserted = insertFn.mock.calls[0][0];
+    expect(inserted.category).toBe("personal");
+    expect(inserted.type).toBe("fact");
+  });
+
+  test("[REMEMBER:] inserts with category 'preference' for preference facts", async () => {
+    const insertFn = mock(() => Promise.resolve({ data: null, error: null }));
+    const sb = mockSupabase({ insertFn });
+    const response = "Got it [REMEMBER: User prefers concise responses]";
+    await processMemoryIntents(sb, response, 12345);
+    const inserted = insertFn.mock.calls[0][0];
+    expect(inserted.category).toBe("preference");
+  });
+
+  test("[REMEMBER:] inserts with category 'date' for date facts", async () => {
+    const insertFn = mock(() => Promise.resolve({ data: null, error: null }));
+    const sb = mockSupabase({ insertFn });
+    const response = "OK [REMEMBER: Meeting on Monday 9am]";
+    await processMemoryIntents(sb, response, 12345);
+    const inserted = insertFn.mock.calls[0][0];
+    expect(inserted.category).toBe("date");
+  });
+
+  test("[GOAL:] inserts with category 'goal'", async () => {
     const insertFn = mock(() => Promise.resolve({ data: null, error: null }));
     const sb = mockSupabase({ insertFn });
     const response = "Noted! [GOAL: Complete migration by Friday]";
-    const result = await processMemoryIntents(sb, response);
-    expect(result).not.toContain("[GOAL:");
-    expect(result).toContain("Noted!");
+    await processMemoryIntents(sb, response, 12345);
+    const inserted = insertFn.mock.calls[0][0];
+    expect(inserted.type).toBe("goal");
+    expect(inserted.category).toBe("goal");
   });
 
-  test("strips [GOAL: ... | DEADLINE: ...] tags", async () => {
+  test("[GOAL: ... | DEADLINE: ...] inserts with category 'goal'", async () => {
     const insertFn = mock(() => Promise.resolve({ data: null, error: null }));
     const sb = mockSupabase({ insertFn });
     const response = "Got it [GOAL: Deploy app | DEADLINE: 2026-03-01]";
-    const result = await processMemoryIntents(sb, response);
+    const result = await processMemoryIntents(sb, response, 12345);
     expect(result).not.toContain("[GOAL:");
     expect(result).not.toContain("DEADLINE:");
+    const inserted = insertFn.mock.calls[0][0];
+    expect(inserted.category).toBe("goal");
+    expect(inserted.deadline).toBe("2026-03-01");
   });
 
-  test("strips [REMEMBER_GLOBAL: ...] tags with null chat_id", async () => {
+  test("strips [REMEMBER_GLOBAL: ...] tags with null chat_id and detected category", async () => {
     const insertFn = mock(() => Promise.resolve({ data: null, error: null }));
     const sb = mockSupabase({ insertFn });
     const response = "OK [REMEMBER_GLOBAL: Shared fact across groups]";
     const result = await processMemoryIntents(sb, response);
     expect(result).not.toContain("[REMEMBER_GLOBAL:");
     expect(insertFn).toHaveBeenCalled();
+    const inserted = insertFn.mock.calls[0][0];
+    expect(inserted.chat_id).toBeNull();
+    expect(inserted.category).toBe("personal");
+  });
+});
+
+// ============================================================
+// detectMemoryCategory
+// ============================================================
+
+describe("detectMemoryCategory", () => {
+  test("returns 'personal' for generic facts", () => {
+    expect(detectMemoryCategory("User lives in Singapore")).toBe("personal");
+    expect(detectMemoryCategory("My AWS account is 123456789")).toBe("personal");
+    expect(detectMemoryCategory("Name is Alex")).toBe("personal");
+  });
+
+  test("returns 'preference' for preference-related content", () => {
+    expect(detectMemoryCategory("User prefers concise responses")).toBe("preference");
+    expect(detectMemoryCategory("Always respond formally")).toBe("preference");
+    expect(detectMemoryCategory("I like bullet points")).toBe("preference");
+    expect(detectMemoryCategory("Never use jargon")).toBe("preference");
+  });
+
+  test("returns 'date' for date-related content", () => {
+    expect(detectMemoryCategory("Meeting on Monday 9am")).toBe("date");
+    expect(detectMemoryCategory("Deadline on 15 Jan")).toBe("date");
+    expect(detectMemoryCategory("standup every friday")).toBe("date");
   });
 });

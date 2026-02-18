@@ -779,5 +779,52 @@ describe("registerCodingCommands", () => {
 
       expect(bot.on).toHaveBeenCalledWith("callback_query:data", expect.any(Function));
     });
+
+    test("callback handler calls next() for non-code callbacks (iq:, routine_*, unknown)", async () => {
+      // Regression test: the handler must NOT swallow unrecognised callbacks.
+      // Before the fix, it silently dropped iq: callbacks, preventing the
+      // relay.ts iq: handler further down the middleware chain from running.
+      const { bot, eventHandlers } = createMockBot();
+      registerCodingCommands(bot, createMockSessionManager(), createMockInputRouter());
+
+      const handlers = eventHandlers.get("callback_query:data") ?? [];
+      expect(handlers.length).toBeGreaterThan(0);
+      const handler = handlers[0];
+
+      const nonCodingPrefixes = ["iq:a:0:0", "iq:confirm", "routine_target:dm:123", "unknown:data"];
+
+      for (const data of nonCodingPrefixes) {
+        let nextCalled = false;
+        const ctx = {
+          callbackQuery: { data },
+          answerCallbackQuery: async () => {},
+        } as any;
+
+        await handler(ctx, async () => { nextCalled = true; });
+        expect(nextCalled).toBe(true);
+      }
+    });
+
+    test("callback handler does NOT call next() for code_* prefixes", async () => {
+      const { bot, eventHandlers } = createMockBot();
+      const inputRouter = createMockInputRouter();
+      registerCodingCommands(bot, createMockSessionManager(), inputRouter);
+
+      const handlers = eventHandlers.get("callback_query:data") ?? [];
+      const handler = handlers[0];
+
+      const codingPrefixes = ["code_answer:abc", "code_plan:xyz", "code_dash:123"];
+
+      for (const data of codingPrefixes) {
+        let nextCalled = false;
+        const ctx = {
+          callbackQuery: { data },
+          answerCallbackQuery: async () => {},
+        } as any;
+
+        await handler(ctx, async () => { nextCalled = true; });
+        expect(nextCalled).toBe(false);
+      }
+    });
   });
 });

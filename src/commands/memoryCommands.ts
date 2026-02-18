@@ -10,6 +10,7 @@
 import type { Bot, Context } from "grammy";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { InlineKeyboard } from "grammy";
+import { saveCommandInteraction } from "../utils/saveMessage.ts";
 
 export interface MemoryCommandOptions {
   supabase: SupabaseClient | null;
@@ -95,7 +96,9 @@ export function registerMemoryCommands(
 
       if (error) throw error;
 
-      await ctx.reply(`✓ Remembered: ${fact}`);
+      const replyText = `✓ Remembered: ${fact}`;
+      await ctx.reply(replyText);
+      await saveCommandInteraction(supabase, chatId, `/remember ${fact}`, replyText);
     } catch (err) {
       console.error("/remember error:", err);
       await ctx.reply("Failed to save memory. Please try again.");
@@ -224,8 +227,10 @@ export function registerMemoryCommands(
     }
     try {
       await supabase.from("memory").delete().eq("chat_id", chatId);
-      await ctx.editMessageText("✓ All memories for this chat have been deleted.");
+      const editText = "✓ All memories for this chat have been deleted.";
+      await ctx.editMessageText(editText);
       await ctx.answerCallbackQuery("Done");
+      await saveCommandInteraction(supabase, chatId, "/forget (all)", editText);
     } catch {
       await ctx.answerCallbackQuery("Failed");
     }
@@ -238,11 +243,15 @@ export function registerMemoryCommands(
 
   bot.callbackQuery(/^forget_item:/, async (ctx) => {
     if (!supabase) { await ctx.answerCallbackQuery("Not configured"); return; }
+    const chatId = ctx.chat?.id ?? ctx.callbackQuery.message?.chat.id;
     const itemId = ctx.callbackQuery.data.replace("forget_item:", "");
     try {
       await supabase.from("memory").delete().eq("id", itemId);
       await ctx.editMessageText("✓ Forgotten.");
       await ctx.answerCallbackQuery("Forgotten");
+      if (chatId) {
+        await saveCommandInteraction(supabase, chatId, `/forget item:${itemId}`, "✓ Forgotten.");
+      }
     } catch {
       await ctx.answerCallbackQuery("Failed");
     }

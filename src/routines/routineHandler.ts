@@ -11,6 +11,7 @@
  */
 
 import type { Context, Bot } from "grammy";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { InlineKeyboard } from "grammy";
 import { detectRoutineIntent, extractRoutineConfig } from "./intentExtractor.ts";
 import { setPending, getPending, clearPending, hasPending } from "./pendingState.ts";
@@ -26,6 +27,7 @@ import {
 } from "./routineManager.ts";
 import { GROUPS } from "../config/groups.ts";
 import type { UserRoutineConfig } from "./types.ts";
+import { saveCommandInteraction } from "../utils/saveMessage.ts";
 
 // Tracks pending registration flow: chatId → routine name awaiting cron input
 const pendingRegistrations = new Map<number, string>();
@@ -318,7 +320,11 @@ async function handleRoutinesList(ctx: Context): Promise<void> {
   }
 }
 
-export async function handleRoutinesCommand(ctx: Context, args: string): Promise<void> {
+export async function handleRoutinesCommand(
+  ctx: Context,
+  args: string,
+  supabase?: SupabaseClient | null
+): Promise<void> {
   const chatId = ctx.chat?.id;
   if (!chatId) return;
 
@@ -479,7 +485,9 @@ export async function handleRoutinesCommand(ctx: Context, args: string): Promise
     }
     try {
       await deleteRoutine(name);
-      await ctx.reply(`Routine "${name}" deleted and removed from PM2.`);
+      const replyText = `Routine "${name}" deleted and removed from PM2.`;
+      await ctx.reply(replyText);
+      await saveCommandInteraction(supabase ?? null, chatId, `/routines delete ${name}`, replyText);
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       await ctx.reply(`Failed to delete routine: ${msg}`);

@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, mock, spyOn } from "bun:test";
+import { describe, test, expect, beforeEach, afterAll, mock, spyOn } from "bun:test";
 import { PermissionManager } from "./permissionManager.ts";
 
 // Mock fs/promises at module level
@@ -20,6 +20,13 @@ describe("PermissionManager", () => {
     mockReadFile.mockReset();
     mockWriteFile.mockReset();
     mockMkdir.mockReset();
+  });
+
+  afterAll(() => {
+    // Re-install real fs/promises so the module mock does not bleed into other
+    // test files that run in the same Bun worker (e.g. sessionRunner.test.ts).
+    mock.module("fs/promises", () => require("node:fs/promises"));
+    mock.module("node:fs/promises", () => require("node:fs/promises"));
   });
 
   describe("isPermitted", () => {

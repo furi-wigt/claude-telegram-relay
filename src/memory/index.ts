@@ -25,5 +25,19 @@ export {
   storeExtractedMemories,
   rebuildProfileSummary,
   getUserProfile,
+  hasMemoryItems,
   type ExtractedMemories,
+  type ExchangeExtractionResult,
 } from "./longTermExtractor.ts";
+
+export {
+  setPendingConfirmation,
+  hasPendingConfirmation,
+  clearPendingConfirmation,
+  getPendingConfirmation,
+  buildMemoryConfirmMessage,
+  buildMemoryConfirmKeyboard,
+  handleMemoryConfirmCallback,
+  registerMemoryConfirmHandler,
+  sendMemoryConfirmation,
+} from "./memoryConfirm.ts";

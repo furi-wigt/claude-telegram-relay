@@ -37,6 +37,7 @@ function mockSupabase(overrides?: {
   const query = {
     select: mock(() => query),
     eq: mock(() => query),
+    is: mock(() => query),
     order: mock(() => query),
     limit: mock(() => Promise.resolve({ data: selectData, error: selectError })),
   };
@@ -396,6 +397,7 @@ function mockSupabaseForSummarize(options: {
           const q: any = {};
           q.select = mock(() => q);
           q.eq = mock(() => q);
+          q.is = mock(() => q);
           q.order = mock(() => q);
           q.limit = mock(() => Promise.resolve({ data: latestSummary, error: null }));
           return q;
@@ -413,6 +415,7 @@ function mockSupabaseForSummarize(options: {
       };
       q.select = mock(() => q);
       q.eq = mock(() => q);
+      q.is = mock(() => q);
       q.order = mock(() => q);
       q.gt = mock(() => q);
       // .limit() returns the same thenable q so the chain stays chainable

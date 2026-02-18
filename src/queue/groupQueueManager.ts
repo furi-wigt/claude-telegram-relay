@@ -1,12 +1,23 @@
 /**
  * Per-Group Queue Manager
  *
- * Maintains independent MessageQueue instances for each Telegram chat.
- * Different groups process concurrently; same group maintains FIFO order.
+ * Maintains independent MessageQueue instances for each Telegram chat/thread.
+ * Different groups and forum threads process concurrently; same thread maintains FIFO order.
  */
 
 import { MessageQueue } from "./messageQueue.ts";
 import type { QueueConfig, QueueStats, QueueManagerStats } from "./types.ts";
+
+function queueKey(chatId: number, threadId?: number | null): string {
+  return `${chatId}:${threadId ?? ''}`;
+}
+
+function parseQueueKey(key: string): { chatId: number; threadId?: number } {
+  const [chatStr, threadStr] = key.split(':');
+  const result: { chatId: number; threadId?: number } = { chatId: Number(chatStr) };
+  if (threadStr) result.threadId = Number(threadStr);
+  return result;
+}
 
 const DEFAULT_CONFIG: QueueConfig = {
   maxDepth: 50,
@@ -15,8 +26,8 @@ const DEFAULT_CONFIG: QueueConfig = {
 };
 
 export class GroupQueueManager {
-  private queues = new Map<number, MessageQueue>();
-  private lastActivity = new Map<number, number>();
+  private queues = new Map<string, MessageQueue>();
+  private lastActivity = new Map<string, number>();
   private config: QueueConfig;
   private cleanupInterval?: Timer;
   private statsInterval?: Timer;
@@ -28,22 +39,24 @@ export class GroupQueueManager {
   }
 
   /**
-   * Get or create a queue for a chat ID.
+   * Get or create a queue for a chat ID and optional thread ID.
    */
-  getOrCreate(chatId: number): MessageQueue {
-    if (!this.queues.has(chatId)) {
-      this.queues.set(chatId, new MessageQueue());
-      console.log(`[queue-manager] Created queue for chat ${chatId}`);
+  getOrCreate(chatId: number, threadId?: number | null): MessageQueue {
+    const key = queueKey(chatId, threadId);
+    if (!this.queues.has(key)) {
+      this.queues.set(key, new MessageQueue());
+      console.log(`[queue-manager] Created queue for ${key}`);
     }
-    this.lastActivity.set(chatId, Date.now());
-    return this.queues.get(chatId)!;
+    this.lastActivity.set(key, Date.now());
+    return this.queues.get(key)!;
   }
 
   /**
    * Check if queue has capacity (backpressure control).
    */
-  hasCapacity(chatId: number): boolean {
-    const queue = this.queues.get(chatId);
+  hasCapacity(chatId: number, threadId?: number | null): boolean {
+    const key = queueKey(chatId, threadId);
+    const queue = this.queues.get(key);
     return !queue || queue.length < this.config.maxDepth;
   }
 
@@ -56,16 +69,16 @@ export class GroupQueueManager {
 
     console.log(`[queue-manager] Cleanup started (active: ${this.queues.size})`);
 
-    for (const [chatId, lastActive] of this.lastActivity) {
-      const queue = this.queues.get(chatId);
+    for (const [key, lastActive] of this.lastActivity) {
+      const queue = this.queues.get(key);
 
       // Only clean up queues that are empty AND idle beyond timeout
       if (queue && queue.length === 0 && !queue.isProcessing && now - lastActive > this.config.idleTimeout) {
-        this.queues.delete(chatId);
-        this.lastActivity.delete(chatId);
+        this.queues.delete(key);
+        this.lastActivity.delete(key);
         removed++;
         console.log(
-          `[queue-manager] Removed idle queue ${chatId} (idle: ${((now - lastActive) / 3600000).toFixed(1)}h)`
+          `[queue-manager] Removed idle queue ${key} (idle: ${((now - lastActive) / 3600000).toFixed(1)}h)`
         );
       }
     }
@@ -81,9 +94,10 @@ export class GroupQueueManager {
     let totalDepth = 0;
     let activeQueues = 0;
 
-    for (const [chatId, queue] of this.queues) {
+    for (const [key, queue] of this.queues) {
       const depth = queue.length;
       const processing = queue.isProcessing;
+      const { chatId, threadId } = parseQueueKey(key);
 
       if (depth > 0 || processing) {
         activeQueues++;
@@ -93,9 +107,10 @@ export class GroupQueueManager {
 
       queues.push({
         chatId,
+        threadId,
         depth,
         processing,
-        lastActivity: this.lastActivity.get(chatId) || 0,
+        lastActivity: this.lastActivity.get(key) || 0,
         consecutiveFailures: queue.getConsecutiveFailures(),
       });
     }
@@ -121,7 +136,7 @@ export class GroupQueueManager {
     const start = Date.now();
     const pendingChats = Array.from(this.queues.entries())
       .filter(([_, queue]) => queue.length > 0 || queue.isProcessing)
-      .map(([chatId]) => chatId);
+      .map(([key]) => key);
 
     if (pendingChats.length === 0) {
       console.log("[queue-manager] No pending work, shutting down immediately");
@@ -133,7 +148,7 @@ export class GroupQueueManager {
     while (Date.now() - start < timeoutMs) {
       const stillPending = Array.from(this.queues.entries())
         .filter(([_, queue]) => queue.length > 0 || queue.isProcessing)
-        .map(([chatId]) => chatId);
+        .map(([key]) => key);
 
       if (stillPending.length === 0) {
         console.log("[queue-manager] All queues drained successfully");
@@ -145,7 +160,7 @@ export class GroupQueueManager {
 
     const remainingWork = Array.from(this.queues.entries())
       .filter(([_, queue]) => queue.length > 0 || queue.isProcessing)
-      .map(([chatId, queue]) => ({ chatId, depth: queue.length }));
+      .map(([key, queue]) => ({ key, depth: queue.length }));
 
     console.warn(
       `[queue-manager] Shutdown timeout after ${timeoutMs}ms. Remaining work:`,

@@ -49,6 +49,7 @@ export class CodingSessionManager {
   private sessions: Map<string, CodingSession> = new Map();
   private runners: Map<string, SessionRunner> = new Map();
   private inputBridges: Map<string, InputBridge> = new Map();
+  private heartbeatTimers: Map<string, ReturnType<typeof setInterval>> = new Map();
   private routineSnapshots: Map<string, Set<string>> = new Map();
   private permissionManager = new PermissionManager();
   private reminderManager = new ReminderManager();
@@ -193,6 +194,11 @@ export class CodingSessionManager {
             this.logEvent(session.id, event);
             this.persistSessions();
             this.refreshDashboard(session.id);
+
+            // Route detailed events to coding topic if configured for this chat
+            if (this.getCodingTopicId(session.chatId) && (event.type === "tool_use" || event.type === "worker_message")) {
+              this.sendProgressToTopic(session, event.summary as string || String(event.type)).catch(() => {});
+            }
           },
 
           onQuestion: async (q) => {
@@ -249,6 +255,7 @@ export class CodingSessionManager {
 
             this.runners.delete(session.id);
             this.inputBridges.delete(session.id);
+            this.clearHeartbeat(session.id);
             this.reminderManager.cancelReminder(session.id);
             this.persistSessions();
             this.refreshDashboard(session.id);
@@ -268,6 +275,7 @@ export class CodingSessionManager {
 
             this.runners.delete(session.id);
             this.inputBridges.delete(session.id);
+            this.clearHeartbeat(session.id);
             this.reminderManager.cancelReminder(session.id);
             this.persistSessions();
             this.refreshDashboard(session.id);
@@ -288,6 +296,7 @@ export class CodingSessionManager {
         console.error(`Session runner error for ${session.id}:`, err);
         session.status = "failed";
         session.errorMessage = err instanceof Error ? err.message : String(err);
+        this.clearHeartbeat(session.id);
         this.persistSessions();
         try {
           await this.bot.api.sendMessage(
@@ -298,6 +307,23 @@ export class CodingSessionManager {
           // Send failed
         }
       });
+
+    // Start periodic heartbeat
+    const HEARTBEAT_INTERVAL_MS = parseInt(process.env.PROGRESS_HEARTBEAT_INTERVAL_MS || "300000", 10);
+    const heartbeatTimer = setInterval(async () => {
+      const current = this.sessions.get(session.id);
+      if (!current || current.status !== "running") {
+        this.clearHeartbeat(session.id);
+        return;
+      }
+
+      const elapsed = this.formatElapsed(current.startedAt);
+      const fileCount = current.filesChanged.length;
+      const text = `\u2699\uFE0F ${current.projectName} \u2014 still working (${elapsed})\n\u{1F4DD} ${fileCount} file(s) changed`;
+
+      await this.sendProgressHeartbeat(current, text);
+    }, HEARTBEAT_INTERVAL_MS);
+    this.heartbeatTimers.set(session.id, heartbeatTimer);
   }
 
   /** Attach a desktop-discovered session for monitoring. */
@@ -441,6 +467,7 @@ export class CodingSessionManager {
     }
 
     this.inputBridges.delete(sessionId);
+    this.clearHeartbeat(sessionId);
     this.reminderManager.cancelReminder(sessionId);
 
     session.status = "killed";
@@ -568,6 +595,7 @@ export class CodingSessionManager {
   async pauseAllRunning(): Promise<void> {
     for (const session of this.sessions.values()) {
       if (session.status === "running" || session.status === "starting") {
+        this.clearHeartbeat(session.id);
         session.status = "paused";
         session.lastActivityAt = new Date().toISOString();
       }
@@ -876,6 +904,76 @@ export class CodingSessionManager {
     if (minutes < 60) return `${minutes} min ${seconds % 60}s`;
     const hours = Math.floor(minutes / 60);
     return `${hours}h ${minutes % 60}m`;
+  }
+
+  private clearHeartbeat(sessionId: string): void {
+    const timer = this.heartbeatTimers.get(sessionId);
+    if (timer) {
+      clearInterval(timer);
+      this.heartbeatTimers.delete(sessionId);
+    }
+  }
+
+  /**
+   * Resolve the coding topic thread_id for a given chatId.
+   *
+   * Lookup order:
+   *   1. GROUP_<NAME>_CODING_TOPIC_ID — per-group override (matches GROUP_<NAME>_CHAT_ID)
+   *   2. CODING_TOPIC_ID              — global fallback for single-chat setups
+   *
+   * Returns undefined when no topic is configured for this chat.
+   */
+  private getCodingTopicId(chatId: number): number | undefined {
+    // Build a map of chatId → topic env var name from GROUP_*_CHAT_ID entries
+    const perGroupVars: Array<{ chatIdVar: string; topicVar: string }> = [
+      { chatIdVar: "GROUP_GENERAL_CHAT_ID",  topicVar: "GROUP_GENERAL_CODING_TOPIC_ID" },
+      { chatIdVar: "GROUP_AWS_CHAT_ID",      topicVar: "GROUP_AWS_CODING_TOPIC_ID" },
+      { chatIdVar: "GROUP_SECURITY_CHAT_ID", topicVar: "GROUP_SECURITY_CODING_TOPIC_ID" },
+      { chatIdVar: "GROUP_CODE_CHAT_ID",     topicVar: "GROUP_CODE_CODING_TOPIC_ID" },
+      { chatIdVar: "GROUP_DOCS_CHAT_ID",     topicVar: "GROUP_DOCS_CODING_TOPIC_ID" },
+    ];
+
+    for (const { chatIdVar, topicVar } of perGroupVars) {
+      const groupChatId = process.env[chatIdVar] ? parseInt(process.env[chatIdVar]!, 10) : undefined;
+      if (groupChatId && groupChatId === chatId) {
+        const topicId = process.env[topicVar] ? parseInt(process.env[topicVar]!, 10) : undefined;
+        return topicId; // may be undefined if no topic configured for this group
+      }
+    }
+
+    // Global fallback
+    return process.env.CODING_TOPIC_ID ? parseInt(process.env.CODING_TOPIC_ID, 10) : undefined;
+  }
+
+  private async sendProgressHeartbeat(session: CodingSession, text: string): Promise<void> {
+    const topicId = this.getCodingTopicId(session.chatId);
+
+    try {
+      await this.bot.api.sendMessage(session.chatId, text, {
+        message_thread_id: topicId,
+        reply_markup: {
+          inline_keyboard: [[
+            { text: "\u{1F4CA} Status", callback_data: `code_dash:status:${session.id}` },
+            { text: "\u{1F4C4} Logs", callback_data: `code_dash:logs:${session.id}` },
+          ]],
+        },
+      });
+    } catch {
+      // Non-fatal -- don't crash session on notification failure
+    }
+    // IMPORTANT: Do NOT call saveMessage() or any memory function here
+  }
+
+  private async sendProgressToTopic(session: CodingSession, summary: string): Promise<void> {
+    const topicId = this.getCodingTopicId(session.chatId);
+    if (!topicId) return;
+    try {
+      await this.bot.api.sendMessage(session.chatId, `[${session.projectName}] ${summary}`, {
+        message_thread_id: topicId,
+      });
+    } catch {
+      // Non-fatal
+    }
   }
 
   /** Scan routines/ for .ts files (non-recursive, excluding user/ subdirectory). */

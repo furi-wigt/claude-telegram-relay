@@ -1604,7 +1604,7 @@ describe("SessionRunner.discoverActualTeamName — filesystem team discovery", (
     // Start discovery, then create the dir 200ms later
     const discoveryPromise = SessionRunner.discoverActualTeamName(knownTeams, {
       timeoutMs: 5_000,
-      pollIntervalMs: 100,
+      pollIntervalMs: 10,
     });
 
     // Let the first poll run (it should find nothing), then create the dir
@@ -1632,7 +1632,7 @@ describe("SessionRunner.discoverActualTeamName — filesystem team discovery", (
 
     const result = await SessionRunner.discoverActualTeamName(knownTeams, {
       timeoutMs: 5_000,
-      pollIntervalMs: 100,
+      pollIntervalMs: 10,
     });
 
     expect(result).toBe(newTeamName);

@@ -163,22 +163,30 @@ describe("/remember command", () => {
   });
 
   test("inserts a fact with correct fields", async () => {
-    const insertFn = mock(() => Promise.resolve({ data: null, error: null }));
+    const memoryInsertFn = mock(() => Promise.resolve({ data: null, error: null }));
+    const messagesInsertFn = mock(() => Promise.resolve({ data: null, error: null }));
     const bot = mockBot();
     const sb = {
-      from: mock(() => ({ insert: insertFn })),
+      from: mock((table: string) =>
+        table === "messages"
+          ? { insert: messagesInsertFn }
+          : { insert: memoryInsertFn }
+      ),
     } as any;
     registerMemoryCommands(bot as any, { supabase: sb, userId: 1 });
 
     const ctx = mockCtx({ match: "My name is John" });
     await bot._triggerCommand("remember", ctx);
 
-    expect(insertFn).toHaveBeenCalledTimes(1);
-    const inserted = insertFn.mock.calls[0][0];
+    expect(memoryInsertFn).toHaveBeenCalledTimes(1);
+    const inserted = memoryInsertFn.mock.calls[0][0];
     expect(inserted.content).toBe("My name is John");
     expect(inserted.type).toBe("fact");
     expect(inserted.extracted_from_exchange).toBe(false);
     expect(inserted.confidence).toBe(1.0);
+
+    // STM save also called
+    expect(messagesInsertFn).toHaveBeenCalledTimes(1);
 
     // Confirms to user
     const replyText = ctx.reply.mock.calls[0][0] as string;
@@ -332,9 +340,11 @@ describe("forget callback handlers", () => {
       eq: mock(() => Promise.resolve({ data: null, error: null })),
     }));
     const sb = {
-      from: mock(() => ({
-        delete: deleteMock,
-      })),
+      from: mock((table: string) =>
+        table === "messages"
+          ? { insert: mock(() => Promise.resolve({ data: null, error: null })) }
+          : { delete: deleteMock }
+      ),
     } as any;
     registerMemoryCommands(bot as any, { supabase: sb, userId: 1 });
 
@@ -353,9 +363,11 @@ describe("forget callback handlers", () => {
     const eqMock = mock(() => Promise.resolve({ data: null, error: null }));
     const deleteMock = mock(() => ({ eq: eqMock }));
     const sb = {
-      from: mock(() => ({
-        delete: deleteMock,
-      })),
+      from: mock((table: string) =>
+        table === "messages"
+          ? { insert: mock(() => Promise.resolve({ data: null, error: null })) }
+          : { delete: deleteMock }
+      ),
     } as any;
     registerMemoryCommands(bot as any, { supabase: sb, userId: 1 });
 

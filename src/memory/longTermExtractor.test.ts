@@ -9,7 +9,9 @@ import {
   extractMemoriesFromExchange,
   storeExtractedMemories,
   getUserProfile,
+  hasMemoryItems,
   type ExtractedMemories,
+  type ExchangeExtractionResult,
 } from "./longTermExtractor.ts";
 
 // We need to mock `spawn` from bun. Since bun:test doesn't have module mocking
@@ -347,15 +349,22 @@ describe("getUserProfile", () => {
 // ============================================================
 
 describe("extractMemoriesFromExchange", () => {
-  test("returns empty object when extraction process fails", async () => {
+  test("returns empty certain and uncertain when extraction process fails", async () => {
     // callOllamaGenerate uses fetch — mock it to throw a network error
     const origFetch = globalThis.fetch;
     globalThis.fetch = mock(() => Promise.reject(new Error("network error"))) as any;
 
-    const result = await extractMemoriesFromExchange("Hi I work at GovTech", "Nice!");
-    expect(result).toEqual({});
+    const result = await extractMemoriesFromExchange("Hi I work at GovTech");
+    expect(result).toEqual({ certain: {}, uncertain: {} });
 
     globalThis.fetch = origFetch;
+  });
+
+  test("does NOT accept assistantResponse as a parameter (user message only)", async () => {
+    // Verify the function signature only takes one argument
+    // TypeScript compile-time guard + runtime shape check
+    const fn = extractMemoriesFromExchange;
+    expect(fn.length).toBe(1); // only 1 declared parameter
   });
 });
 
@@ -374,7 +383,7 @@ describe("extractMemoriesFromExchange - sanitization of malformed Ollama JSON", 
     globalThis.fetch = origFetch;
   });
 
-  test("returns empty object when Ollama returns objects instead of arrays", async () => {
+  test("returns empty certain/uncertain when Ollama returns flat objects instead of nested certain/uncertain", async () => {
     globalThis.fetch = mock(() =>
       Promise.resolve({
         ok: true,
@@ -382,38 +391,100 @@ describe("extractMemoriesFromExchange - sanitization of malformed Ollama JSON", 
       })
     ) as any;
 
-    const result = await extractMemoriesFromExchange("hello", "hi");
-    expect(result).toEqual({});
+    const result = await extractMemoriesFromExchange("hello");
+    expect(result).toEqual({ certain: {}, uncertain: {} });
   });
 
-  test("filters non-string array items, preserves valid strings", async () => {
+  test("filters non-string items from certain.facts, preserves valid strings", async () => {
     globalThis.fetch = mock(() =>
       Promise.resolve({
         ok: true,
         json: () =>
           Promise.resolve({
-            response: '{"facts": [{}, "Works at GovTech", 123, null]}',
+            response: '{"certain": {"facts": [{}, "Works at GovTech", 123, null]}, "uncertain": {}}',
           }),
       })
     ) as any;
 
-    const result = await extractMemoriesFromExchange("hello", "hi");
-    expect(result.facts).toEqual(["Works at GovTech"]);
+    const result = await extractMemoriesFromExchange("hello");
+    expect(result.certain.facts).toEqual(["Works at GovTech"]);
   });
 
-  test("returns empty object when array fields are empty objects after sanitization", async () => {
+  test("returns empty certain/uncertain when array fields contain only non-strings after sanitization", async () => {
     globalThis.fetch = mock(() =>
       Promise.resolve({
         ok: true,
         json: () =>
           Promise.resolve({
-            response: '{"facts": [{}], "preferences": [42]}',
+            response: '{"certain": {"facts": [{}], "preferences": [42]}, "uncertain": {}}',
           }),
       })
     ) as any;
 
-    const result = await extractMemoriesFromExchange("hello", "hi");
-    expect(result.facts).toBeUndefined();
-    expect(result.preferences).toBeUndefined();
+    const result = await extractMemoriesFromExchange("hello");
+    expect(result.certain.facts).toBeUndefined();
+    expect(result.certain.preferences).toBeUndefined();
+  });
+
+  test("correctly parses uncertain items into uncertain field", async () => {
+    globalThis.fetch = mock(() =>
+      Promise.resolve({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            response: '{"certain": {"facts": ["Works at GovTech"]}, "uncertain": {"goals": ["Might want to improve fitness"]}}',
+          }),
+      })
+    ) as any;
+
+    const result = await extractMemoriesFromExchange("I work at GovTech and maybe I should exercise more");
+    expect(result.certain.facts).toEqual(["Works at GovTech"]);
+    expect(result.uncertain.goals).toEqual(["Might want to improve fitness"]);
+  });
+
+  test("extraction prompt does NOT include assistant response text", async () => {
+    let capturedBody: string | null = null;
+    globalThis.fetch = mock((url: string, init?: RequestInit) => {
+      capturedBody = init?.body as string ?? null;
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ response: "{}" }),
+      });
+    }) as any;
+
+    await extractMemoriesFromExchange("I live in Singapore");
+
+    expect(capturedBody).not.toBeNull();
+    const bodyParsed = JSON.parse(capturedBody!);
+    // Prompt should contain user message but not any "Assistant:" label
+    expect(bodyParsed.prompt).toContain("I live in Singapore");
+    expect(bodyParsed.prompt).not.toMatch(/^Assistant:/m);
+    expect(bodyParsed.prompt).not.toContain("Assistant:");
+  });
+});
+
+// ============================================================
+// hasMemoryItems
+// ============================================================
+
+describe("hasMemoryItems", () => {
+  test("returns false for empty object", () => {
+    expect(hasMemoryItems({})).toBe(false);
+  });
+
+  test("returns false for empty arrays", () => {
+    expect(hasMemoryItems({ facts: [], preferences: [], goals: [], dates: [] })).toBe(false);
+  });
+
+  test("returns true when facts has items", () => {
+    expect(hasMemoryItems({ facts: ["Works at GovTech"] })).toBe(true);
+  });
+
+  test("returns true when only goals has items", () => {
+    expect(hasMemoryItems({ goals: ["Ship v2"] })).toBe(true);
+  });
+
+  test("returns true when only dates has items", () => {
+    expect(hasMemoryItems({ dates: ["Birthday March 15"] })).toBe(true);
   });
 });

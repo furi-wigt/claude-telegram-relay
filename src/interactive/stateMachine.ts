@@ -431,9 +431,12 @@ Respond with ONLY valid JSON. Each question needs: id, question, options (2-4 wi
 
     const raw = await this.callClaude(prompt);
 
-    // Strip potential markdown code fences
-    const jsonStr = raw.replace(/^```(?:json)?\s*/m, "").replace(/\s*```\s*$/m, "").trim();
-    const parsed = JSON.parse(jsonStr);
+    // Extract JSON robustly — handles preamble text, code fences, postamble
+    const extracted = extractJsonObject(raw);
+    if (!extracted) {
+      throw new Error("No valid JSON object found in Claude response");
+    }
+    const parsed = JSON.parse(extracted);
 
     if (parsed.done) {
       return { questions: [], done: true };
@@ -462,6 +465,41 @@ Respond with ONLY valid JSON. Each question needs: id, question, options (2-4 wi
 // ──────────────────────────────────────────────
 // Helpers
 // ──────────────────────────────────────────────
+
+/**
+ * Extract the first complete JSON object from a string.
+ * Handles code fences, preamble text, and postamble text.
+ */
+function extractJsonObject(text: string): string | null {
+  // Strategy 1: direct parse (clean JSON)
+  try {
+    JSON.parse(text.trim());
+    return text.trim();
+  } catch {}
+
+  // Strategy 2: strip code fences and parse
+  const stripped = text
+    .replace(/^```(?:json)?\s*/m, "")
+    .replace(/\s*```\s*$/m, "")
+    .trim();
+  try {
+    JSON.parse(stripped);
+    return stripped;
+  } catch {}
+
+  // Strategy 3: find first { ... } block
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start !== -1 && end !== -1 && end > start) {
+    const candidate = text.slice(start, end + 1);
+    try {
+      JSON.parse(candidate);
+      return candidate;
+    } catch {}
+  }
+
+  return null;
+}
 
 function slugify(text: string): string {
   return text

@@ -5,6 +5,7 @@ export interface QueueTask {
 
 export interface QueueStats {
   chatId: number;
+  threadId?: number;
   depth: number;
   processing: boolean;
   lastActivity: number;

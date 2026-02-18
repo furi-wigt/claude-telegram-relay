@@ -18,6 +18,11 @@ export interface ExtractedMemories {
   dates?: string[];
 }
 
+export interface ExchangeExtractionResult {
+  certain: ExtractedMemories;
+  uncertain: ExtractedMemories;
+}
+
 /**
  * Normalize Ollama output to ensure all fields are string arrays.
  * Ollama sometimes returns objects {} instead of arrays [], or arrays
@@ -47,62 +52,95 @@ function sanitizeMemories(raw: unknown): ExtractedMemories {
 }
 
 /**
- * Main entry point: extract memories from an exchange and store them.
+ * Returns true if ExtractedMemories has at least one item.
+ */
+export function hasMemoryItems(m: ExtractedMemories): boolean {
+  return (
+    (m.facts?.length ?? 0) > 0 ||
+    (m.preferences?.length ?? 0) > 0 ||
+    (m.goals?.length ?? 0) > 0 ||
+    (m.dates?.length ?? 0) > 0
+  );
+}
+
+/**
+ * Main entry point: extract memories from a user message and store certain ones.
+ * Returns uncertain items for the caller to handle (e.g. ask user to confirm).
  * Designed to run async/non-blocking after response is sent to user.
+ *
+ * NOTE: Only the user's message is analyzed — assistant responses are NOT passed
+ * to the extraction model to prevent contamination from the bot's own output.
  */
 export async function extractAndStore(
   supabase: SupabaseClient,
   chatId: number,
-  userId: number,
-  userMessage: string,
-  assistantResponse: string
-): Promise<void> {
+  _userId: number,
+  userMessage: string
+): Promise<ExtractedMemories> {
   try {
-    const memories = await extractMemoriesFromExchange(userMessage, assistantResponse);
-    await storeExtractedMemories(supabase, chatId, memories);
+    const { certain, uncertain } = await extractMemoriesFromExchange(userMessage);
+    await storeExtractedMemories(supabase, chatId, certain);
+    return uncertain;
   } catch (err) {
     console.error("extractAndStore failed:", err);
+    return {};
   }
 }
 
 /**
- * Call Claude haiku to extract structured memories from a conversation exchange.
- * Returns parsed JSON or empty object on failure.
+ * Call Ollama to extract structured memories from a user message only.
+ * Returns { certain, uncertain } to distinguish auto-store vs user-confirm items.
+ *
+ * Only the user's message is passed — assistant responses are intentionally
+ * excluded to prevent the model from inferring facts from the bot's own output.
  */
 export async function extractMemoriesFromExchange(
-  userMessage: string,
-  assistantResponse: string
-): Promise<ExtractedMemories> {
+  userMessage: string
+): Promise<ExchangeExtractionResult> {
+  const empty: ExchangeExtractionResult = { certain: {}, uncertain: {} };
+
   const prompt =
-    `Analyze this conversation and extract new information about the user. ` +
+    `Analyze this user message and extract information about the user. ` +
     `Return ONLY valid JSON (no markdown, no explanation):\n` +
     `{\n` +
-    `  "facts": ["personal facts: name, age, location, job, family"],\n` +
-    `  "preferences": ["how they prefer things: tools, style, communication"],\n` +
-    `  "goals": ["goals or projects they mentioned"],\n` +
-    `  "dates": ["important dates or deadlines mentioned"]\n` +
+    `  "certain": {\n` +
+    `    "facts": ["explicitly stated personal facts: name, age, location, job, family"],\n` +
+    `    "preferences": ["clearly stated preferences: tools, style, communication"],\n` +
+    `    "goals": ["clearly stated goals or projects"],\n` +
+    `    "dates": ["explicitly mentioned important dates or deadlines"]\n` +
+    `  },\n` +
+    `  "uncertain": {\n` +
+    `    "facts": ["implied or ambiguous facts that might need confirmation"],\n` +
+    `    "preferences": ["possibly implied preferences"],\n` +
+    `    "goals": ["possibly mentioned goals or interests"],\n` +
+    `    "dates": ["possibly relevant dates"]\n` +
+    `  }\n` +
     `}\n\n` +
     `Rules:\n` +
-    `- Only extract NEW information the USER shared (not Claude's statements)\n` +
+    `- ONLY analyze what the USER wrote in this message\n` +
+    `- "certain" = user explicitly and directly stated this fact\n` +
+    `- "uncertain" = implied, ambiguous, or could be interpreted multiple ways\n` +
     `- Omit keys with empty arrays\n` +
     `- Be specific and concrete (not vague)\n` +
-    `- If nothing new to extract, return {}\n\n` +
-    `User: ${userMessage.slice(0, 1000)}\n` +
-    `Assistant: ${assistantResponse.slice(0, 500)}`;
+    `- If nothing to extract, return {}\n\n` +
+    `User message: ${userMessage.slice(0, 1000)}`;
 
   try {
     const raw = await callOllamaGenerate(prompt, { timeoutMs: 20_000 });
     const text = raw.trim();
-    if (!text || text === "{}") return {};
+    if (!text || text === "{}") return empty;
 
     // Extract JSON from response (might have surrounding text)
     const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) return {};
+    if (!jsonMatch) return empty;
 
-    const parsed = JSON.parse(jsonMatch[0]);
-    return sanitizeMemories(parsed);
+    const parsed = JSON.parse(jsonMatch[0]) as Record<string, unknown>;
+    return {
+      certain: sanitizeMemories(parsed.certain),
+      uncertain: sanitizeMemories(parsed.uncertain),
+    };
   } catch {
-    return {};
+    return empty;
   }
 }
 

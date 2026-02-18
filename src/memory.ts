@@ -18,6 +18,21 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 /**
+ * Detect the appropriate category for a fact stored via [REMEMBER:] tag.
+ * Exported so callers can share the same classification logic.
+ */
+export function detectMemoryCategory(content: string): string {
+  const lower = content.toLowerCase();
+  if (/\b(prefer|like|hate|always|never|style|format|concise|brief|formal|casual)\b/.test(lower)) {
+    return "preference";
+  }
+  if (/\b(on |jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|monday|tuesday|wednesday|thursday|friday|\d{1,2}\/\d{1,2}|\d{4})\b/.test(lower)) {
+    return "date";
+  }
+  return "personal";
+}
+
+/**
  * Parse Claude's response for memory intent tags.
  * Saves facts/goals to Supabase and returns the cleaned response.
  * When chatId is provided, all stored memory is tagged with that chat
@@ -45,6 +60,7 @@ export async function processMemoryIntents(
       type: "fact",
       content: match[1],
       chat_id: chatId ?? null,
+      category: detectMemoryCategory(match[1]),
     });
     clean = clean.replace(match[0], "");
   }
@@ -55,6 +71,7 @@ export async function processMemoryIntents(
       type: "fact",
       content: match[1],
       chat_id: null,  // null = global, visible to all groups
+      category: detectMemoryCategory(match[1]),
     });
     clean = clean.replace(match[0], "");
   }
@@ -68,6 +85,7 @@ export async function processMemoryIntents(
       content: match[1],
       deadline: match[2] || null,
       chat_id: chatId ?? null,
+      category: "goal",
     });
     clean = clean.replace(match[0], "");
   }

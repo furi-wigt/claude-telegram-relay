@@ -22,6 +22,8 @@ import { getSession, getSessionSummary, resetSession } from "../session/groupSes
 import { getMemoryFull, type FullMemory } from "../memory.ts";
 import { handleRoutinesCommand } from "../routines/routineHandler.ts";
 import { registerMemoryCommands } from "./memoryCommands.ts";
+import { registerDirectMemoryCommands } from "./directMemoryCommands.ts";
+import { saveCommandInteraction } from "../utils/saveMessage.ts";
 
 const TELEGRAM_MAX_MESSAGE_LENGTH = 4096;
 
@@ -64,6 +66,8 @@ async function sendLongMessage(ctx: Context, text: string): Promise<void> {
 export interface CommandOptions {
   supabase: SupabaseClient | null;
   userId?: number;
+  /** Called by /new <prompt> to process the follow-up text as a user message */
+  onMessage?: (chatId: number, text: string, ctx: Context) => Promise<void>;
 }
 
 // ── Memory formatting helpers ────────────────────────────────────────────────
@@ -125,21 +129,25 @@ function buildMemoryOverview(mem: FullMemory): string {
  * Call once at startup after the bot is created.
  */
 export function registerCommands(bot: Bot, options: CommandOptions): void {
-  const { supabase } = options;
+  const { supabase, onMessage } = options;
 
-  // /help - show available commands
+  // /help - show available commands (excluded from short-term memory)
   bot.command("help", async (ctx) => {
     const help = [
       "Available commands:",
       "",
       "/status - Show current session status",
-      "/new - Start a fresh conversation (clears session)",
+      "/new [prompt] - Start a fresh conversation (optionally with first message)",
       "/memory - Show all memory (goals, prefs, facts, dates)",
       "/memory goals - Active goals only",
       "/memory done - Completed goals",
       "/memory prefs - Preferences",
       "/memory facts - Facts",
       "/memory dates - Dates & reminders",
+      "/goals +goal, -old goal - Add/remove goals",
+      "/facts +fact, -old fact - Add/remove facts",
+      "/prefs +pref, -old pref - Add/remove preferences",
+      "/reminders +reminder, -old reminder - Add/remove reminders",
       "/remember [fact] - Explicitly store a fact or preference",
       "/forget [topic] - Delete memories matching topic (or all if no topic)",
       "/summary - Show compressed conversation history",
@@ -149,6 +157,7 @@ export function registerCommands(bot: Bot, options: CommandOptions): void {
       "/code list - List coding sessions",
       "/code new <path> <task> - Start agentic coding session",
       "/code status - Show current coding session",
+      "/plan <task> - Plan a coding task with guided Q&A before running Claude",
       "/help - Show this help",
       "",
       "Create routines by describing them:",
@@ -162,31 +171,41 @@ export function registerCommands(bot: Bot, options: CommandOptions): void {
   // /routines - manage user-created scheduled routines
   bot.command("routines", async (ctx) => {
     const args = ctx.match || "";
-    await handleRoutinesCommand(ctx, args);
+    await handleRoutinesCommand(ctx, args, supabase);
   });
 
-  // /status - show session status
+  // /status - show session status (included in short-term memory)
   bot.command("status", async (ctx) => {
     const chatId = ctx.chat?.id;
     if (!chatId) return;
 
     const summary = getSessionSummary(chatId);
-    await ctx.reply(`Session Status\n\n${summary}`);
+    const replyText = `Session Status\n\n${summary}`;
+    await ctx.reply(replyText);
+    await saveCommandInteraction(supabase, chatId, "/status", replyText);
   });
 
-  // /new - reset session (force new conversation)
+  // /new [prompt] - reset session; if prompt given, immediately process it
   bot.command("new", async (ctx) => {
     const chatId = ctx.chat?.id;
     if (!chatId) return;
 
+    const prompt = (ctx.match ?? "").trim();
+
     await resetSession(chatId);
-    await ctx.reply(
-      "Starting a fresh conversation! Your previous session has been cleared.\n" +
-      "What would you like to talk about?"
-    );
+
+    if (prompt && onMessage) {
+      await ctx.reply("Starting a fresh conversation! Processing your message...");
+      await onMessage(chatId, prompt, ctx);
+    } else {
+      await ctx.reply(
+        "Starting a fresh conversation! Your previous session has been cleared.\n" +
+        "What would you like to talk about?"
+      );
+    }
   });
 
-  // /memory [subcommand]
+  // /memory [subcommand] — included in short-term memory
   // Subcommands: goals | done | prefs | facts | dates | (none = all)
   bot.command("memory", async (ctx) => {
     const chatId = ctx.chat?.id;
@@ -198,51 +217,57 @@ export function registerCommands(bot: Bot, options: CommandOptions): void {
     }
 
     const arg = (ctx.match ?? "").trim().toLowerCase();
+    const userCmd = arg ? `/memory ${arg}` : "/memory";
     const mem = await getMemoryFull(supabase, chatId);
     const total = mem.goals.length + mem.preferences.length + mem.facts.length + mem.dates.length + mem.completedGoals.length;
 
     if (total === 0 && arg !== "done") {
-      await ctx.reply(
+      const noMemText =
         "No memories stored yet.\n\n" +
         "Tell me something to remember, set a goal, or share your preferences. " +
-        "I'll tag them automatically."
-      );
+        "I'll tag them automatically.";
+      await ctx.reply(noMemText);
+      await saveCommandInteraction(supabase, chatId, userCmd, noMemText);
       return;
     }
 
+    let replyText: string;
+
     switch (arg) {
       case "goals":
-        await sendLongMessage(ctx, formatSection("🎯 Goals", mem.goals, formatGoalLine) ||
+        replyText = formatSection("🎯 Goals", mem.goals, formatGoalLine) ||
           "No active goals.\n\nSet one by telling me what you want to achieve, " +
-          "or /remember My goal is to...");
+          "or /remember My goal is to...";
         break;
 
       case "done":
-        await sendLongMessage(ctx, formatSection("✅ Completed Goals", mem.completedGoals, formatCompletedLine) ||
-          "No completed goals yet.");
+        replyText = formatSection("✅ Completed Goals", mem.completedGoals, formatCompletedLine) ||
+          "No completed goals yet.";
         break;
 
       case "prefs":
       case "preferences":
-        await sendLongMessage(ctx, formatSection("⚙️ Preferences", mem.preferences, (p) => `  • ${p.content}`) ||
-          "No preferences stored yet.\n\nTell me how you like things done.");
+        replyText = formatSection("⚙️ Preferences", mem.preferences, (p) => `  • ${p.content}`) ||
+          "No preferences stored yet.\n\nTell me how you like things done.";
         break;
 
       case "facts":
-        await sendLongMessage(ctx, formatSection("📌 Facts", mem.facts, (f) => `  • ${f.content}`) ||
-          "No facts stored yet.");
+        replyText = formatSection("📌 Facts", mem.facts, (f) => `  • ${f.content}`) ||
+          "No facts stored yet.";
         break;
 
       case "dates":
       case "reminders":
-        await sendLongMessage(ctx, formatSection("📅 Dates & Reminders", mem.dates, (d) => `  • ${d.content}`) ||
-          "No dates or reminders stored yet.");
+        replyText = formatSection("📅 Dates & Reminders", mem.dates, (d) => `  • ${d.content}`) ||
+          "No dates or reminders stored yet.";
         break;
 
       default:
-        // Overview: all categories
-        await sendLongMessage(ctx, buildMemoryOverview(mem));
+        replyText = buildMemoryOverview(mem);
     }
+
+    await sendLongMessage(ctx, replyText);
+    await saveCommandInteraction(supabase, chatId, userCmd, replyText);
   });
 
   // /history - show recent messages from session
@@ -266,6 +291,9 @@ export function registerCommands(bot: Bot, options: CommandOptions): void {
 
   // Register memory management commands (/remember, /forget, /summary)
   registerMemoryCommands(bot, { supabase, userId: options.userId ?? 0 });
+
+  // Register direct memory mutation commands (/goals, /facts, /prefs, /reminders)
+  registerDirectMemoryCommands(bot, { supabase });
 }
 
 /**

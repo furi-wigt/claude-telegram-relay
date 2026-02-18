@@ -5,7 +5,7 @@
  * Each chat ID gets its own session file on disk and in-memory cache,
  * replacing the single global session.json approach.
  *
- * Session files are stored at: {RELAY_DIR}/sessions/{chatId}.json
+ * Session files are stored at: {RELAY_DIR}/sessions/{chatId}_{threadId}.json
  */
 
 import { readFile, writeFile, mkdir, readdir } from "fs/promises";
@@ -17,6 +17,7 @@ const SESSIONS_DIR = join(RELAY_DIR, "sessions");
 export interface SessionState {
   chatId: number;
   agentId: string;
+  threadId: number | null;
   sessionId: string | null;
   lastActivity: string;
   topicKeywords: string[];        // extracted keywords for context relevance
@@ -26,8 +27,13 @@ export interface SessionState {
   lastUserMessages: string[];     // last 3 user messages for context comparison
 }
 
-/** In-memory cache of active sessions keyed by chat ID */
-const sessions = new Map<number, SessionState>();
+/** Build a unique map key from chatId and optional threadId */
+function sessionKey(chatId: number, threadId?: number | null): string {
+  return `${chatId}_${threadId ?? ''}`;
+}
+
+/** In-memory cache of active sessions keyed by chatId_threadId */
+const sessions = new Map<string, SessionState>();
 
 /**
  * Create the sessions directory if it does not exist.
@@ -42,23 +48,25 @@ export async function initSessions(): Promise<void> {
  * Checks in-memory cache first, then falls back to disk.
  * Creates a new session state if none exists.
  */
-export async function loadSession(chatId: number, agentId: string): Promise<SessionState> {
-  const cached = sessions.get(chatId);
+export async function loadSession(chatId: number, agentId: string, threadId?: number | null): Promise<SessionState> {
+  const key = sessionKey(chatId, threadId);
+  const cached = sessions.get(key);
   if (cached) {
     return cached;
   }
 
-  const sessionFile = join(SESSIONS_DIR, `${chatId}.json`);
+  const sessionFile = join(SESSIONS_DIR, `${key}.json`);
   try {
     const content = await readFile(sessionFile, "utf-8");
     const state: SessionState = JSON.parse(content);
-    sessions.set(chatId, state);
+    sessions.set(key, state);
     return state;
   } catch {
     // No existing session file -- create a fresh state
     const state: SessionState = {
       chatId,
       agentId,
+      threadId: threadId ?? null,
       sessionId: null,
       lastActivity: new Date().toISOString(),
       topicKeywords: [],
@@ -67,7 +75,7 @@ export async function loadSession(chatId: number, agentId: string): Promise<Sess
       pendingContextSwitch: false,
       lastUserMessages: [],
     };
-    sessions.set(chatId, state);
+    sessions.set(key, state);
     return state;
   }
 }
@@ -76,17 +84,18 @@ export async function loadSession(chatId: number, agentId: string): Promise<Sess
  * Persist session state to disk and update the in-memory cache.
  */
 export async function saveSession(state: SessionState): Promise<void> {
-  const sessionFile = join(SESSIONS_DIR, `${state.chatId}.json`);
+  const key = sessionKey(state.chatId, state.threadId);
+  const sessionFile = join(SESSIONS_DIR, `${key}.json`);
   await writeFile(sessionFile, JSON.stringify(state, null, 2));
-  sessions.set(state.chatId, state);
+  sessions.set(key, state);
 }
 
 /**
  * Update the Claude Code session ID for a given chat.
  * Called after parsing a session ID from Claude CLI output.
  */
-export async function updateSessionId(chatId: number, sessionId: string): Promise<void> {
-  const session = sessions.get(chatId);
+export async function updateSessionId(chatId: number, sessionId: string, threadId?: number | null): Promise<void> {
+  const session = sessions.get(sessionKey(chatId, threadId));
   if (session) {
     session.sessionId = sessionId;
     session.lastActivity = new Date().toISOString();
@@ -97,8 +106,8 @@ export async function updateSessionId(chatId: number, sessionId: string): Promis
 /**
  * Touch the session's lastActivity timestamp without changing the session ID.
  */
-export async function touchSession(chatId: number): Promise<void> {
-  const session = sessions.get(chatId);
+export async function touchSession(chatId: number, threadId?: number | null): Promise<void> {
+  const session = sessions.get(sessionKey(chatId, threadId));
   if (session) {
     session.lastActivity = new Date().toISOString();
     await saveSession(session);
@@ -109,8 +118,8 @@ export async function touchSession(chatId: number): Promise<void> {
  * Get the cached session for a chat without hitting disk.
  * Returns undefined if the session has not been loaded yet.
  */
-export function getSession(chatId: number): SessionState | undefined {
-  return sessions.get(chatId);
+export function getSession(chatId: number, threadId?: number | null): SessionState | undefined {
+  return sessions.get(sessionKey(chatId, threadId));
 }
 
 /**
@@ -133,9 +142,21 @@ export async function loadAllSessions(): Promise<number> {
       try {
         const content = await readFile(join(SESSIONS_DIR, file), "utf-8");
         const raw = JSON.parse(content);
+
+        // Parse chatId and threadId from filename: {chatId}_{threadId}.json
+        // chatId can be negative (e.g. -1001234), so split on last underscore
+        const lastUnderscore = file.lastIndexOf('_');
+        const chatPart = file.slice(0, lastUnderscore);
+        const threadPart = file.slice(lastUnderscore + 1, -5); // strip .json
+
+        const parsedChatId = parseInt(chatPart, 10);
+        const parsedThreadId = threadPart === '' ? null : parseInt(threadPart, 10);
+
         // Backwards compatibility: fill in missing fields with defaults
         const state: SessionState = {
           ...raw,
+          chatId: raw.chatId ?? parsedChatId,
+          threadId: raw.threadId ?? parsedThreadId,
           topicKeywords: raw.topicKeywords ?? [],
           messageCount: raw.messageCount ?? 0,
           startedAt: raw.startedAt ?? raw.lastActivity ?? new Date().toISOString(),
@@ -143,7 +164,7 @@ export async function loadAllSessions(): Promise<number> {
           lastUserMessages: raw.lastUserMessages ?? [],
         };
         if (state.chatId) {
-          sessions.set(state.chatId, state);
+          sessions.set(sessionKey(state.chatId, state.threadId), state);
           loaded++;
         }
       } catch {
@@ -160,8 +181,8 @@ export async function loadAllSessions(): Promise<number> {
  * Clear the session ID for a chat, forcing a new Claude Code session
  * on the next message. Does not delete the session file.
  */
-export async function resetSession(chatId: number): Promise<void> {
-  const session = sessions.get(chatId);
+export async function resetSession(chatId: number, threadId?: number | null): Promise<void> {
+  const session = sessions.get(sessionKey(chatId, threadId));
   if (session) {
     session.sessionId = null;
     session.lastActivity = new Date().toISOString();
@@ -174,8 +195,8 @@ export async function resetSession(chatId: number): Promise<void> {
  * Includes duration, message count, topic keywords, idle time, and
  * whether a Claude Code session is active.
  */
-export function getSessionSummary(chatId: number): string {
-  const session = sessions.get(chatId);
+export function getSessionSummary(chatId: number, threadId?: number | null): string {
+  const session = sessions.get(sessionKey(chatId, threadId));
   if (!session) return "No active session";
 
   const started = new Date(session.startedAt);

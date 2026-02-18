@@ -4,20 +4,24 @@
  */
 
 import type { Bot, Context } from "grammy";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { existsSync } from "node:fs";
 import { homedir } from "os";
 import { resolve, basename } from "path";
 import type { CodingSessionManager } from "./sessionManager.ts";
 import type { InputRouter } from "./inputRouter.ts";
 import { analyzeTaskForTeam } from "./teamAnalyzer.ts";
+import { saveCommandInteraction } from "../utils/saveMessage.ts";
 
 /**
  * Register the /code command and callback query handler on the bot.
+ * @param supabase  Optional Supabase client for saving write-command interactions to STM
  */
 export function registerCodingCommands(
   bot: Bot,
   sessionManager: CodingSessionManager,
-  inputRouter: InputRouter
+  inputRouter: InputRouter,
+  supabase?: SupabaseClient | null
 ): void {
   bot.command("code", async (ctx) => {
     const rawMatch = ctx.match?.trim() || "";
@@ -35,6 +39,13 @@ export function registerCodingCommands(
         break;
       case "new":
         await handleNew(ctx, sessionManager, chatId, args);
+        if (args) {
+          await saveCommandInteraction(
+            supabase ?? null, chatId,
+            `/code new ${args}`,
+            `Coding session started for: ${args}`
+          );
+        }
         break;
       case "status":
         await handleStatus(ctx, sessionManager, chatId, args);
@@ -47,21 +58,47 @@ export function registerCodingCommands(
         break;
       case "stop":
         await handleStop(ctx, sessionManager, chatId, args);
+        await saveCommandInteraction(
+          supabase ?? null, chatId,
+          `/code stop${args ? " " + args : ""}`,
+          "Coding session stopped."
+        );
         break;
       case "perms":
         await handlePerms(ctx, sessionManager);
         break;
       case "permit":
         await handlePermit(ctx, sessionManager, chatId, args);
+        if (args) {
+          await saveCommandInteraction(
+            supabase ?? null, chatId,
+            `/code permit ${args}`,
+            `Directory permitted: ${args}`
+          );
+        }
         break;
       case "revoke":
         await handleRevoke(ctx, sessionManager, args);
+        if (args) {
+          await saveCommandInteraction(
+            supabase ?? null, chatId,
+            `/code revoke ${args}`,
+            `Permission revoked for: ${args}`
+          );
+        }
         break;
       case "scan":
         await handleScan(ctx, sessionManager, chatId);
         break;
       case "answer":
         await handleAnswer(ctx, sessionManager, chatId, args);
+        if (args) {
+          await saveCommandInteraction(
+            supabase ?? null, chatId,
+            `/code answer ${args}`,
+            "Answer sent to coding session."
+          );
+        }
         break;
       case "help":
       case "":
@@ -74,7 +111,7 @@ export function registerCodingCommands(
   });
 
   // Register callback query handler for coding-related callbacks
-  bot.on("callback_query:data", async (ctx) => {
+  bot.on("callback_query:data", async (ctx, next) => {
     const data = ctx.callbackQuery.data;
     if (
       data.startsWith("code_answer:") ||
@@ -90,7 +127,10 @@ export function registerCodingCommands(
       }
       await inputRouter.handleCallbackQuery(ctx, sessionManager);
       await ctx.answerCallbackQuery();
+      return;
     }
+    // Not a coding callback — pass to next handler (e.g. iq: interactive callbacks)
+    await next();
   });
 }
 

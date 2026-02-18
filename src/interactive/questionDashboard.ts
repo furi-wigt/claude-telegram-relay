@@ -34,7 +34,7 @@ export class QuestionDashboard {
   /** Send the initial "generating questions..." card. Returns message_id. */
   async createLoadingCard(chatId: number, task: string): Promise<number> {
     const text = this.formatLoading(task);
-    const msg = await this.bot.api.sendMessage(chatId, text);
+    const msg = await this.bot.api.sendMessage(chatId, text, { parse_mode: "Markdown" });
     return msg.message_id;
   }
 
@@ -244,7 +244,7 @@ function buildProgressBar(current: number, total: number): string {
   const pct = total === 0 ? 0 : Math.round((current / total) * 10);
   const filled = "\u2593".repeat(pct);       // ▓
   const empty = "\u2591".repeat(10 - pct);   // ░
-  return `${filled}${empty}  ${current * 10}%`;
+  return `${filled}${empty}  ${total === 0 ? 0 : Math.round((current / total) * 100)}%`;
 }
 
 /** Trim question text for compact display in prev-answers list */

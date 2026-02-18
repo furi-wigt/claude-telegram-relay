@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, mock } from "bun:test";
+import { describe, test, expect, beforeEach, afterAll, mock } from "bun:test";
 import { ProjectScanner } from "./projectScanner.ts";
 
 // Mock fs/promises
@@ -25,6 +25,13 @@ describe("ProjectScanner", () => {
     mockReadFile.mockReset();
     mockReaddir.mockReset();
     mockStat.mockReset();
+  });
+
+  afterAll(() => {
+    // Re-install real fs/promises so the module mock does not bleed into other
+    // test files that run in the same Bun worker (e.g. sessionRunner.test.ts).
+    mock.module("fs/promises", () => require("node:fs/promises"));
+    mock.module("node:fs/promises", () => require("node:fs/promises"));
   });
 
   describe("decodeProjectDir", () => {

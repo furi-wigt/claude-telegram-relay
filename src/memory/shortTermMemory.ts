@@ -52,12 +52,21 @@ export interface ShortTermContext {
 export async function getRecentMessages(
   supabase: SupabaseClient,
   chatId: number,
-  limit: number = VERBATIM_LIMIT
+  limit: number = VERBATIM_LIMIT,
+  threadId?: number | null
 ): Promise<ConversationMessage[]> {
-  const { data, error } = await supabase
+  let query = supabase
     .from("messages")
     .select("id, role, content, created_at, metadata")
-    .eq("chat_id", chatId)
+    .eq("chat_id", chatId);
+
+  if (threadId != null) {
+    query = query.eq("thread_id", threadId);
+  } else {
+    query = query.is("thread_id", null);
+  }
+
+  const { data, error } = await query
     .order("created_at", { ascending: false })
     .limit(limit);
 
@@ -72,12 +81,21 @@ export async function getRecentMessages(
  */
 export async function getConversationSummaries(
   supabase: SupabaseClient,
-  chatId: number
+  chatId: number,
+  threadId?: number | null
 ): Promise<ConversationSummary[]> {
-  const { data, error } = await supabase
+  let query = supabase
     .from("conversation_summaries")
     .select("id, summary, message_count, from_timestamp, to_timestamp, created_at")
-    .eq("chat_id", chatId)
+    .eq("chat_id", chatId);
+
+  if (threadId != null) {
+    query = query.eq("thread_id", threadId);
+  } else {
+    query = query.is("thread_id", null);
+  }
+
+  const { data, error } = await query
     .order("created_at", { ascending: true });
 
   if (error || !data) return [];
@@ -89,12 +107,21 @@ export async function getConversationSummaries(
  */
 async function getTotalMessageCount(
   supabase: SupabaseClient,
-  chatId: number
+  chatId: number,
+  threadId?: number | null
 ): Promise<number> {
-  const { count, error } = await supabase
+  let query = supabase
     .from("messages")
     .select("id", { count: "exact", head: true })
     .eq("chat_id", chatId);
+
+  if (threadId != null) {
+    query = query.eq("thread_id", threadId);
+  } else {
+    query = query.is("thread_id", null);
+  }
+
+  const { count, error } = await query;
 
   if (error) return 0;
   return count ?? 0;
@@ -106,11 +133,13 @@ async function getTotalMessageCount(
  */
 export async function shouldSummarize(
   supabase: SupabaseClient,
-  chatId: number
+  chatId: number,
+  threadId?: number | null
 ): Promise<boolean> {
   try {
     const { data, error } = await supabase.rpc("get_unsummarized_message_count", {
       p_chat_id: chatId,
+      p_thread_id: threadId ?? null,
     });
     if (error) return false;
     return (data as number) > VERBATIM_LIMIT;
@@ -125,13 +154,22 @@ export async function shouldSummarize(
  */
 export async function summarizeOldMessages(
   supabase: SupabaseClient,
-  chatId: number
+  chatId: number,
+  threadId?: number | null
 ): Promise<void> {
   // Get the latest summary's to_timestamp to know where to start
-  const { data: latestSummary } = await supabase
+  let summaryQuery = supabase
     .from("conversation_summaries")
     .select("to_timestamp, to_message_id")
-    .eq("chat_id", chatId)
+    .eq("chat_id", chatId);
+
+  if (threadId != null) {
+    summaryQuery = summaryQuery.eq("thread_id", threadId);
+  } else {
+    summaryQuery = summaryQuery.is("thread_id", null);
+  }
+
+  const { data: latestSummary } = await summaryQuery
     .order("created_at", { ascending: false })
     .limit(1);
 
@@ -141,7 +179,15 @@ export async function summarizeOldMessages(
   let query = supabase
     .from("messages")
     .select("id, role, content, created_at, metadata")
-    .eq("chat_id", chatId)
+    .eq("chat_id", chatId);
+
+  if (threadId != null) {
+    query = query.eq("thread_id", threadId);
+  } else {
+    query = query.is("thread_id", null);
+  }
+
+  query = query
     .order("created_at", { ascending: true })
     .limit(SUMMARIZE_CHUNK_SIZE);
 
@@ -185,6 +231,7 @@ export async function summarizeOldMessages(
 
   await supabase.from("conversation_summaries").insert({
     chat_id: chatId,
+    thread_id: threadId ?? null,
     summary,
     message_count: messages.length,
     from_message_id: firstMsg.id,
@@ -199,12 +246,13 @@ export async function summarizeOldMessages(
  */
 export async function getShortTermContext(
   supabase: SupabaseClient,
-  chatId: number
+  chatId: number,
+  threadId?: number | null
 ): Promise<ShortTermContext> {
   const [verbatimMessages, summaries, totalMessages] = await Promise.all([
-    getRecentMessages(supabase, chatId, VERBATIM_LIMIT),
-    getConversationSummaries(supabase, chatId),
-    getTotalMessageCount(supabase, chatId),
+    getRecentMessages(supabase, chatId, VERBATIM_LIMIT, threadId),
+    getConversationSummaries(supabase, chatId, threadId),
+    getTotalMessageCount(supabase, chatId, threadId),
   ]);
 
   return { verbatimMessages, summaries, totalMessages };
