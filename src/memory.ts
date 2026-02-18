@@ -98,8 +98,9 @@ export async function processMemoryIntents(
 }
 
 /**
- * Returns all facts and active goals globally, regardless of originating chat.
- * The chatId parameter is accepted for API compatibility but not used for filtering.
+ * Returns facts and active goals filtered by chat_id when provided.
+ * When chatId is given, returns items scoped to that chat OR global items (chat_id IS NULL).
+ * When chatId is not provided, returns all items.
  */
 export async function getMemoryContext(
   supabase: SupabaseClient | null,
@@ -108,18 +109,25 @@ export async function getMemoryContext(
   if (!supabase) return "";
 
   try {
-    const factsQuery = supabase
+    let factsQuery = supabase
       .from("memory")
       .select("id, content")
       .eq("type", "fact")
-      .order("created_at", { ascending: false });
+      .order("created_at", { ascending: false })
+      .limit(50);
 
-    const goalsQuery = supabase
+    let goalsQuery = supabase
       .from("memory")
       .select("id, content, deadline, priority")
       .eq("type", "goal")
       .order("priority", { ascending: false })
-      .order("created_at", { ascending: false });
+      .order("created_at", { ascending: false })
+      .limit(20);
+
+    if (chatId) {
+      factsQuery = factsQuery.or(`chat_id.eq.${chatId},chat_id.is.null`);
+      goalsQuery = goalsQuery.or(`chat_id.eq.${chatId},chat_id.is.null`);
+    }
 
     const [factsResult, goalsResult] = await Promise.all([
       factsQuery,
@@ -180,6 +188,7 @@ export interface RawMemory {
  * Returns facts and active goals as structured arrays, applying the same
  * junk filter as getMemoryContext(). Useful when the caller needs to
  * iterate over individual items (e.g. for per-item summarization).
+ * When chatId is given, returns items scoped to that chat OR global items.
  */
 export async function getMemoryContextRaw(
   supabase: SupabaseClient | null,
@@ -189,18 +198,25 @@ export async function getMemoryContextRaw(
   if (!supabase) return empty;
 
   try {
-    const factsQuery = supabase
+    let factsQuery = supabase
       .from("memory")
       .select("id, content")
       .eq("type", "fact")
-      .order("created_at", { ascending: false });
+      .order("created_at", { ascending: false })
+      .limit(50);
 
-    const goalsQuery = supabase
+    let goalsQuery = supabase
       .from("memory")
       .select("id, content, deadline, priority")
       .eq("type", "goal")
       .order("priority", { ascending: false })
-      .order("created_at", { ascending: false });
+      .order("created_at", { ascending: false })
+      .limit(20);
+
+    if (chatId) {
+      factsQuery = factsQuery.or(`chat_id.eq.${chatId},chat_id.is.null`);
+      goalsQuery = goalsQuery.or(`chat_id.eq.${chatId},chat_id.is.null`);
+    }
 
     const [factsResult, goalsResult] = await Promise.all([
       factsQuery,
@@ -230,19 +246,108 @@ export async function getMemoryContextRaw(
   }
 }
 
+export interface MemoryItemFull {
+  content: string;
+  deadline?: string | null;
+  category?: string | null;
+  completed_at?: string | null;
+}
+
+export interface FullMemory {
+  goals: MemoryItemFull[];
+  completedGoals: MemoryItemFull[];
+  preferences: MemoryItemFull[];
+  facts: MemoryItemFull[];       // type=fact AND category != 'date'
+  dates: MemoryItemFull[];       // type=fact AND category = 'date'
+}
+
 /**
- * Searches all past messages globally (cross-group semantic search).
- * The Edge Function handles embedding generation (OpenAI key stays in Supabase).
- * No chat_id filter is applied — results come from all groups.
- *
- * The chatId and crossGroup parameters are accepted for API compatibility
- * but are not used for filtering.
+ * Fetches all memory types in a single parallel query pair.
+ * Used by /memory command for instant, Claude-free display.
+ * When chatId is given, returns items scoped to that chat OR global (chat_id IS NULL).
+ */
+export async function getMemoryFull(
+  supabase: SupabaseClient | null,
+  chatId?: number
+): Promise<FullMemory> {
+  const empty: FullMemory = { goals: [], completedGoals: [], preferences: [], facts: [], dates: [] };
+  if (!supabase) return empty;
+
+  try {
+    const isJunk = (content: string) =>
+      !content?.trim() ||
+      content.trim().length < 4 ||
+      /^[\[\]`\/|,\s\-\.]+$/.test(content.trim());
+
+    const scope = chatId
+      ? `chat_id.eq.${chatId},chat_id.is.null`
+      : undefined;
+
+    const makeQuery = (type: string) => {
+      let q = supabase
+        .from("memory")
+        .select("id, content, deadline, category, completed_at, created_at")
+        .eq("type", type)
+        .order("created_at", { ascending: false });
+      if (scope) q = q.or(scope);
+      return q;
+    };
+
+    const [goalsRes, completedRes, prefsRes, factsRes] = await Promise.all([
+      makeQuery("goal"),
+      makeQuery("completed_goal"),
+      makeQuery("preference"),
+      makeQuery("fact"),
+    ]);
+
+    const clean = (rows: any[], extra?: (r: any) => MemoryItemFull): MemoryItemFull[] =>
+      (rows ?? [])
+        .filter((r: any) => !isJunk(r.content))
+        .map((r: any) => ({
+          content: r.content.trim(),
+          deadline: r.deadline ?? null,
+          category: r.category ?? null,
+          completed_at: r.completed_at ?? null,
+          ...(extra ? extra(r) : {}),
+        }));
+
+    const allFacts = clean(factsRes.data ?? []);
+
+    return {
+      goals: clean(goalsRes.data ?? []),
+      completedGoals: clean(completedRes.data ?? []),
+      preferences: clean(prefsRes.data ?? []),
+      facts: allFacts.filter((f) => f.category !== "date"),
+      dates: allFacts.filter((f) => f.category === "date"),
+    };
+  } catch (error) {
+    console.error("getMemoryFull error:", error);
+    return empty;
+  }
+}
+
+/**
+ * Searches past messages via semantic search (Edge Function).
+ * When chatId is provided, passes it to the Edge Function for filtering.
  *
  * @param supabase   Supabase client instance
  * @param query      The search query to embed and match against stored messages
- * @param chatId     Accepted for API compatibility, not used for filtering
- * @param crossGroup Accepted for API compatibility, not used for filtering
+ * @param chatId     When provided, filters results to this chat + global messages
+ * @param crossGroup When true, searches across all chats regardless of chatId
  */
+// FIX 6: In-memory cache for semantic search results (60s TTL)
+// Prevents redundant OpenAI embedding calls for identical/similar queries.
+const searchCache = new Map<string, { result: string; expiry: number }>();
+
+// Periodic eviction: sweep expired entries every 2 minutes.
+// Without this, every unique message adds a permanent entry (TTL only checked on read).
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of searchCache) {
+    if (now >= entry.expiry) searchCache.delete(key);
+  }
+}, 120_000).unref();
+
 export async function getRelevantContext(
   supabase: SupabaseClient | null,
   query: string,
@@ -251,25 +356,33 @@ export async function getRelevantContext(
 ): Promise<string> {
   if (!supabase) return "";
 
+  const cacheKey = `${chatId ?? "global"}:${query.slice(0, 50)}`;
+  const cached = searchCache.get(cacheKey);
+  if (cached && Date.now() < cached.expiry) return cached.result;
+
   try {
     const body: Record<string, unknown> = {
       query,
       match_count: 5,
       table: "messages",
+      chat_id: chatId ?? null,
+      filter_chat_id: chatId ?? null,
     };
 
     const { data, error } = await supabase.functions.invoke("search", {
       body,
     });
 
-    if (error || !data?.length) return "";
+    if (error || !data?.length) {
+      searchCache.set(cacheKey, { result: "", expiry: Date.now() + 60_000 });
+      return "";
+    }
 
-    return (
-      "RELEVANT PAST MESSAGES:\n" +
-      data
-        .map((m: any) => `[${m.role}]: ${m.content}`)
-        .join("\n")
-    );
+    const result = data
+      .map((m: any) => `[${m.role}]: ${m.content}`)
+      .join("\n");
+    searchCache.set(cacheKey, { result, expiry: Date.now() + 60_000 });
+    return result;
   } catch {
     // Search not available yet (Edge Functions not deployed) — that's fine
     return "";

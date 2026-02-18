@@ -105,7 +105,7 @@ describe("getMemoryContext", () => {
       ],
     });
     const result = await getMemoryContext(sb);
-    expect(result).toContain("FACTS:");
+    expect(result).toContain("📌 FACTS");
     expect(result).toContain("User works at GovTech");
     expect(result).toContain("Prefers TypeScript");
   });
@@ -118,7 +118,7 @@ describe("getMemoryContext", () => {
       ],
     });
     const result = await getMemoryContext(sb);
-    expect(result).toContain("GOALS:");
+    expect(result).toContain("🎯 GOALS");
     expect(result).toContain("Ship v2 launch");
   });
 

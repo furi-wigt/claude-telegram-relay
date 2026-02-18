@@ -12,13 +12,24 @@ import { spawn } from "bun";
 import { writeFile, mkdir, readFile, unlink } from "fs/promises";
 import { readFileSync } from "fs";
 import { join, dirname } from "path";
-import { createClient, SupabaseClient } from "@supabase/supabase-js";
+import { supabase } from "./utils/supabase.ts";
 import { transcribe } from "./transcribe.ts";
 import {
   processMemoryIntents,
   getMemoryContext,
   getRelevantContext,
 } from "./memory.ts";
+import {
+  getShortTermContext,
+  formatShortTermContext,
+  shouldSummarize,
+  summarizeOldMessages,
+} from "./memory/shortTermMemory.ts";
+import {
+  extractAndStore,
+  rebuildProfileSummary,
+  getUserProfile,
+} from "./memory/longTermExtractor.ts";
 import { callOllama, checkOllamaAvailable } from "./fallback.ts";
 import { getAgentForChat, autoDiscoverGroup, loadGroupMappings } from "./routing/groupRouter.ts";
 import { loadSession as loadGroupSession, updateSessionId, initSessions, saveSession } from "./session/groupSessions.ts";
@@ -31,6 +42,7 @@ import { CodingSessionManager } from "./coding/sessionManager.ts";
 import { InputRouter } from "./coding/inputRouter.ts";
 import { ReminderManager } from "./coding/reminderManager.ts";
 import { registerCodingCommands } from "./coding/codingCommands.ts";
+import { InteractiveStateMachine } from "./interactive/index.ts";
 
 const PROJECT_ROOT = dirname(dirname(import.meta.path));
 
@@ -101,10 +113,6 @@ await mkdir(UPLOADS_DIR, { recursive: true });
 // SUPABASE (optional — only if configured)
 // ============================================================
 
-const supabase: SupabaseClient | null =
-  process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY
-    ? createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY)
-    : null;
 
 async function saveMessage(
   role: string,
@@ -130,6 +138,8 @@ async function saveMessage(
 
 // Check fallback availability at startup
 let fallbackAvailable = false;
+// FIX 7: Mutex to prevent concurrent Ollama extraction jobs from queuing up.
+let extractionInFlight = false;
 if (process.env.FALLBACK_MODEL) {
   fallbackAvailable = await checkOllamaAvailable();
   if (fallbackAvailable) {
@@ -166,7 +176,8 @@ bot.use(async (ctx, next) => {
 
 // Register session management commands (/status, /new, /memory, /history, /help)
 // NOTE: Registered AFTER security middleware so commands are protected
-registerCommands(bot, { supabase });
+const allowedUserId = parseInt(ALLOWED_USER_ID || "0", 10);
+registerCommands(bot, { supabase, userId: allowedUserId });
 
 // Register routine creation callback handler (inline keyboard for output target)
 registerCallbackHandler(bot);
@@ -279,6 +290,10 @@ await sessionManager.init();
 // Register /code command
 registerCodingCommands(bot, sessionManager, inputRouter);
 
+// Interactive Q&A flow (/plan command)
+const interactive = new InteractiveStateMachine(bot, callClaude);
+bot.command("plan", (ctx) => interactive.handlePlanCommand(ctx));
+
 // Background: auto-scan for desktop sessions
 if (CODING_AUTO_SCAN_INTERVAL > 0 && ALLOWED_USER_ID) {
   const allowedChatId = parseInt(ALLOWED_USER_ID, 10);
@@ -298,6 +313,8 @@ bot.on("callback_query:data", async (ctx) => {
   ) {
     await inputRouter.handleCallbackQuery(ctx, sessionManager);
     await ctx.answerCallbackQuery().catch(() => {});
+  } else if (data.startsWith("iq:")) {
+    await interactive.handleCallback(ctx, data);
   }
 });
 
@@ -328,7 +345,10 @@ bot.on("message:text", async (ctx) => {
   // Priority 2: Reply-to-message routing to coding sessions
   if (await inputRouter.tryRouteReply(ctx, sessionManager)) return;
 
-  // Priority 3: Check for routine creation intent before normal Claude processing
+  // Priority 3: Interactive Q&A free-text answer (when user is mid-plan session)
+  if (await interactive.handleFreeText(ctx, text)) return;
+
+  // Priority 4: Check for routine creation intent before normal Claude processing
   if (await detectAndHandle(ctx, text)) return;
 
   if (!queueManager.hasCapacity(chatId)) {
@@ -375,10 +395,14 @@ bot.on("message:text", async (ctx) => {
           }
         }
 
-        const [relevantContext, memoryContext] = await Promise.all([
-          getRelevantContext(supabase, text),
+        const userId = ctx.from?.id ?? 0;
+        const [shortTermCtxRaw, userProfile, relevantContext, memoryContext] = await Promise.all([
+          supabase ? getShortTermContext(supabase, chatId) : Promise.resolve({ verbatimMessages: [], summaries: [], totalMessages: 0 }),
+          supabase ? getUserProfile(supabase, userId) : Promise.resolve(""),
+          getRelevantContext(supabase, text, chatId),
           getMemoryContext(supabase, chatId),
         ]);
+        const shortTermContext = supabase ? formatShortTermContext(shortTermCtxRaw, USER_TIMEZONE) : "";
 
         const now = new Date();
         const timeStr = now.toLocaleString("en-US", {
@@ -392,6 +416,8 @@ bot.on("message:text", async (ctx) => {
         });
 
         const enrichedPrompt = buildAgentPrompt(agent, text, {
+          shortTermContext,
+          userProfile,
           relevantContext,
           memoryContext,
           profileContext,
@@ -425,6 +451,28 @@ bot.on("message:text", async (ctx) => {
 
         await saveMessage("user", text, undefined, chatId, agent.id);
         await saveMessage("assistant", response || rawResponse, undefined, chatId, agent.id);
+
+        // Async memory extraction (non-blocking — runs after response is sent)
+        // FIX 7: Skip if a previous extraction is still running to prevent Ollama queue buildup.
+        if (supabase && !extractionInFlight) {
+          extractionInFlight = true;
+          setImmediate(async () => {
+            try {
+              await extractAndStore(supabase, chatId, userId, text, response || rawResponse);
+              // Only run summarize + profile rebuild every 5 messages to reduce Ollama load.
+              if (session.messageCount % 5 === 0) {
+                if (await shouldSummarize(supabase, chatId)) {
+                  await summarizeOldMessages(supabase, chatId);
+                }
+                await rebuildProfileSummary(supabase, userId);
+              }
+            } catch (err) {
+              console.error("Async memory extraction failed:", err);
+            } finally {
+              extractionInFlight = false;
+            }
+          });
+        }
 
         // Append progress footer for slow Claude calls (>30s)
         const footer = buildProgressFooter(chatId, callDurationMs);
@@ -487,13 +535,17 @@ bot.on("message:voice", async (ctx) => {
         }
 
         const session = await loadGroupSession(chatId, agent.id);
+        const voiceUserId = ctx.from?.id ?? 0;
 
         await saveMessage("user", `[Voice ${voice.duration}s]: ${transcription}`, undefined, chatId, agent.id);
 
-        const [relevantContext, memoryContext] = await Promise.all([
-          getRelevantContext(supabase, transcription),
+        const [shortTermCtxRaw, userProfile, relevantContext, memoryContext] = await Promise.all([
+          supabase ? getShortTermContext(supabase, chatId) : Promise.resolve({ verbatimMessages: [], summaries: [], totalMessages: 0 }),
+          supabase ? getUserProfile(supabase, voiceUserId) : Promise.resolve(""),
+          getRelevantContext(supabase, transcription, chatId),
           getMemoryContext(supabase, chatId),
         ]);
+        const shortTermContext = supabase ? formatShortTermContext(shortTermCtxRaw, USER_TIMEZONE) : "";
 
         const now = new Date();
         const timeStr = now.toLocaleString("en-US", {
@@ -507,6 +559,8 @@ bot.on("message:voice", async (ctx) => {
         });
 
         const enrichedPrompt = buildAgentPrompt(agent, `[Voice message transcribed]: ${transcription}`, {
+          shortTermContext,
+          userProfile,
           relevantContext,
           memoryContext,
           profileContext,
@@ -536,6 +590,25 @@ bot.on("message:voice", async (ctx) => {
         await saveSession(session);
 
         await saveMessage("assistant", claudeResponse, undefined, chatId, agent.id);
+
+        // Async memory extraction (non-blocking — runs after response is sent)
+        // FIX 7: Same mutex as text handler — skip if extraction already in-flight.
+        if (supabase && !extractionInFlight) {
+          extractionInFlight = true;
+          setImmediate(async () => {
+            try {
+              await extractAndStore(supabase, chatId, voiceUserId, transcription, claudeResponse);
+              if (await shouldSummarize(supabase, chatId)) {
+                await summarizeOldMessages(supabase, chatId);
+              }
+              await rebuildProfileSummary(supabase, voiceUserId);
+            } catch (err) {
+              console.error("Async memory extraction failed:", err);
+            } finally {
+              extractionInFlight = false;
+            }
+          });
+        }
 
         const voiceFooter = buildProgressFooter(chatId, voiceCallDurationMs);
         const finalVoiceResponse = claudeResponse + (voiceFooter ? `\n\n${voiceFooter}` : "");
@@ -796,6 +869,16 @@ process.on('unhandledRejection', (reason, promise) => {
 
 // Catch grammY-level errors (network issues, middleware failures, etc.)
 bot.catch((err) => console.error("Bot error:", err));
+
+// Memory diagnostics: log heap every 60s to correlate spikes with operations.
+setInterval(() => {
+  const m = process.memoryUsage();
+  console.log(
+    `[MEM] heapUsed=${Math.round(m.heapUsed / 1024 / 1024)}MB` +
+    ` rss=${Math.round(m.rss / 1024 / 1024)}MB` +
+    ` external=${Math.round(m.external / 1024 / 1024)}MB`
+  );
+}, 60_000).unref();
 
 // Start bot without await so launchd doesn't time out
 bot.start({

@@ -20,7 +20,7 @@
  * Run manually: bun run routines/security-daily-scan.ts
  */
 
-import { sendToGroup } from "../src/utils/sendToGroup.ts";
+import { sendAndRecord } from "../src/utils/routineMessage.ts";
 import { GROUPS, validateGroup } from "../src/config/groups.ts";
 
 interface SecurityFindings {
@@ -102,7 +102,7 @@ async function main() {
   const findings = await getSecurityFindings();
   const message = formatSecurityMessage(findings);
 
-  await sendToGroup(GROUPS.SECURITY, message);
+  await sendAndRecord(GROUPS.SECURITY, message, { routineName: 'security-daily-scan', agentId: 'security-analyst' });
   console.log("Security scan summary sent to Security group");
 }
 

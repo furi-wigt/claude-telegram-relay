@@ -417,6 +417,29 @@ describe("analyzeTaskForTeam — cascade fallback", () => {
     // Task should be trimmed in the prompt
     expect(result.orchestrationPrompt).toContain("build a caching layer");
   });
+
+  test("cascade: falls back to hardcoded when Ollama returns structurally invalid JSON (roles: {})", async () => {
+    // Claude fails, Ollama returns valid JSON but wrong structure → throws → falls back to hardcoded
+    spyOn(teamAnalyzer, "analyzeWithClaude").mockRejectedValue(new Error("no claude"));
+    // Let analyzeWithOllama run with mocked fetch returning malformed structure
+    const originalFetch = globalThis.fetch;
+    const malformed = JSON.stringify({ strategy: "s", roles: {} });
+    globalThis.fetch = mock(async () =>
+      new Response(JSON.stringify({ response: malformed }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })
+    ) as typeof fetch;
+
+    try {
+      const result = await analyzeTaskForTeam("implement a feature");
+      // Should have fallen back to hardcoded — implement pattern
+      const roleNames = result.roles.map((r) => r.name);
+      expect(roleNames).toContain("implementer");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -609,6 +632,102 @@ describe("analyzeWithOllama — connectivity", () => {
       expect(result.roles[0].name).toBe("coder");
       expect(result.orchestrationPrompt).toMatch(/^Create an agent team/);
       expect(result.orchestrationPrompt).toContain("build something");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("throws 'JSON structure invalid' when roles is an object {} instead of array", async () => {
+    const originalFetch = globalThis.fetch;
+    const malformed = JSON.stringify({ strategy: "some strategy", roles: {} });
+    globalThis.fetch = mock(async () =>
+      new Response(JSON.stringify({ response: malformed }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })
+    ) as typeof fetch;
+    try {
+      await expect(analyzeWithOllama("test task")).rejects.toThrow("JSON structure invalid");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("throws 'JSON structure invalid' when roles array has only 1 entry (< 2)", async () => {
+    const originalFetch = globalThis.fetch;
+    const malformed = JSON.stringify({
+      strategy: "some strategy",
+      roles: [{ name: "solo", focus: "do everything" }],
+    });
+    globalThis.fetch = mock(async () =>
+      new Response(JSON.stringify({ response: malformed }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })
+    ) as typeof fetch;
+    try {
+      await expect(analyzeWithOllama("test task")).rejects.toThrow("JSON structure invalid");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("throws 'JSON structure invalid' when strategy is missing", async () => {
+    const originalFetch = globalThis.fetch;
+    const malformed = JSON.stringify({
+      roles: [{ name: "a", focus: "do a" }, { name: "b", focus: "do b" }],
+      // no strategy field
+    });
+    globalThis.fetch = mock(async () =>
+      new Response(JSON.stringify({ response: malformed }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })
+    ) as typeof fetch;
+    try {
+      await expect(analyzeWithOllama("test task")).rejects.toThrow("JSON structure invalid");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("throws 'role missing name or focus' when role objects lack required fields", async () => {
+    const originalFetch = globalThis.fetch;
+    // Valid array length, but role objects are {} instead of {name, focus}
+    const malformed = JSON.stringify({
+      strategy: "some strategy",
+      roles: [{}, {}],
+    });
+    globalThis.fetch = mock(async () =>
+      new Response(JSON.stringify({ response: malformed }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })
+    ) as typeof fetch;
+    try {
+      await expect(analyzeWithOllama("test task")).rejects.toThrow("role missing name or focus");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("throws 'role missing name or focus' when role has name but no focus", async () => {
+    const originalFetch = globalThis.fetch;
+    const malformed = JSON.stringify({
+      strategy: "strategy",
+      roles: [
+        { name: "builder" }, // no focus
+        { name: "reviewer", focus: "review code" },
+      ],
+    });
+    globalThis.fetch = mock(async () =>
+      new Response(JSON.stringify({ response: malformed }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })
+    ) as typeof fetch;
+    try {
+      await expect(analyzeWithOllama("test task")).rejects.toThrow("role missing name or focus");
     } finally {
       globalThis.fetch = originalFetch;
     }

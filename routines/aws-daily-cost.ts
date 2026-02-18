@@ -20,7 +20,7 @@
  * Run manually: bun run routines/aws-daily-cost.ts
  */
 
-import { sendToGroup } from "../src/utils/sendToGroup.ts";
+import { sendAndRecord } from "../src/utils/routineMessage.ts";
 import { GROUPS, validateGroup } from "../src/config/groups.ts";
 
 interface CostData {
@@ -85,7 +85,7 @@ async function main() {
   const costData = await getAWSCostData();
   const message = formatCostMessage(costData);
 
-  await sendToGroup(GROUPS.AWS_ARCHITECT, message);
+  await sendAndRecord(GROUPS.AWS_ARCHITECT, message, { routineName: 'aws-daily-cost', agentId: 'aws-architect' });
   console.log("AWS cost alert sent to AWS Architect group");
 }
 

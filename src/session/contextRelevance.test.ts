@@ -1,4 +1,4 @@
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect, afterEach, mock } from "bun:test";
 import {
   extractKeywords,
   computeOverlapScore,
@@ -6,7 +6,9 @@ import {
   updateTopicKeywords,
   buildRelevancePrompt,
   checkContextRelevanceSmart,
+  checkContextRelevanceWithOllama,
 } from "./contextRelevance.ts";
+import type { SessionContext } from "./contextRelevance.ts";
 
 describe("extractKeywords", () => {
   test("extracts meaningful words", () => {
@@ -230,5 +232,133 @@ describe("checkContextRelevanceSmart", () => {
     expect(result).toHaveProperty("score");
     expect(result).toHaveProperty("reason");
     expect(result).toHaveProperty("method");
+  });
+});
+
+describe("checkContextRelevanceWithOllama", () => {
+  const origFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = origFetch;
+  });
+
+  const sampleContext: SessionContext = {
+    topicKeywords: ["aws", "lambda"],
+    lastUserMessages: ["How do I deploy a Lambda function?"],
+    lastActivity: new Date(Date.now() - 5 * 60 * 1000).toISOString(), // 5 min ago
+  };
+
+  test("returns relevant result for YES response", async () => {
+    globalThis.fetch = mock(() =>
+      Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ response: "YES" }),
+      })
+    ) as any;
+
+    const result = await checkContextRelevanceWithOllama("What timeout for Lambda?", sampleContext);
+    expect(result).not.toBeNull();
+    expect(result!.isRelevant).toBe(true);
+    expect(result!.score).toBe(0.9);
+    expect(result!.reason).toContain("Ollama");
+  });
+
+  test("returns not-relevant result for NO response", async () => {
+    globalThis.fetch = mock(() =>
+      Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ response: "NO" }),
+      })
+    ) as any;
+
+    const result = await checkContextRelevanceWithOllama("What's a good cake recipe?", sampleContext);
+    expect(result).not.toBeNull();
+    expect(result!.isRelevant).toBe(false);
+    expect(result!.score).toBe(0.1);
+  });
+
+  test("returns relevant result for 'Y' (short form yes)", async () => {
+    globalThis.fetch = mock(() =>
+      Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ response: "Y" }),
+      })
+    ) as any;
+
+    const result = await checkContextRelevanceWithOllama("Lambda config?", sampleContext);
+    expect(result!.isRelevant).toBe(true);
+  });
+
+  test("returns not-relevant for 'N' (short form no)", async () => {
+    globalThis.fetch = mock(() =>
+      Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ response: "N" }),
+      })
+    ) as any;
+
+    const result = await checkContextRelevanceWithOllama("Tell me a joke", sampleContext);
+    expect(result!.isRelevant).toBe(false);
+  });
+
+  test("returns null for ambiguous response (not YES or NO)", async () => {
+    globalThis.fetch = mock(() =>
+      Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ response: "Maybe, it depends on context." }),
+      })
+    ) as any;
+
+    const result = await checkContextRelevanceWithOllama("Some message", sampleContext);
+    expect(result).toBeNull();
+  });
+
+  test("returns null when Ollama returns empty response", async () => {
+    globalThis.fetch = mock(() =>
+      Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ response: "" }),
+      })
+    ) as any;
+
+    const result = await checkContextRelevanceWithOllama("Some message", sampleContext);
+    expect(result).toBeNull();
+  });
+
+  test("returns null on non-200 HTTP status", async () => {
+    globalThis.fetch = mock(() =>
+      Promise.resolve({ ok: false, status: 503 })
+    ) as any;
+
+    const result = await checkContextRelevanceWithOllama("Some message", sampleContext);
+    expect(result).toBeNull();
+  });
+
+  test("returns null when fetch throws (network error)", async () => {
+    globalThis.fetch = mock(() => Promise.reject(new Error("Network unreachable"))) as any;
+
+    const result = await checkContextRelevanceWithOllama("Some message", sampleContext);
+    expect(result).toBeNull();
+  });
+
+  test("returns null on AbortError (timeout)", async () => {
+    globalThis.fetch = mock(() =>
+      Promise.reject(Object.assign(new Error("signal is aborted"), { name: "AbortError" }))
+    ) as any;
+
+    const result = await checkContextRelevanceWithOllama("Some message", sampleContext);
+    expect(result).toBeNull();
+  });
+
+  test("handles response with leading/trailing whitespace", async () => {
+    globalThis.fetch = mock(() =>
+      Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ response: "  yes  \n" }),
+      })
+    ) as any;
+
+    const result = await checkContextRelevanceWithOllama("Lambda memory config?", sampleContext);
+    expect(result!.isRelevant).toBe(true);
   });
 });

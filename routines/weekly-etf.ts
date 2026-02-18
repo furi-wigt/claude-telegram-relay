@@ -27,7 +27,7 @@
  * Run manually: bun run routines/weekly-etf.ts
  */
 
-import { sendToGroup } from "../src/utils/sendToGroup.ts";
+import { sendAndRecord } from "../src/utils/routineMessage.ts";
 import { GROUPS, validateGroup } from "../src/config/groups.ts";
 
 // ============================================================
@@ -538,7 +538,7 @@ async function main() {
   }
 
   const report = await buildReport();
-  await sendToGroup(GROUPS.GENERAL, report);
+  await sendAndRecord(GROUPS.GENERAL, report, { routineName: 'weekly-etf', agentId: 'general-assistant' });
   console.log("Weekly UCITS ETF analysis sent to General group");
 }
 

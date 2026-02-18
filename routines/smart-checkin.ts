@@ -23,7 +23,7 @@
 import { spawn } from "bun";
 import { readFile, writeFile } from "fs/promises";
 import { createClient } from "@supabase/supabase-js";
-import { sendToGroup } from "../src/utils/sendToGroup.ts";
+import { sendAndRecord } from "../src/utils/routineMessage.ts";
 import { GROUPS, validateGroup } from "../src/config/groups.ts";
 
 const CLAUDE_PATH = process.env.CLAUDE_PATH || "claude";
@@ -197,7 +197,7 @@ async function main() {
 
   if (shouldCheckin && message && message !== "none") {
     console.log("Sending check-in to General group...");
-    await sendToGroup(GROUPS.GENERAL, message);
+    await sendAndRecord(GROUPS.GENERAL, message, { routineName: 'smart-checkin', agentId: 'general-assistant' });
 
     const state = await loadState();
     state.lastCheckinTime = new Date().toISOString();

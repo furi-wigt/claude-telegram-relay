@@ -169,23 +169,26 @@ export async function checkContextRelevanceWithOllama(
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), OLLAMA_RELEVANCE_TIMEOUT_MS);
 
-    const response = await fetch(`${OLLAMA_API_URL}/api/generate`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: CONTEXT_RELEVANCE_MODEL,
-        prompt,
-        stream: false,
-        options: {
-          temperature: 0,      // deterministic — no creativity needed
-          num_predict: 5,      // we only need YES or NO
-          top_k: 1,            // greedy decoding
-        },
-      }),
-      signal: controller.signal,
-    });
-
-    clearTimeout(timer);
+    let response: Response;
+    try {
+      response = await fetch(`${OLLAMA_API_URL}/api/generate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: CONTEXT_RELEVANCE_MODEL,
+          prompt,
+          stream: false,
+          options: {
+            temperature: 0,      // deterministic — no creativity needed
+            num_predict: 5,      // we only need YES or NO
+            top_k: 1,            // greedy decoding
+          },
+        }),
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
 
     if (!response.ok) return null;
 

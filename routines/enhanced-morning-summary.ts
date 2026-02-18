@@ -24,7 +24,7 @@
  */
 
 import { createClient } from "@supabase/supabase-js";
-import { sendToGroup } from "../src/utils/sendToGroup.ts";
+import { sendAndRecord } from "../src/utils/routineMessage.ts";
 import { GROUPS, validateGroup } from "../src/config/groups.ts";
 import { spawn } from "bun";
 import { getSingaporeWeather2Hr, getSingaporeWeatherOpenMeteo } from "../src/utils/weather.ts";
@@ -621,7 +621,7 @@ async function main() {
   }
 
   const { message, tasks } = await buildEnhancedBriefing();
-  await sendToGroup(GROUPS.GENERAL, message);
+  await sendAndRecord(GROUPS.GENERAL, message, { routineName: 'morning-summary', agentId: 'general-assistant' });
   console.log("Enhanced morning summary sent to General group");
 
   // Note: Task confirmation and reminder scheduling would be handled

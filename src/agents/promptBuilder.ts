@@ -8,6 +8,8 @@
 import type { AgentConfig } from "./config.ts";
 
 export interface PromptContext {
+  shortTermContext?: string;
+  userProfile?: string;
   relevantContext?: string;
   memoryContext?: string;
   profileContext?: string;
@@ -37,9 +39,16 @@ export function buildAgentPrompt(
   // Current time
   parts.push(`Current time: ${context.timeStr}`);
 
-  // User profile
-  if (context.profileContext) {
-    parts.push(`\nProfile:\n${context.profileContext}`);
+  // User profile (extracted long-term profile takes precedence over static profile.md)
+  if (context.userProfile) {
+    parts.push(`\n═══ USER PROFILE ═══\n${context.userProfile}`);
+  } else if (context.profileContext) {
+    parts.push(`\n═══ USER PROFILE ═══\n${context.profileContext}`);
+  }
+
+  // Conversation history (short-term: summaries + last N verbatim messages)
+  if (context.shortTermContext) {
+    parts.push(`\n═══ CONVERSATION HISTORY ═══\n${context.shortTermContext}`);
   }
 
   // Memory context (facts, goals) - already filtered by chat_id
@@ -47,9 +56,9 @@ export function buildAgentPrompt(
     parts.push(`\n${context.memoryContext}`);
   }
 
-  // Relevant past conversations - already filtered by chat_id
+  // Relevant past conversations - semantic search results
   if (context.relevantContext) {
-    parts.push(`\n${context.relevantContext}`);
+    parts.push(`\n═══ RELEVANT CONTEXT ═══\n${context.relevantContext}`);
   }
 
   // Memory management instructions

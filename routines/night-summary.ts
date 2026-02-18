@@ -22,7 +22,7 @@
 
 import { createClient } from "@supabase/supabase-js";
 import { callOllama } from "../src/fallback.ts";
-import { sendToGroup } from "../src/utils/sendToGroup.ts";
+import { sendAndRecord } from "../src/utils/routineMessage.ts";
 import { GROUPS, validateGroup } from "../src/config/groups.ts";
 
 const SUPABASE_URL = process.env.SUPABASE_URL || "";
@@ -250,7 +250,7 @@ async function main() {
   }
 
   const summary = await buildSummary();
-  await sendToGroup(GROUPS.GENERAL, summary);
+  await sendAndRecord(GROUPS.GENERAL, summary, { routineName: 'night-summary', agentId: 'general-assistant' });
   console.log("Night summary sent to General group");
 }
 

@@ -4,19 +4,24 @@
  * Registers Telegram bot commands for session management and status tracking.
  *
  * Available commands:
- *   /status   - Show current session status
- *   /new      - Force start a new session (clear current)
- *   /memory   - Show stored facts and goals
- *   /history  - Show recent messages in session
- *   /help     - Show all available commands
+ *   /status         - Show current session status
+ *   /new            - Force start a new session (clear current)
+ *   /memory         - Show all memory (goals, prefs, facts, dates)
+ *   /memory goals   - Active goals only
+ *   /memory done    - Completed goals
+ *   /memory prefs   - Preferences
+ *   /memory facts   - Facts
+ *   /memory dates   - Dates & reminders
+ *   /history        - Show recent messages in session
+ *   /help           - Show all available commands
  */
 
 import type { Bot, Context } from "grammy";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { getSession, getSessionSummary, resetSession } from "../session/groupSessions.ts";
-import { getMemoryContext, getMemoryContextRaw } from "../memory.ts";
-import { summarizeMemoryItem } from "../ollama.ts";
+import { getMemoryFull, type FullMemory } from "../memory.ts";
 import { handleRoutinesCommand } from "../routines/routineHandler.ts";
+import { registerMemoryCommands } from "./memoryCommands.ts";
 
 const TELEGRAM_MAX_MESSAGE_LENGTH = 4096;
 
@@ -58,6 +63,61 @@ async function sendLongMessage(ctx: Context, text: string): Promise<void> {
 
 export interface CommandOptions {
   supabase: SupabaseClient | null;
+  userId?: number;
+}
+
+// ── Memory formatting helpers ────────────────────────────────────────────────
+
+function formatGoalLine(g: FullMemory["goals"][0]): string {
+  const deadline = g.deadline
+    ? ` · due ${new Date(g.deadline).toLocaleDateString("en-SG", { day: "numeric", month: "short", year: "numeric" })}`
+    : "";
+  return `  • ${g.content}${deadline}`;
+}
+
+function formatCompletedLine(g: FullMemory["completedGoals"][0]): string {
+  const when = g.completed_at
+    ? ` · ${new Date(g.completed_at).toLocaleDateString("en-SG", { day: "numeric", month: "short" })}`
+    : "";
+  return `  • ${g.content}${when}`;
+}
+
+/** Returns a formatted section string, or empty string if items is empty. */
+function formatSection(
+  header: string,
+  items: { content: string }[],
+  lineFormatter: (item: any) => string
+): string {
+  if (items.length === 0) return "";
+  const lines = items.map(lineFormatter).join("\n");
+  return `${header}\n${"─".repeat(24)}\n${lines}`;
+}
+
+function buildMemoryOverview(mem: FullMemory): string {
+  const parts: string[] = [`🧠 Memory\n${"═".repeat(24)}`];
+
+  const goalsSection = formatSection("🎯 Goals", mem.goals, formatGoalLine);
+  if (goalsSection) parts.push(goalsSection);
+
+  const prefsSection = formatSection("⚙️ Preferences", mem.preferences, (p) => `  • ${p.content}`);
+  if (prefsSection) parts.push(prefsSection);
+
+  const factsSection = formatSection("📌 Facts", mem.facts, (f) => `  • ${f.content}`);
+  if (factsSection) parts.push(factsSection);
+
+  const datesSection = formatSection("📅 Dates & Reminders", mem.dates, (d) => `  • ${d.content}`);
+  if (datesSection) parts.push(datesSection);
+
+  if (mem.completedGoals.length > 0) {
+    parts.push(`✅ Completed: ${mem.completedGoals.length} goal${mem.completedGoals.length === 1 ? "" : "s"} · /memory done`);
+  }
+
+  const tips = [
+    "/memory goals · /memory prefs · /memory facts · /memory dates · /memory done",
+  ];
+  parts.push(tips.join("\n"));
+
+  return parts.join("\n\n");
 }
 
 /**
@@ -74,8 +134,15 @@ export function registerCommands(bot: Bot, options: CommandOptions): void {
       "",
       "/status - Show current session status",
       "/new - Start a fresh conversation (clears session)",
-      "/memory - Show summarized memory (Ollama)",
-      "/memory long - Show full memory details",
+      "/memory - Show all memory (goals, prefs, facts, dates)",
+      "/memory goals - Active goals only",
+      "/memory done - Completed goals",
+      "/memory prefs - Preferences",
+      "/memory facts - Facts",
+      "/memory dates - Dates & reminders",
+      "/remember [fact] - Explicitly store a fact or preference",
+      "/forget [topic] - Delete memories matching topic (or all if no topic)",
+      "/summary - Show compressed conversation history",
       "/history - Show recent conversation messages",
       "/routines list - List your scheduled routines",
       "/routines delete <name> - Delete a routine",
@@ -119,8 +186,8 @@ export function registerCommands(bot: Bot, options: CommandOptions): void {
     );
   });
 
-  // /memory        — summarized view (Ollama per-item)
-  // /memory long   — full view (existing sendLongMessage behavior)
+  // /memory [subcommand]
+  // Subcommands: goals | done | prefs | facts | dates | (none = all)
   bot.command("memory", async (ctx) => {
     const chatId = ctx.chat?.id;
     if (!chatId) return;
@@ -131,63 +198,51 @@ export function registerCommands(bot: Bot, options: CommandOptions): void {
     }
 
     const arg = (ctx.match ?? "").trim().toLowerCase();
+    const mem = await getMemoryFull(supabase, chatId);
+    const total = mem.goals.length + mem.preferences.length + mem.facts.length + mem.dates.length + mem.completedGoals.length;
 
-    if (arg === "long") {
-      // Full view — same as original behavior
-      const memoryContext = await getMemoryContext(supabase, chatId);
-
-      if (!memoryContext) {
-        await ctx.reply(
-          "No memories stored yet.\n\n" +
-          "I'll remember things when you tell me something important, " +
-          "or when you set goals. I'll tag them automatically."
-        );
-        return;
-      }
-
-      await sendLongMessage(ctx, `🧠 Memory\n${"═".repeat(24)}\n\n${memoryContext}`);
-      return;
-    }
-
-    // Summarized view — Ollama per-item, parallel
-    const raw = await getMemoryContextRaw(supabase, chatId);
-
-    if (raw.facts.length === 0 && raw.goals.length === 0) {
+    if (total === 0 && arg !== "done") {
       await ctx.reply(
         "No memories stored yet.\n\n" +
-        "I'll remember things when you tell me something important, " +
-        "or when you set goals. I'll tag them automatically."
+        "Tell me something to remember, set a goal, or share your preferences. " +
+        "I'll tag them automatically."
       );
       return;
     }
 
-    const [summarizedFacts, summarizedGoals] = await Promise.all([
-      Promise.all(raw.facts.map((f) => summarizeMemoryItem(f.content))),
-      Promise.all(raw.goals.map((g) => summarizeMemoryItem(g.content))),
-    ]);
+    switch (arg) {
+      case "goals":
+        await sendLongMessage(ctx, formatSection("🎯 Goals", mem.goals, formatGoalLine) ||
+          "No active goals.\n\nSet one by telling me what you want to achieve, " +
+          "or /remember My goal is to...");
+        break;
 
-    const parts: string[] = [];
+      case "done":
+        await sendLongMessage(ctx, formatSection("✅ Completed Goals", mem.completedGoals, formatCompletedLine) ||
+          "No completed goals yet.");
+        break;
 
-    if (summarizedFacts.length > 0) {
-      const lines = summarizedFacts.map((s) => `  • ${s}`).join("\n");
-      parts.push(`📌 FACTS\n${"─".repeat(24)}\n${lines}`);
+      case "prefs":
+      case "preferences":
+        await sendLongMessage(ctx, formatSection("⚙️ Preferences", mem.preferences, (p) => `  • ${p.content}`) ||
+          "No preferences stored yet.\n\nTell me how you like things done.");
+        break;
+
+      case "facts":
+        await sendLongMessage(ctx, formatSection("📌 Facts", mem.facts, (f) => `  • ${f.content}`) ||
+          "No facts stored yet.");
+        break;
+
+      case "dates":
+      case "reminders":
+        await sendLongMessage(ctx, formatSection("📅 Dates & Reminders", mem.dates, (d) => `  • ${d.content}`) ||
+          "No dates or reminders stored yet.");
+        break;
+
+      default:
+        // Overview: all categories
+        await sendLongMessage(ctx, buildMemoryOverview(mem));
     }
-
-    if (summarizedGoals.length > 0) {
-      const lines = raw.goals
-        .map((g, i) => {
-          const deadline = g.deadline
-            ? ` (by ${new Date(g.deadline).toLocaleDateString()})`
-            : "";
-          return `  • ${summarizedGoals[i]}${deadline}`;
-        })
-        .join("\n");
-      parts.push(`🎯 GOALS\n${"─".repeat(24)}\n${lines}`);
-    }
-
-    const body = parts.join("\n\n");
-    const footer = "\n\nType /memory long for full details.";
-    await sendLongMessage(ctx, `🧠 Memory (summarized)\n${"═".repeat(24)}\n\n${body}${footer}`);
   });
 
   // /history - show recent messages from session
@@ -208,6 +263,9 @@ export function registerCommands(bot: Bot, options: CommandOptions): void {
 
     await ctx.reply(`Recent messages in this session:\n\n${messages}`);
   });
+
+  // Register memory management commands (/remember, /forget, /summary)
+  registerMemoryCommands(bot, { supabase, userId: options.userId ?? 0 });
 }
 
 /**
