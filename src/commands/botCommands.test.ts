@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { buildProgressFooter, buildContextSwitchPrompt } from "./botCommands.ts";
+import { buildProgressFooter, buildContextSwitchPrompt, buildContextSwitchKeyboard } from "./botCommands.ts";
 
 // We test the pure functions only (no bot instance needed)
 describe("buildProgressFooter", () => {
@@ -25,12 +25,11 @@ describe("buildContextSwitchPrompt", () => {
   test("includes topic in message", () => {
     const result = buildContextSwitchPrompt(["aws", "lambda", "deploy"]);
     expect(result).toContain("aws");
-    expect(result).toContain("/new");
+    expect(result).toContain("different topic");
   });
 
   test("handles empty topics", () => {
     const result = buildContextSwitchPrompt([]);
-    expect(result).toContain("/new");
     expect(result).toContain("Current session is active");
   });
 
@@ -40,10 +39,17 @@ describe("buildContextSwitchPrompt", () => {
     expect(result).not.toContain("d,");
     expect(result).not.toContain("e,");
   });
+});
 
-  test("provides clear user choices", () => {
-    const result = buildContextSwitchPrompt(["cooking"]);
-    expect(result).toContain("Start fresh");
-    expect(result).toContain("/new");
+describe("buildContextSwitchKeyboard", () => {
+  test("returns keyboard with new and continue buttons", () => {
+    const keyboard = buildContextSwitchKeyboard(12345);
+    const rows = keyboard.inline_keyboard;
+    expect(rows.length).toBeGreaterThan(0);
+    const buttons = rows.flat();
+    const newBtn = buttons.find((b) => b.callback_data === "ctxswitch:new:12345");
+    const continueBtn = buttons.find((b) => b.callback_data === "ctxswitch:continue:12345");
+    expect(newBtn).toBeDefined();
+    expect(continueBtn).toBeDefined();
   });
 });

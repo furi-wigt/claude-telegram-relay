@@ -15,8 +15,8 @@ const parseModelIndicesMock = mock((raw: string, max: number) => {
   return [];
 });
 beforeAll(() => {
-  mock.module("../claude.ts", () => ({
-    callClaudeText: mock(() => Promise.reject(new Error("Claude unavailable in tests"))),
+  mock.module("../claude-process.ts", () => ({
+    claudeText: mock(() => Promise.reject(new Error("Claude unavailable in tests"))),
   }));
   mock.module("../utils/duplicateDetector.ts", () => ({
     findPotentialDuplicates: findPotentialDuplicatesMock,

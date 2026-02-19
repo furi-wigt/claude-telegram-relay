@@ -149,7 +149,7 @@ export async function shouldSummarize(
 }
 
 /**
- * Summarize the oldest chunk of messages using Claude haiku.
+ * Summarize the oldest chunk of messages using Ollama.
  * Stores result in conversation_summaries. Does NOT delete original messages.
  */
 export async function summarizeOldMessages(

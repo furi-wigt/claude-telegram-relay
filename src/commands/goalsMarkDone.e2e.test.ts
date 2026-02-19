@@ -15,10 +15,10 @@
 
 import { describe, test, expect, mock, beforeAll } from "bun:test";
 
-// Mock callClaudeText before importing — prevents real API calls in tests
+// Mock claudeText before importing — prevents real API calls in tests
 beforeAll(() => {
-  mock.module("../claude.ts", () => ({
-    callClaudeText: mock(() => Promise.reject(new Error("Claude unavailable in tests"))),
+  mock.module("../claude-process.ts", () => ({
+    claudeText: mock(() => Promise.reject(new Error("Claude unavailable in tests"))),
   }));
 });
 

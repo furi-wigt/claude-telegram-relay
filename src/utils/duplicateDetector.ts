@@ -1,7 +1,7 @@
 /**
  * Semantic duplicate detection for memory items.
  *
- * Uses Claude Haiku (callClaudeText) to check if a new item has the same
+ * Uses Claude Haiku (claudeText) to check if a new item has the same
  * meaning as any existing item — consistent with findMatchingItems() and
  * findGoalsByIndexOrQuery() in directMemoryCommands.ts.
  *
@@ -10,7 +10,7 @@
  * Graceful degradation: returns [] if Claude unavailable.
  */
 
-import { callClaudeText } from "../claude.ts";
+import { claudeText } from "../claude-process.ts";
 
 /**
  * Common tech acronyms expanded to their full forms for word-level matching.
@@ -197,7 +197,7 @@ export async function findPotentialDuplicates(
       `"Related but different" is NOT a match. Only match if the core meaning is the same.`;
 
     console.log(`[findPotentialDuplicates] calling Claude Haiku for "${newContent}" vs ${candidates.length} candidates (filtered from ${existingItems.length})`);
-    const response = await callClaudeText(prompt, { timeoutMs: 30_000 });
+    const response = await claudeText(prompt, { timeoutMs: 30_000 });
     console.log(`[findPotentialDuplicates] Claude response: "${response.trim()}"`);
     const indices = parseModelIndices(response, candidates.length);
     console.log(`[findPotentialDuplicates] matched indices: ${JSON.stringify(indices)}`);

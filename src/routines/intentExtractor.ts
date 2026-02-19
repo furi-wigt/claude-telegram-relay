@@ -5,7 +5,7 @@
  * structured config (name, cron, prompt) using Claude.
  */
 
-import { callClaudeText } from "../claude.ts";
+import { claudeText } from "../claude-process.ts";
 import type { PendingRoutine } from "./types.ts";
 
 // Keywords that suggest the user wants to create a scheduled routine
@@ -62,7 +62,7 @@ export async function extractRoutineConfig(
     `User message: ${userMessage}`;
 
   try {
-    const text = await callClaudeText(prompt, {
+    const text = await claudeText(prompt, {
       model: "claude-haiku-4-5-20251001",
       timeoutMs: 30_000,
     });

@@ -39,7 +39,7 @@ export class InteractiveStateMachine {
   constructor(
     private bot: Bot,
     private callClaude: CallerCallClaude,
-    /** Optional lighter callable for question generation (e.g. callClaudeText).
+    /** Optional lighter callable for question generation (e.g. claudeText).
      * Falls back to callClaude when not provided. */
     private callClaudeForQuestions?: CallerCallClaude
   ) {

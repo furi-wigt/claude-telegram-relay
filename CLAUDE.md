@@ -254,7 +254,7 @@ Lets the bot understand voice messages sent on Telegram.
 
 ## Phase 8: Fallback AI — Ollama (Optional, ~5 min)
 
-When Claude is unavailable, the bot auto-switches to a local Ollama model. Ollama is also used for memory extraction (pulling facts, goals, and preferences from conversations).
+When Claude is unavailable, the bot auto-switches to a local Ollama model. Ollama is used as a fallback for LTM extraction; Claude Haiku is the primary provider for pulling facts, goals, and preferences from conversations.
 
 **Steps:**
 

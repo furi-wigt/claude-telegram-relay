@@ -137,6 +137,15 @@ export function registerMemoryConfirmHandler(
       // No pending state (e.g. bot restarted); silently dismiss
       await ctx.editMessageText("Session expired.");
     }
+
+    // Auto-delete after 3 seconds so confirmation is visible but doesn't clutter chat
+    setTimeout(async () => {
+      try {
+        await ctx.deleteMessage();
+      } catch {
+        // Ignore: message may already be deleted or bot lacks delete permission in group
+      }
+    }, 3000);
   });
 }
 

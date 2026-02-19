@@ -8,11 +8,17 @@
  */
 
 import { Bot, Context } from "grammy";
-import { spawn } from "bun";
 import { writeFile, mkdir, readFile, unlink } from "fs/promises";
 import { readFileSync } from "fs";
 import { join, dirname } from "path";
 import { supabase } from "./utils/supabase.ts";
+import {
+  activeStreams,
+  streamKey,
+  handleCancelCallback,
+  handleCancelCommand,
+} from "./cancel.ts";
+import { markdownToHtml } from "./utils/htmlFormat.ts";
 import { transcribe } from "./transcribe.ts";
 import {
   processMemoryIntents,
@@ -35,21 +41,22 @@ import {
   registerMemoryConfirmHandler,
   sendMemoryConfirmation,
 } from "./memory/memoryConfirm.ts";
+import { enqueueExtraction } from "./memory/extractionQueue.ts";
 import { callOllama, checkOllamaAvailable } from "./fallback.ts";
 import { getAgentForChat, autoDiscoverGroup, loadGroupMappings } from "./routing/groupRouter.ts";
 import { loadSession as loadGroupSession, updateSessionId, initSessions, saveSession } from "./session/groupSessions.ts";
 import { buildAgentPrompt } from "./agents/promptBuilder.ts";
 import { GroupQueueManager } from "./queue/groupQueueManager.ts";
-import { checkContextRelevanceSmart, updateTopicKeywords } from "./session/contextRelevance.ts";
-import { registerCommands, buildProgressFooter, buildContextSwitchPrompt } from "./commands/botCommands.ts";
+import { registerCommands, buildProgressFooter, registerContextSwitchCallbackHandler } from "./commands/botCommands.ts";
 import { detectAndHandle, registerCallbackHandler } from "./routines/routineHandler.ts";
 import { CodingSessionManager } from "./coding/sessionManager.ts";
 import { InputRouter } from "./coding/inputRouter.ts";
 import { ReminderManager } from "./coding/reminderManager.ts";
 import { registerCodingCommands } from "./coding/codingCommands.ts";
 import { InteractiveStateMachine } from "./interactive/index.ts";
-import { callClaudeText } from "./claude.ts";
+import { claudeText, claudeStream } from "./claude-process.ts";
 import { ProgressIndicator } from "./utils/progressIndicator.ts";
+import { trace, generateTraceId } from "./utils/tracer.ts";
 
 const PROJECT_ROOT = dirname(dirname(import.meta.path));
 
@@ -82,7 +89,8 @@ const ALLOWED_USER_ID = process.env.TELEGRAM_USER_ID || "";
 const CLAUDE_PATH = process.env.CLAUDE_PATH || "claude";
 const PROJECT_DIR = process.env.PROJECT_DIR || "";
 const RELAY_DIR = process.env.RELAY_DIR || join(process.env.HOME || "~", ".claude-relay");
-const CLAUDE_TIMEOUT = parseInt(process.env.CLAUDE_TIMEOUT || "900000", 10);
+// CLAUDE_TIMEOUT removed — replaced by activity-based idle timeout in claude-process.ts.
+// Configure via: CLAUDE_IDLE_TIMEOUT_MS (default 300000) and CLAUDE_SOFT_CEILING_MS (default 1800000).
 
 // Queue Configuration
 const QUEUE_MAX_DEPTH = parseInt(process.env.QUEUE_MAX_DEPTH || "50", 10);
@@ -147,8 +155,6 @@ async function saveMessage(
 
 // Check fallback availability at startup
 let fallbackAvailable = false;
-// FIX 7: Mutex to prevent concurrent Ollama extraction jobs from queuing up.
-let extractionInFlight = false;
 if (process.env.FALLBACK_MODEL) {
   fallbackAvailable = await checkOllamaAvailable();
   if (fallbackAvailable) {
@@ -208,8 +214,22 @@ registerCallbackHandler(bot);
 // Register memory confirmation callback handler (inline keyboard for uncertain memory items)
 registerMemoryConfirmHandler(bot, supabase);
 
+// Kept for backward compat: handles "New topic / Continue" button clicks from any
+// context-switch prompts that were sent before topic detection was removed. Safe to
+// keep indefinitely — it no-ops when there are no pending context-switch messages.
+registerContextSwitchCallbackHandler(bot, async (chatId: number, text: string, ctx: Context) => {
+  if (!queueManager.hasCapacity(chatId, null)) {
+    await ctx.reply("Queue is full. Please try again shortly.");
+    return;
+  }
+  queueManager.getOrCreate(chatId, null).enqueue({
+    label: `[chat:${chatId}] ctxswitch: ${text.substring(0, 30)}`,
+    run: () => processTextMessage(chatId, null, text, ctx),
+  });
+});
+
 // ============================================================
-// CORE: Call Claude CLI
+// CORE: Call Claude CLI (delegates to unified claude-process)
 // ============================================================
 
 async function callClaude(
@@ -217,155 +237,62 @@ async function callClaude(
   options?: {
     resume?: boolean;
     sessionId?: string | null;
-    imagePath?: string;
     onProgress?: (summary: string) => void;
     onSessionId?: (sessionId: string) => void;
+    /** When set, registers an AbortController in activeStreams so the user can cancel. */
+    chatId?: number;
+    threadId?: number | null;
   }
 ): Promise<string> {
-  const args = [CLAUDE_PATH, "-p", prompt];
-
-  // Resume previous session if available and requested
-  if (options?.resume && options?.sessionId) {
-    args.push("--resume", options.sessionId);
-  }
-
-  args.push("--output-format", "stream-json", "--verbose");
-
   console.log(`Calling Claude: ${prompt.substring(0, 50)}...`);
 
+  const controller = new AbortController();
+  const key = options?.chatId != null
+    ? streamKey(options.chatId, options.threadId ?? null)
+    : null;
+  if (key) activeStreams.set(key, { controller });
+
   try {
-    const env = { ...process.env };
-    // Remove ALL Claude Code session detection vars to prevent nested session errors
-    for (const key of ['CLAUDECODE', 'CLAUDE_CODE_SSE_PORT', 'CLAUDE_CODE_ENTRYPOINT', 'CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS']) {
-      delete env[key];
-    }
-    env.CLAUDE_SUBPROCESS = "1";
-
-    const proc = spawn(args, {
-      stdout: "pipe",
-      stderr: "pipe",
+    const chatId = options?.chatId;
+    const threadId = options?.threadId ?? null;
+    return await claudeStream(prompt, {
+      sessionId: options?.resume && options?.sessionId ? options.sessionId : undefined,
       cwd: PROJECT_DIR || undefined,
-      env,
+      claudePath: CLAUDE_PATH,
+      onProgress: options?.onProgress,
+      onSessionId: options?.onSessionId,
+      signal: controller.signal,
+      // Notify the user in Telegram when Claude has been running for 30 min (soft ceiling).
+      // The stream is NOT killed — the user can tap /cancel if they want to stop.
+      onSoftCeiling: chatId != null ? (msg) => {
+        bot.api.sendMessage(
+          chatId,
+          msg,
+          threadId != null ? { message_thread_id: threadId } : undefined
+        ).catch(() => {});
+      } : undefined,
     });
-
-    let resultText = "";
-    let lastAssistantText = "";
-    let stderrText = "";
-
-    // Parse NDJSON stream line-by-line, emitting granular progress events
-    const parseStream = async (): Promise<void> => {
-      const reader = proc.stdout.getReader();
-      const decoder = new TextDecoder();
-      let buf = "";
-
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buf += decoder.decode(value, { stream: true });
-          const lines = buf.split("\n");
-          buf = lines.pop() ?? "";
-
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (!trimmed) continue;
-            let event: Record<string, unknown>;
-            try { event = JSON.parse(trimmed); } catch { continue; }
-
-            const type = event.type as string;
-            if (type === "system" && event.subtype === "init" && typeof event.session_id === "string") {
-              options?.onSessionId?.(event.session_id as string);
-            } else if (type === "assistant") {
-              const message = event.message as { content?: Array<{ type: string; text?: string }> } | undefined;
-              const text = message?.content
-                ?.filter((b) => b.type === "text" && b.text)
-                .map((b) => b.text)
-                .join("\n") ?? "";
-              if (text) {
-                lastAssistantText = text;
-                options?.onProgress?.(text.length > 120 ? text.slice(0, 120) + "..." : text);
-              }
-            } else if (type === "tool_use") {
-              const toolName = event.name as string;
-              const input = (event.input as Record<string, unknown>) ?? {};
-              let summary = toolName;
-              if (toolName === "Bash" || toolName === "bash") {
-                const cmd = (input.command as string) ?? "";
-                summary = `bash: ${cmd.length > 80 ? cmd.slice(0, 80) + "..." : cmd}`;
-              } else if (input.file_path) {
-                summary = `${toolName}: ${input.file_path as string}`;
-              }
-              options?.onProgress?.(summary);
-            } else if (type === "result" && event.subtype === "success") {
-              resultText = (event.result as string) ?? "";
-            }
-          }
-        }
-        // Flush remaining buffer
-        if (buf.trim()) {
-          try {
-            const event = JSON.parse(buf.trim()) as Record<string, unknown>;
-            if (event.type === "result" && event.subtype === "success") {
-              resultText = (event.result as string) ?? "";
-            }
-          } catch { /* incomplete JSON at end of stream */ }
-        }
-      } catch { /* stream closed */ }
-    };
-
-    const drainStderr = async (): Promise<void> => {
-      try { stderrText = await new Response(proc.stderr).text(); } catch { /* ignore */ }
-    };
-
-    // Add configurable timeout to prevent infinite hangs
-    const timeout = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error(`Claude timeout after ${CLAUDE_TIMEOUT / 1000}s`)), CLAUDE_TIMEOUT)
-    );
-
-    await Promise.race([
-      Promise.all([parseStream(), drainStderr(), proc.exited]),
-      timeout,
-    ]).catch((error) => {
-      proc.kill();
-      throw error;
-    });
-
-    const exitCode = await proc.exited;
-    if (exitCode !== 0) {
-      console.error("Claude error:", stderrText);
-
-      // Try fallback if available
-      if (fallbackAvailable && process.env.FALLBACK_MODEL) {
-        console.log("Claude failed, trying fallback model...");
-        try {
-          const fallbackResponse = await callOllama(prompt);
-          return `[via ${process.env.FALLBACK_MODEL}]\n\n${fallbackResponse}`;
-        } catch (fallbackError) {
-          console.error("Fallback also failed:", fallbackError);
-          return `Error: Both Claude and fallback failed. Claude: ${stderrText}`;
-        }
-      }
-
-      return `Error: ${stderrText || "Claude exited with code " + exitCode}`;
-    }
-
-    return (resultText || lastAssistantText).trim();
   } catch (error) {
-    console.error("Spawn error:", error);
+    console.error("Claude error:", error);
 
-    // Try fallback if available
-    if (fallbackAvailable && process.env.FALLBACK_MODEL) {
-      console.log("Claude spawn failed, trying fallback model...");
+    // Don't fall back to Ollama for idle timeouts — stalled streams won't recover.
+    const isIdleTimeout = error instanceof Error && error.message.includes("idle timeout");
+
+    // Try fallback if available (skip for idle timeouts)
+    if (!isIdleTimeout && fallbackAvailable && process.env.FALLBACK_MODEL) {
+      console.log("Claude failed, trying fallback model...");
       try {
         const fallbackResponse = await callOllama(prompt);
         return `[via ${process.env.FALLBACK_MODEL}]\n\n${fallbackResponse}`;
       } catch (fallbackError) {
         console.error("Fallback also failed:", fallbackError);
-        return `Error: Both Claude and fallback failed`;
+        return `Error: Both Claude and fallback failed. Claude: ${error instanceof Error ? error.message : String(error)}`;
       }
     }
 
-    return `Error: Could not run Claude CLI`;
+    return `Error: ${error instanceof Error ? error.message : "Could not run Claude CLI"}`;
+  } finally {
+    if (key) activeStreams.delete(key);
   }
 }
 
@@ -394,18 +321,18 @@ await sessionManager.init();
 registerCodingCommands(bot, sessionManager, inputRouter, supabase);
 
 // Lightweight Claude caller for /plan question generation.
-// Uses callClaudeText (--output-format text, no project cwd) which is more
-// reliable for structured JSON tasks than the stream-json callClaude.
+// Uses claudeText (--output-format text, no project cwd) which is more
+// reliable for structured JSON tasks than the streaming claudeStream.
 // Falls back to Ollama when the CLI is unavailable.
 async function questionCallClaude(prompt: string): Promise<string> {
   try {
-    return await callClaudeText(prompt, {
+    return await claudeText(prompt, {
       model: "claude-haiku-4-5-20251001",
       timeoutMs: 60_000,
     });
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
-    console.error("[interactive] callClaudeText failed:", errMsg);
+    console.error("[interactive] claudeText failed:", errMsg);
     if (fallbackAvailable && process.env.FALLBACK_MODEL) {
       console.log("[interactive] Falling back to Ollama...");
       return await callOllama(prompt);
@@ -417,6 +344,14 @@ async function questionCallClaude(prompt: string): Promise<string> {
 // Interactive Q&A flow (/plan command)
 const interactive = new InteractiveStateMachine(bot, callClaude, questionCallClaude);
 bot.command("plan", (ctx) => interactive.handlePlanCommand(ctx));
+
+// Cancel the active claudeStream for this chat/thread
+bot.command("cancel", async (ctx) => {
+  const chatId = ctx.chat?.id;
+  const threadId = ctx.message?.message_thread_id ?? null;
+  if (!chatId) return;
+  await handleCancelCommand(chatId, threadId, ctx, bot);
+});
 
 // Background: auto-scan for desktop sessions
 if (CODING_AUTO_SCAN_INTERVAL > 0 && ALLOWED_USER_ID) {
@@ -439,6 +374,11 @@ bot.on("callback_query:data", async (ctx) => {
     await ctx.answerCallbackQuery().catch(() => {});
   } else if (data.startsWith("iq:")) {
     await interactive.handleCallback(ctx, data);
+  } else if (data.startsWith("cancel:")) {
+    const chatId = ctx.chat?.id ?? 0;
+    const threadId = ctx.message?.message_thread_id ?? null;
+    await ctx.answerCallbackQuery().catch(() => {});
+    await handleCancelCallback(chatId, threadId, ctx, bot);
   }
 });
 
@@ -466,38 +406,12 @@ async function processTextMessage(
   const typingInterval = startTypingIndicator(ctx);
   try {
     const agent = getAgentForChat(chatId);
+    const traceId = generateTraceId();
+    trace({ event: "message_received", traceId, chatId, agentId: agent.id, textLength: text.length, threadId });
     console.log(`[${agent.name}] Message from chat ${chatId}: ${text.substring(0, 50)}...`);
     await ctx.replyWithChatAction("typing");
 
     const session = await loadGroupSession(chatId, agent.id, threadId);
-
-    // ── Context Relevance Check ──────────────────────────────────────
-    // If a session is active and has context, check if this message
-    // belongs to the same topic. Low relevance triggers a soft prompt
-    // asking the user if they want to start fresh, without assuming.
-    if (session.sessionId && session.messageCount > 0) {
-      if (session.pendingContextSwitch) {
-        // User sent a message after context-switch prompt: clear flag and continue.
-        // They can always use /new to explicitly start a new session.
-        session.pendingContextSwitch = false;
-        await saveSession(session);
-      } else {
-        const relevance = await checkContextRelevanceSmart(text, {
-          topicKeywords: session.topicKeywords,
-          lastUserMessages: session.lastUserMessages,
-          lastActivity: session.lastActivity,
-        });
-        console.log(`Context relevance [${relevance.method}]: ${relevance.score.toFixed(2)} — ${relevance.reason}`);
-
-        if (!relevance.isRelevant) {
-          // Prompt user: new topic or continue?
-          session.pendingContextSwitch = true;
-          await saveSession(session);
-          await ctx.reply(buildContextSwitchPrompt(session.topicKeywords.slice(0, 5)));
-          return; // Don't process with Claude until user decides
-        }
-      }
-    }
 
     const userId = ctx.from?.id ?? 0;
     const [shortTermCtxRaw, userProfile, relevantContext, memoryContext] = await Promise.all([
@@ -529,59 +443,67 @@ async function processTextMessage(
       timeStr,
     });
 
+    const cancelKey = streamKey(chatId, threadId);
     const indicator = new ProgressIndicator();
-    indicator.start(chatId, bot, threadId).catch(() => {}); // fire-and-forget
+    indicator.start(chatId, bot, threadId, {
+      cancelKey,
+      onMessageId: (msgId) => {
+        const entry = activeStreams.get(cancelKey);
+        if (entry) entry.progressMessageId = msgId;
+      },
+    }).catch(() => {}); // fire-and-forget
 
     let rawResponse: string;
     const callStart = Date.now();
+    trace({ event: "claude_start", traceId, chatId, promptLength: enrichedPrompt.length, resume: !!session.sessionId, sessionId: session.sessionId });
     try {
       rawResponse = await callClaude(enrichedPrompt, {
         resume: !!session.sessionId,
         sessionId: session.sessionId,
         onProgress: (summary) => void indicator.update(summary, { immediate: true }),
         onSessionId: (id) => void updateSessionId(chatId, id, threadId),
+        chatId,
+        threadId,
       });
       await indicator.finish(true);
     } catch (claudeErr) {
+      trace({ event: "claude_complete", traceId, chatId, responseLength: 0, durationMs: Date.now() - callStart, fallback: false, error: String(claudeErr) });
       await indicator.finish(false);
       throw claudeErr;
     }
     const callDurationMs = Date.now() - callStart;
+    trace({ event: "claude_complete", traceId, chatId, responseLength: rawResponse.length, durationMs: callDurationMs, fallback: rawResponse.startsWith("[via "), error: null });
     console.log(`Claude raw response length: ${rawResponse.length} (${callDurationMs}ms)`);
 
     const response = await processMemoryIntents(supabase, rawResponse, chatId);
     console.log(`Processed response length: ${response.length}`);
 
     // ── Update session metadata ──────────────────────────────────────
-    session.topicKeywords = updateTopicKeywords(session.topicKeywords, text);
     session.messageCount = (session.messageCount || 0) + 1;
-    session.lastUserMessages = [...(session.lastUserMessages || []), text].slice(-3);
     session.lastActivity = new Date().toISOString();
     await saveSession(session);
 
     await saveMessage("user", text, undefined, chatId, agent.id, threadId);
     await saveMessage("assistant", response || rawResponse, undefined, chatId, agent.id, threadId);
 
-    // Async LTM extraction (non-blocking — runs after response is sent)
-    // FIX 7: Skip if a previous extraction is still running to prevent Ollama queue buildup.
-    // NOTE: Only the user's message (text) is passed — assistant response is intentionally
-    // excluded to prevent memory contamination from the bot's own output.
-    if (supabase && !extractionInFlight) {
-      const db = supabase; // capture non-null ref — TS narrowing doesn't cross setImmediate
-      extractionInFlight = true;
-      setImmediate(async () => {
-        try {
-          const { uncertain, inserted } = await extractAndStore(db, chatId, userId, text);
-          if (uncertain && hasMemoryItems(uncertain)) {
-            await sendMemoryConfirmation(bot, chatId, uncertain, threadId).catch(() => {});
-          }
-          if (session.messageCount % 5 === 0 && inserted > 0) {
-            await rebuildProfileSummary(db, userId);
-          }
-        } catch (err) {
-          console.error("Async memory extraction failed:", err);
-        } finally {
-          extractionInFlight = false;
+    // Per-chat queue ensures every message is processed — no silent drops during bursts.
+    if (supabase) {
+      const db = supabase;
+      const msgCount = session.messageCount;
+      const assistantText = response || rawResponse;
+      // Snapshot of injected system context: tells LTM extractor what to ignore so it
+      // doesn't re-store facts that the assistant merely echoed back from the profile/memory.
+      const ltmInjectedContext = [userProfile, memoryContext, relevantContext, profileContext]
+        .filter(Boolean)
+        .join("\n\n") || undefined;
+      trace({ event: "ltm_enqueued", traceId, chatId, userTextLength: text.length, assistantResponseLength: assistantText.length, queueDepth: 0 });
+      enqueueExtraction({ chatId, userId, text, assistantResponse: assistantText, threadId, injectedContext: ltmInjectedContext }, async (item) => {
+        const { uncertain, inserted } = await extractAndStore(db, item.chatId, item.userId, item.text, item.assistantResponse, traceId, item.injectedContext);
+        if (uncertain && hasMemoryItems(uncertain)) {
+          await sendMemoryConfirmation(bot, item.chatId, uncertain, item.threadId).catch(() => {});
+        }
+        if (msgCount % 5 === 0 && inserted > 0) {
+          await rebuildProfileSummary(db, item.userId);
         }
       });
     }
@@ -727,8 +649,15 @@ bot.on("message:voice", async (ctx) => {
           timeStr,
         });
 
+        const voiceCancelKey = streamKey(chatId, threadId);
         const voiceIndicator = new ProgressIndicator();
-        voiceIndicator.start(chatId, bot, threadId).catch(() => {}); // fire-and-forget
+        voiceIndicator.start(chatId, bot, threadId, {
+          cancelKey: voiceCancelKey,
+          onMessageId: (msgId) => {
+            const entry = activeStreams.get(voiceCancelKey);
+            if (entry) entry.progressMessageId = msgId;
+          },
+        }).catch(() => {}); // fire-and-forget
 
         let rawResponse: string;
         const voiceCallStart = Date.now();
@@ -738,6 +667,8 @@ bot.on("message:voice", async (ctx) => {
             sessionId: session.sessionId,
             onProgress: (summary) => void voiceIndicator.update(summary, { immediate: true }),
             onSessionId: (id) => void updateSessionId(chatId, id, threadId),
+            chatId,
+            threadId,
           });
           await voiceIndicator.finish(true);
         } catch (claudeErr) {
@@ -749,29 +680,26 @@ bot.on("message:voice", async (ctx) => {
         const claudeResponse = await processMemoryIntents(supabase, rawResponse, chatId);
 
         // Update session metadata
-        session.topicKeywords = updateTopicKeywords(session.topicKeywords, transcription);
         session.messageCount = (session.messageCount || 0) + 1;
-        session.lastUserMessages = [...(session.lastUserMessages || []), transcription].slice(-3);
         session.lastActivity = new Date().toISOString();
         await saveSession(session);
 
         await saveMessage("assistant", claudeResponse, undefined, chatId, agent.id, threadId);
 
-        // Async LTM extraction (non-blocking — runs after response is sent)
-        // FIX 7: Same mutex as text handler — skip if extraction already in-flight.
-        if (supabase && !extractionInFlight) {
-          const db = supabase; // capture non-null ref — TS narrowing doesn't cross setImmediate
-          extractionInFlight = true;
-          setImmediate(async () => {
-            try {
-              const { inserted } = await extractAndStore(db, chatId, voiceUserId, transcription);
-              if (session.messageCount % 5 === 0 && inserted > 0) {
-                await rebuildProfileSummary(db, voiceUserId);
-              }
-            } catch (err) {
-              console.error("Async memory extraction failed:", err);
-            } finally {
-              extractionInFlight = false;
+        // Same per-chat queue as text handler — now with uncertain item confirmation parity.
+        if (supabase) {
+          const db = supabase;
+          const msgCount = session.messageCount;
+          const voiceLtmInjectedContext = [userProfile, memoryContext, relevantContext, profileContext]
+            .filter(Boolean)
+            .join("\n\n") || undefined;
+          enqueueExtraction({ chatId, userId: voiceUserId, text: transcription, assistantResponse: claudeResponse, threadId, injectedContext: voiceLtmInjectedContext }, async (item) => {
+            const { uncertain, inserted } = await extractAndStore(db, item.chatId, item.userId, item.text, item.assistantResponse, undefined, item.injectedContext);
+            if (uncertain && hasMemoryItems(uncertain)) {
+              await sendMemoryConfirmation(bot, item.chatId, uncertain, item.threadId).catch(() => {});
+            }
+            if (msgCount % 5 === 0 && inserted > 0) {
+              await rebuildProfileSummary(db, item.userId);
             }
           });
         }
@@ -848,8 +776,15 @@ bot.on("message:photo", async (ctx) => {
 
         await saveMessage("user", `[Image]: ${caption}`, undefined, chatId, agent.id, threadId);
 
+        const photoCancelKey = streamKey(chatId, threadId);
         const photoIndicator = new ProgressIndicator();
-        photoIndicator.start(chatId, bot, threadId).catch(() => {}); // fire-and-forget
+        photoIndicator.start(chatId, bot, threadId, {
+          cancelKey: photoCancelKey,
+          onMessageId: (msgId) => {
+            const entry = activeStreams.get(photoCancelKey);
+            if (entry) entry.progressMessageId = msgId;
+          },
+        }).catch(() => {}); // fire-and-forget
 
         let claudeResponse: string;
         try {
@@ -858,6 +793,8 @@ bot.on("message:photo", async (ctx) => {
             sessionId: session.sessionId,
             onProgress: (summary) => void photoIndicator.update(summary, { immediate: true }),
             onSessionId: (id) => void updateSessionId(chatId, id, threadId),
+            chatId,
+            threadId,
           });
           await photoIndicator.finish(true);
         } catch (claudeErr) {
@@ -924,8 +861,15 @@ bot.on("message:document", async (ctx) => {
 
         await saveMessage("user", `[Document: ${doc.file_name}]: ${caption}`, undefined, chatId, agent.id, threadId);
 
+        const docCancelKey = streamKey(chatId, threadId);
         const docIndicator = new ProgressIndicator();
-        docIndicator.start(chatId, bot, threadId).catch(() => {}); // fire-and-forget
+        docIndicator.start(chatId, bot, threadId, {
+          cancelKey: docCancelKey,
+          onMessageId: (msgId) => {
+            const entry = activeStreams.get(docCancelKey);
+            if (entry) entry.progressMessageId = msgId;
+          },
+        }).catch(() => {}); // fire-and-forget
 
         let claudeResponse: string;
         try {
@@ -934,6 +878,8 @@ bot.on("message:document", async (ctx) => {
             sessionId: session.sessionId,
             onProgress: (summary) => void docIndicator.update(summary, { immediate: true }),
             onSessionId: (id) => void updateSessionId(chatId, id, threadId),
+            chatId,
+            threadId,
           });
           await docIndicator.finish(true);
         } catch (claudeErr) {
@@ -977,6 +923,30 @@ const USER_TIMEZONE = process.env.USER_TIMEZONE || Intl.DateTimeFormat().resolve
 
 // Prompt building is now handled by src/agents/promptBuilder.ts (buildAgentPrompt)
 
+/**
+ * Convert Claude's Markdown output to Telegram HTML.
+ *
+ * Telegram HTML supports: <b>, <i>, <u>, <s>, <code>, <pre>, <a href>
+ * Order matters — process block-level before inline to avoid double-escaping.
+ */
+function isBalancedHtml(html: string): boolean {
+  const tagStack: string[] = [];
+  const selfClosing = new Set(["br", "hr", "img"]);
+  const tagRe = /<\/?([a-zA-Z]+)[^>]*>/g;
+  let m: RegExpExecArray | null;
+  while ((m = tagRe.exec(html)) !== null) {
+    const tag = m[1].toLowerCase();
+    if (selfClosing.has(tag)) continue;
+    if (m[0].startsWith("</")) {
+      if (tagStack[tagStack.length - 1] === tag) tagStack.pop();
+      else return false;
+    } else {
+      tagStack.push(tag);
+    }
+  }
+  return tagStack.length === 0;
+}
+
 async function sendResponse(ctx: Context, response: string): Promise<void> {
   // Handle empty responses
   if (!response || response.trim().length === 0) {
@@ -987,15 +957,16 @@ async function sendResponse(ctx: Context, response: string): Promise<void> {
 
   // Telegram has a 4096 character limit
   const MAX_LENGTH = 4000;
+  const html = markdownToHtml(response);
 
-  if (response.length <= MAX_LENGTH) {
-    await ctx.reply(response);
+  if (html.length <= MAX_LENGTH) {
+    await ctx.reply(html, { parse_mode: "HTML" });
     return;
   }
 
   // Split long responses
   const chunks = [];
-  let remaining = response;
+  let remaining = html;
 
   while (remaining.length > 0) {
     if (remaining.length <= MAX_LENGTH) {
@@ -1014,7 +985,13 @@ async function sendResponse(ctx: Context, response: string): Promise<void> {
   }
 
   for (const chunk of chunks) {
-    await ctx.reply(chunk);
+    if (isBalancedHtml(chunk)) {
+      await ctx.reply(chunk, { parse_mode: "HTML" });
+    } else {
+      // Strip all tags and send as plain text fallback
+      const plain = chunk.replace(/<[^>]+>/g, "");
+      await ctx.reply(plain);
+    }
   }
 }
 

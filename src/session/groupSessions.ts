@@ -20,11 +20,16 @@ export interface SessionState {
   threadId: number | null;
   sessionId: string | null;
   lastActivity: string;
-  topicKeywords: string[];        // extracted keywords for context relevance
+  /** @deprecated Retained for JSON backward compat; no longer populated */
+  topicKeywords: string[];
   messageCount: number;           // total messages in this session
   startedAt: string;              // ISO date when session started
-  pendingContextSwitch: boolean;  // awaiting user's yes/no on context switch
-  lastUserMessages: string[];     // last 3 user messages for context comparison
+  /** @deprecated Retained for JSON backward compat; no longer populated */
+  pendingContextSwitch: boolean;
+  /** @deprecated Retained for JSON backward compat; no longer populated */
+  pendingMessage: string;
+  /** @deprecated Retained for JSON backward compat; no longer populated */
+  lastUserMessages: string[];
 }
 
 /** Build a unique map key from chatId and optional threadId */
@@ -73,6 +78,7 @@ export async function loadSession(chatId: number, agentId: string, threadId?: nu
       messageCount: 0,
       startedAt: new Date().toISOString(),
       pendingContextSwitch: false,
+      pendingMessage: "",
       lastUserMessages: [],
     };
     sessions.set(key, state);
@@ -161,6 +167,7 @@ export async function loadAllSessions(): Promise<number> {
           messageCount: raw.messageCount ?? 0,
           startedAt: raw.startedAt ?? raw.lastActivity ?? new Date().toISOString(),
           pendingContextSwitch: raw.pendingContextSwitch ?? false,
+          pendingMessage: raw.pendingMessage ?? "",
           lastUserMessages: raw.lastUserMessages ?? [],
         };
         if (state.chatId) {
@@ -206,9 +213,6 @@ export function getSessionSummary(chatId: number, threadId?: number | null): str
   const parts = [
     `Session active for ${duration}m`,
     `Messages: ${session.messageCount}`,
-    session.topicKeywords.length > 0
-      ? `Topics: ${session.topicKeywords.slice(0, 5).join(', ')}`
-      : 'No topic context yet',
     `Last activity: ${idle}m ago`,
     session.sessionId ? `Claude session: active` : `Claude session: not started`,
   ];

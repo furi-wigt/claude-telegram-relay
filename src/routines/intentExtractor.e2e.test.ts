@@ -1,7 +1,7 @@
 /**
- * E2E tests for intentExtractor — process-based callClaudeText edition
+ * E2E tests for intentExtractor — process-based claudeText edition
  *
- * Verifies that extractRoutineConfig uses callClaudeText (not the Anthropic SDK)
+ * Verifies that extractRoutineConfig uses claudeText (unified spawner)
  * and correctly parses, validates, and returns PendingRoutine configs.
  *
  * Run: bun test src/routines/intentExtractor.e2e.test.ts
@@ -10,15 +10,15 @@
 import { describe, test, expect, mock, beforeEach } from "bun:test";
 
 // ============================================================
-// Mock callClaudeText before importing intentExtractor
+// Mock claudeText before importing intentExtractor
 // ============================================================
 
 const mockCallClaudeText = mock(
   async (_prompt: string, _options?: { model?: string; timeoutMs?: number }) => "{}"
 );
 
-mock.module("../claude.ts", () => ({
-  callClaudeText: mockCallClaudeText,
+mock.module("../claude-process.ts", () => ({
+  claudeText: mockCallClaudeText,
 }));
 
 const { detectRoutineIntent, extractRoutineConfig } = await import(
@@ -103,7 +103,7 @@ describe("extractRoutineConfig", () => {
     expect(typeof result?.createdAt).toBe("number");
   });
 
-  test("callClaudeText is called with the user message embedded in prompt", async () => {
+  test("claudeText is called with the user message embedded in prompt", async () => {
     mockCallClaudeText.mockResolvedValue(makeValidJson());
 
     const userMsg = "create a routine that checks AWS costs daily";
@@ -115,7 +115,7 @@ describe("extractRoutineConfig", () => {
     expect(calledPrompt).toContain("JSON");
   });
 
-  test("callClaudeText is called with haiku model", async () => {
+  test("claudeText is called with haiku model", async () => {
     mockCallClaudeText.mockResolvedValue(makeValidJson());
 
     await extractRoutineConfig("create a daily routine");
@@ -124,7 +124,7 @@ describe("extractRoutineConfig", () => {
     expect(options?.model).toBe("claude-haiku-4-5-20251001");
   });
 
-  test("callClaudeText is called with 30s timeout", async () => {
+  test("claudeText is called with 30s timeout", async () => {
     mockCallClaudeText.mockResolvedValue(makeValidJson());
 
     await extractRoutineConfig("create a daily routine");
@@ -178,9 +178,9 @@ describe("extractRoutineConfig", () => {
     expect(result).toBeNull();
   });
 
-  test("returns null when callClaudeText throws (timeout/exit)", async () => {
+  test("returns null when claudeText throws (timeout/exit)", async () => {
     mockCallClaudeText.mockRejectedValue(
-      new Error("callClaudeText: timeout after 30000ms")
+      new Error("claudeText: timeout after 30000ms")
     );
 
     const result = await extractRoutineConfig("create a daily routine");
@@ -242,7 +242,7 @@ describe("extractRoutineConfig", () => {
 describe("SDK independence", () => {
   test("extractRoutineConfig does not import Anthropic SDK", async () => {
     // If the SDK is not imported, this won't throw even without credentials
-    // The mock intercepts callClaudeText before any subprocess is spawned
+    // The mock intercepts claudeText before any subprocess is spawned
     mockCallClaudeText.mockResolvedValue(makeValidJson());
 
     // Should work without ANTHROPIC_API_KEY in env

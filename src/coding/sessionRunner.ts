@@ -15,6 +15,7 @@ import { homedir } from "node:os";
 import { InputBridge } from "./inputBridge.ts";
 import { analyzeTaskForTeam } from "./teamAnalyzer.ts";
 import type { TeamComposition } from "./teamAnalyzer.ts";
+import { buildClaudeEnv, getClaudePath } from "../claude-process.ts";
 
 // Tool names that indicate file changes
 const FILE_CHANGE_TOOLS = new Set([
@@ -69,7 +70,7 @@ export class SessionRunner {
   private killed = false;
   private teamComposition: TeamComposition | undefined = undefined;
 
-  constructor(private claudePath: string = "claude") {}
+  constructor(private claudePath: string = getClaudePath()) {}
 
   /**
    * Build the CLI argument list for spawning Claude.
@@ -100,22 +101,15 @@ export class SessionRunner {
   }
 
   /**
-   * Build the environment variables object for the subprocess,
-   * stripping CLAUDECODE to prevent nested-session errors.
-   * When useAgentTeam is true, sets CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1.
+   * Build the environment variables object for the subprocess.
+   * Delegates to the shared buildClaudeEnv helper.
    * Exported as a static method for testability.
    */
   static buildEnv(
     baseEnv: NodeJS.ProcessEnv = process.env,
     options: { useAgentTeam?: boolean } = {}
   ): Record<string, string | undefined> {
-    const env = { ...baseEnv };
-    delete env.CLAUDECODE;
-    env.CLAUDE_SUBPROCESS = "1";
-    if (options.useAgentTeam) {
-      env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = "1";
-    }
-    return env;
+    return buildClaudeEnv(baseEnv, options);
   }
 
   async run(options: {

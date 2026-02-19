@@ -6,10 +6,10 @@
 
 import { describe, test, expect, mock, beforeEach, afterEach } from "bun:test";
 
-// Mock callClaudeText so tests exercise the Ollama fallback path via mocked fetch.
+// Mock claudeText so tests exercise the Ollama fallback path via mocked fetch.
 // This must be declared before importing the module under test.
-mock.module("../claude.ts", () => ({
-  callClaudeText: mock(() => Promise.reject(new Error("Claude unavailable in tests"))),
+mock.module("../claude-process.ts", () => ({
+  claudeText: mock(() => Promise.reject(new Error("Claude unavailable in tests"))),
 }));
 
 import {
@@ -17,6 +17,8 @@ import {
   storeExtractedMemories,
   getUserProfile,
   hasMemoryItems,
+  _filterPlaceholders,
+  _isMemoryQuery,
   type ExtractedMemories,
   type ExchangeExtractionResult,
 } from "./longTermExtractor.ts";
@@ -217,6 +219,38 @@ describe("storeExtractedMemories", () => {
     });
     expect(insertFn).not.toHaveBeenCalled();
   });
+
+  test("skips tag fragment goals from MEMORY MANAGEMENT template echoed in assistant response", async () => {
+    // Root cause: Ollama extracts `]`/`[DONE:` or `[GOAL: goal text]` from the MEMORY
+    // MANAGEMENT instructions block when it appears in the assistant response or context.
+    const insertFn = mock(() => Promise.resolve({ data: null, error: null }));
+    const sb = mockSupabase({ insertFn });
+
+    await storeExtractedMemories(sb, 123, {
+      goals: [
+        "]`/`[DONE:",                                         // partial tag fragment
+        "]`/`[GOAL:",                                         // partial tag fragment
+        "[GOAL: goal text | DEADLINE: optional date]",        // template example
+        "[DONE: search text for completed goal]",             // template example
+        "[REMEMBER: fact to store]",                          // template example
+      ],
+    });
+
+    expect(insertFn).not.toHaveBeenCalled();
+  });
+
+  test("skips tag fragment facts from MEMORY MANAGEMENT template", async () => {
+    const insertFn = mock(() => Promise.resolve({ data: null, error: null }));
+    const sb = mockSupabase({ insertFn });
+
+    await storeExtractedMemories(sb, 123, {
+      facts: ["[REMEMBER: fact to store]", "Valid user fact about location"],
+    });
+
+    const rows = insertFn.mock.calls[0][0];
+    expect(rows).toHaveLength(1);
+    expect(rows[0].content).toBe("Valid user fact about location");
+  });
 });
 
 // ============================================================
@@ -368,11 +402,104 @@ describe("extractMemoriesFromExchange", () => {
     globalThis.fetch = origFetch;
   });
 
-  test("does NOT accept assistantResponse as a parameter (user message only)", async () => {
-    // Verify the function signature only takes one argument
-    // TypeScript compile-time guard + runtime shape check
+  test("accepts optional parameters: assistantResponse, chatId, traceId, injectedContext", async () => {
     const fn = extractMemoriesFromExchange;
-    expect(fn.length).toBe(1); // only 1 declared parameter
+    // 5 params: userMessage, assistantResponse?, chatId?, traceId?, injectedContext?
+    expect(fn.length).toBe(5);
+  });
+});
+
+// ============================================================
+// Hallucination prevention — filterPlaceholders (direct unit tests)
+// ============================================================
+
+// Test _filterPlaceholders directly — no LLM mock needed, no Ollama fetch spy.
+// This avoids the test-isolation issue where globalThis.fetch mocks are unreliable
+// when multiple test files run in the same Bun process.
+
+describe("hallucination prevention — _filterPlaceholders", () => {
+  test("strips {userName} placeholder from text", () => {
+    expect(_filterPlaceholders("You are speaking with {userName}")).toBe(
+      "You are speaking with"
+    );
+  });
+
+  test("strips multiple placeholders in one pass", () => {
+    expect(
+      _filterPlaceholders("Hello {user_name}, your {profile_type} is ready")
+    ).toBe("Hello , your  is ready");
+  });
+
+  test("real content (GovTech, Singapore) is preserved after stripping", () => {
+    const result = _filterPlaceholders(
+      "I work at GovTech {placeholder} and live in Singapore"
+    );
+    expect(result).toContain("GovTech");
+    expect(result).toContain("Singapore");
+    expect(result).not.toMatch(/\{[a-zA-Z_][a-zA-Z0-9_]*\}/);
+  });
+
+  test("text without placeholders is unchanged", () => {
+    expect(_filterPlaceholders("I work at GovTech")).toBe("I work at GovTech");
+  });
+
+  test("trims surrounding whitespace left by stripped leading/trailing placeholder", () => {
+    expect(_filterPlaceholders("{prefix} hello")).toBe("hello");
+    expect(_filterPlaceholders("hello {suffix}")).toBe("hello");
+  });
+});
+
+// ============================================================
+// Hallucination prevention — memory query detection
+// ============================================================
+
+describe("hallucination prevention — memory query skip", () => {
+  // Test _isMemoryQuery directly (no LLM mock needed).
+  const memoryQueryMessages = [
+    "what's in my goals",
+    "what is in my goals",
+    "what's my profile",
+    "what do you know about me",
+    "what do you remember about me",
+    "what have I told you",
+    "what have I said to you",
+    "show me my memory",
+    "show me my facts",
+    "show my goals",
+    "list my preferences",
+  ];
+
+  describe("_isMemoryQuery returns true for memory-read phrases", () => {
+    for (const msg of memoryQueryMessages) {
+      test(`"${msg}"`, () => {
+        expect(_isMemoryQuery(msg)).toBe(true);
+      });
+    }
+  });
+
+  test("_isMemoryQuery returns true for slash memory commands", () => {
+    // Slash commands display stored data — no new facts to extract.
+    // Without this, /goals response echoes junk entries back to Ollama (positive feedback loop).
+    expect(_isMemoryQuery("/goals")).toBe(true);
+    expect(_isMemoryQuery("/facts")).toBe(true);
+    expect(_isMemoryQuery("/memory")).toBe(true);
+    expect(_isMemoryQuery("/history")).toBe(true);
+    expect(_isMemoryQuery("/remember some fact")).toBe(true);
+    expect(_isMemoryQuery("/forget some fact")).toBe(true);
+  });
+
+  test("_isMemoryQuery returns false for regular messages", () => {
+    expect(_isMemoryQuery("I work at GovTech")).toBe(false);
+    expect(_isMemoryQuery("Tell me about AI")).toBe(false);
+    expect(_isMemoryQuery("What is the weather today?")).toBe(false);
+    expect(_isMemoryQuery("I just got promoted")).toBe(false);
+  });
+
+  test("extractMemoriesFromExchange returns empty {} for memory-query messages", async () => {
+    for (const msg of memoryQueryMessages) {
+      const result = await extractMemoriesFromExchange(msg, "Here are your goals: ...");
+      expect(result).toEqual({ certain: {}, uncertain: {} });
+    }
   });
 });
 

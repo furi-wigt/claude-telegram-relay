@@ -18,7 +18,7 @@
 import type { Bot, Context } from "grammy";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { InlineKeyboard } from "grammy";
-import { callClaudeText } from "../claude.ts";
+import { claudeText } from "../claude-process.ts";
 import { saveCommandInteraction } from "../utils/saveMessage.ts";
 import { findPotentialDuplicates, parseModelIndices } from "../utils/duplicateDetector.ts";
 
@@ -219,7 +219,7 @@ async function findMatchingItems(
       `Reply with ONLY comma-separated numbers (e.g. "1" or "2,3") or "none" if nothing matches.\n` +
       `Be lenient — partial or semantic matches count.`;
 
-    const response = await callClaudeText(prompt, { timeoutMs: 8_000 });
+    const response = await claudeText(prompt, { timeoutMs: 8_000 });
     const indices = parseModelIndices(response, candidates.length);
 
     if (indices.length > 0) {
@@ -352,7 +352,7 @@ async function findGoalsByIndexOrQuery(
       `Reply with ONLY comma-separated numbers (e.g. "1" or "2,3") or "none" if nothing matches.\n` +
       `Be lenient — partial or semantic matches count.`;
 
-    const response = await callClaudeText(prompt, { timeoutMs: 8_000 });
+    const response = await claudeText(prompt, { timeoutMs: 8_000 });
     const indices = parseModelIndices(response, goals.length);
 
     if (indices.length > 0) return indices.map((i) => goals[i]);

@@ -3,8 +3,8 @@
  *
  * Tests that:
  * 1. ecosystem.config.cjs has correct PM2 config (max_memory_restart, script path)
- * 2. src/relay.ts removes ALL Claude Code session env vars in callClaude()
- * 3. src/claude.ts removes ALL Claude Code session env vars in callClaudeText()
+ * 2. src/claude-process.ts removes ALL Claude Code session env vars (unified spawner)
+ * 3. src/relay.ts imports from claude-process.ts (not spawning directly)
  * 4. src/relay.ts has heap-based OOM guard at 400MB threshold
  */
 
@@ -44,9 +44,46 @@ describe("ecosystem.config.cjs — PM2 configuration integrity", () => {
   });
 });
 
-// ─── src/relay.ts — callClaude() env var cleanup ─────────────────────────────
+// ─── src/claude-process.ts — unified env var cleanup ─────────────────────────
 
-describe("src/relay.ts — Claude Code env var cleanup in callClaude()", () => {
+describe("src/claude-process.ts — unified Claude Code env var cleanup", () => {
+  const claudeProcessPath = join(ROOT, "src", "claude-process.ts");
+  let content: string;
+
+  test("claude-process.ts exists", () => {
+    expect(existsSync(claudeProcessPath)).toBe(true);
+    content = readFileSync(claudeProcessPath, "utf8");
+  });
+
+  test("deletes CLAUDECODE from spawn env", () => {
+    content = readFileSync(claudeProcessPath, "utf8");
+    expect(content).toContain("CLAUDECODE");
+  });
+
+  test("deletes CLAUDE_CODE_SSE_PORT from spawn env", () => {
+    content = readFileSync(claudeProcessPath, "utf8");
+    expect(content).toContain("CLAUDE_CODE_SSE_PORT");
+  });
+
+  test("deletes CLAUDE_CODE_ENTRYPOINT from spawn env", () => {
+    content = readFileSync(claudeProcessPath, "utf8");
+    expect(content).toContain("CLAUDE_CODE_ENTRYPOINT");
+  });
+
+  test("deletes CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS from spawn env", () => {
+    content = readFileSync(claudeProcessPath, "utf8");
+    expect(content).toContain("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS");
+  });
+
+  test("sets CLAUDE_SUBPROCESS marker", () => {
+    content = readFileSync(claudeProcessPath, "utf8");
+    expect(content).toContain('CLAUDE_SUBPROCESS');
+  });
+});
+
+// ─── src/relay.ts — delegates to claude-process.ts ───────────────────────────
+
+describe("src/relay.ts — uses unified claude-process module", () => {
   const relayPath = join(ROOT, "src", "relay.ts");
   let content: string;
 
@@ -55,66 +92,14 @@ describe("src/relay.ts — Claude Code env var cleanup in callClaude()", () => {
     content = readFileSync(relayPath, "utf8");
   });
 
-  test("deletes CLAUDECODE from spawn env", () => {
+  test("imports from claude-process.ts", () => {
     content = readFileSync(relayPath, "utf8");
-    expect(content).toContain("'CLAUDECODE'");
+    expect(content).toContain("claude-process");
   });
 
-  test("deletes CLAUDE_CODE_SSE_PORT from spawn env", () => {
+  test("does not directly import spawn from bun", () => {
     content = readFileSync(relayPath, "utf8");
-    expect(content).toContain("'CLAUDE_CODE_SSE_PORT'");
-  });
-
-  test("deletes CLAUDE_CODE_ENTRYPOINT from spawn env", () => {
-    content = readFileSync(relayPath, "utf8");
-    expect(content).toContain("'CLAUDE_CODE_ENTRYPOINT'");
-  });
-
-  test("deletes CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS from spawn env", () => {
-    content = readFileSync(relayPath, "utf8");
-    expect(content).toContain("'CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS'");
-  });
-
-  test("sets CLAUDE_SUBPROCESS marker to prevent false-positive nested session detection", () => {
-    content = readFileSync(relayPath, "utf8");
-    expect(content).toContain('CLAUDE_SUBPROCESS');
-  });
-});
-
-// ─── src/claude.ts — callClaudeText() env var cleanup ────────────────────────
-
-describe("src/claude.ts — Claude Code env var cleanup in callClaudeText()", () => {
-  const claudePath = join(ROOT, "src", "claude.ts");
-  let content: string;
-
-  test("claude.ts exists", () => {
-    expect(existsSync(claudePath)).toBe(true);
-    content = readFileSync(claudePath, "utf8");
-  });
-
-  test("deletes CLAUDECODE from spawn env", () => {
-    content = readFileSync(claudePath, "utf8");
-    expect(content).toContain("'CLAUDECODE'");
-  });
-
-  test("deletes CLAUDE_CODE_SSE_PORT from spawn env", () => {
-    content = readFileSync(claudePath, "utf8");
-    expect(content).toContain("'CLAUDE_CODE_SSE_PORT'");
-  });
-
-  test("deletes CLAUDE_CODE_ENTRYPOINT from spawn env", () => {
-    content = readFileSync(claudePath, "utf8");
-    expect(content).toContain("'CLAUDE_CODE_ENTRYPOINT'");
-  });
-
-  test("deletes CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS from spawn env", () => {
-    content = readFileSync(claudePath, "utf8");
-    expect(content).toContain("'CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS'");
-  });
-
-  test("sets CLAUDE_SUBPROCESS marker", () => {
-    content = readFileSync(claudePath, "utf8");
-    expect(content).toContain('CLAUDE_SUBPROCESS');
+    expect(content).not.toContain('import { spawn } from "bun"');
   });
 });
 

@@ -63,6 +63,10 @@ export class ProgressIndicator {
   private startTime = 0;
   private finished = false;
   private lastImmediateEdit = 0;
+  /** callback_data prefix for the inline Cancel button (e.g. "42:7"). Null = no button. */
+  private cancelKey: string | null = null;
+  /** Called once the initial progress message is sent, with its message_id. */
+  private onMessageId: ((id: number) => void) | null = null;
 
   /**
    * Rolling buffer of the last N unique events (no consecutive duplicates).
@@ -78,13 +82,24 @@ export class ProgressIndicator {
    *
    * @param threadId - Telegram forum topic thread ID. Pass to ensure the
    *   indicator appears in the correct forum topic rather than the root chat.
+   * @param options.cancelKey - When set, an inline "✖ Cancel" button is
+   *   attached to the initial message with callback_data `cancel:<cancelKey>`.
+   * @param options.onMessageId - Called once with the message_id of the initial
+   *   progress message, so callers can register it in the activeStreams entry.
    */
-  async start(chatId: number, bot: Bot, threadId?: number | null): Promise<void> {
+  async start(
+    chatId: number,
+    bot: Bot,
+    threadId?: number | null,
+    options?: { cancelKey?: string; onMessageId?: (id: number) => void }
+  ): Promise<void> {
     this.chatId = chatId;
     this.threadId = threadId ?? null;
     this.bot = bot;
     this.startTime = Date.now();
     this.finished = false;
+    this.cancelKey = options?.cancelKey ?? null;
+    this.onMessageId = options?.onMessageId ?? null;
 
     this.delayTimer = setTimeout(async () => {
       if (this.finished) return;
@@ -187,8 +202,16 @@ export class ProgressIndicator {
     try {
       const msg = await this.bot.api.sendMessage(this.chatId, text, {
         ...(this.threadId != null && { message_thread_id: this.threadId }),
+        ...(this.cancelKey != null && {
+          reply_markup: {
+            inline_keyboard: [[
+              { text: "\u2716 Cancel", callback_data: `cancel:${this.cancelKey}` },
+            ]],
+          },
+        }),
       });
       this.messageId = msg.message_id;
+      this.onMessageId?.(msg.message_id);
     } catch {
       // Failed to send — maybe chat is unavailable. Give up silently.
     }
@@ -204,12 +227,28 @@ export class ProgressIndicator {
     }, UPDATE_INTERVAL_MS);
   }
 
+  /**
+   * Edit the in-place indicator message with the latest buffered events.
+   *
+   * When cancelKey is set, the inline Cancel button is preserved in every
+   * heartbeat and immediate edit. Omitting reply_markup in editMessageText
+   * causes Telegram to remove the existing inline keyboard — so we must
+   * re-attach it on every edit while the stream is active.
+   */
   private async editMessage(): Promise<void> {
     if (!this.chatId || !this.bot || this.messageId === null) return;
 
     const text = this.buildText();
     try {
-      await this.bot.api.editMessageText(this.chatId, this.messageId, text);
+      await this.bot.api.editMessageText(this.chatId, this.messageId, text, {
+        ...(this.cancelKey != null && {
+          reply_markup: {
+            inline_keyboard: [[
+              { text: "\u2716 Cancel", callback_data: `cancel:${this.cancelKey}` },
+            ]],
+          },
+        }),
+      });
     } catch (err: unknown) {
       // Telegram returns 400 "message is not modified" when text is identical.
       // This is expected and safe to ignore. Other errors (deleted message,
@@ -252,6 +291,8 @@ export class ProgressIndicator {
     this.threadId = null;
     this.bot = null;
     this.messageId = null;
+    this.cancelKey = null;
+    this.onMessageId = null;
     this.eventBuffer = [];
     this.lastImmediateEdit = 0;
   }

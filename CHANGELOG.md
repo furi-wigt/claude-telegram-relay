@@ -3,6 +3,27 @@
 ## [Unreleased]
 
 ### Added
+- Structured observability system for debugging message flow and LTM extraction (`src/utils/tracer.ts`)
+- JSON Lines logging to `~/.claude-relay/logs/YYYY-MM-DD.jsonl` with 30-day retention
+- Trace events: `message_received`, `claude_start`, `claude_complete`, `ltm_enqueued`, `ltm_llm_call`, `ltm_parse_result`, `ltm_store_result`
+- Standalone e2e test suite: `bun run test:observability`
+
+### Changed
+- `src/relay.ts`: instrumented `processTextMessage()` and `callClaude()` with trace spans
+- `src/memory/longTermExtractor.ts`: instrumented `extractMemoriesFromExchange()` and `storeExtractedMemories()` with LTM debug logging (prompt sent, raw LLM response, parse result, DB write outcome)
+
+### Notes
+- Observability is **opt-in**: set `OBSERVABILITY_ENABLED=1` in `.env` to enable
+- Primary use case: diagnosing silent LTM extraction failures
+
+### Changed
+- LTM extraction now analyzes the full conversation exchange (user message + assistant
+  reply) rather than only the user's message. The assistant's restatements or
+  confirmations of user facts improve extraction quality. Bot command responses
+  (/help, /status, /memory, etc.) remain excluded by architecture — extraction
+  only runs for conversational messages.
+
+### Added
 - **PM2 Process Manager Support**: Cross-platform service management with cron scheduling
   - Works on macOS, Linux, and Windows (replaces platform-specific solutions)
   - Built-in cron scheduling for periodic jobs (smart check-ins, briefings, watchdog)

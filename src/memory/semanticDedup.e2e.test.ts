@@ -172,10 +172,10 @@ describe("checkSemanticDuplicate", () => {
     expect(body.chat_id).toBeUndefined();
   });
 
-  it("uses default threshold of 0.85", async () => {
-    // Match at 0.84 — just below default threshold, should NOT be duplicate
+  it("uses default threshold of 0.80", async () => {
+    // Match at 0.79 — just below default threshold, should NOT be duplicate
     const sb = mockSupabaseSearch([
-      { id: "low", content: "somewhat similar", type: "fact", similarity: 0.84 },
+      { id: "low", content: "somewhat similar", type: "fact", similarity: 0.79 },
     ]);
 
     const result = await checkSemanticDuplicate(sb, "test", "fact");

@@ -178,11 +178,14 @@ export async function getMemoryContext(
       goalsQuery,
     ]);
 
-    // Filter out junk entries that are partial tag remnants (e.g. `]` / `[GOAL:`)
+    // Filter out junk entries that are partial tag remnants (e.g. `]` / `[GOAL:`, `]`/`[DONE:`)
+    // The tag fragment check catches anything containing a memory tag marker — these are
+    // either template examples from the MEMORY MANAGEMENT block or malformed extractions.
     const isJunk = (content: string) =>
       !content?.trim() ||
       content.trim().length < 4 ||
-      /^[\[\]`\/|,\s\-\.]+$/.test(content.trim());
+      /^[\[\]`\/|,\s\-\.]+$/.test(content.trim()) ||
+      /\[(GOAL|DONE|REMEMBER):/i.test(content.trim());
 
     const parts: string[] = [];
 

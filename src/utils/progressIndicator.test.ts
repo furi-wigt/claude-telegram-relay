@@ -499,4 +499,61 @@ describe("ProgressIndicator", () => {
     const call = (mockBot.api.sendMessage as any).mock.calls[0];
     expect(call[1]).toContain("Thinking...");
   });
+
+  // -----------------------------------------------------------------------
+  // 13. Cancel button persistence — regression for interval/immediate edits
+  // -----------------------------------------------------------------------
+
+  test("editMessageText preserves Cancel button on interval tick when cancelKey is set", async () => {
+    await indicator.start(CHAT_ID, mockBot as any, null, { cancelKey: "123:" });
+
+    await advanceTime(8001);  // fire initial sendMessage
+    await advanceTime(60001); // fire edit interval
+
+    expect(mockBot.api.editMessageText).toHaveBeenCalled();
+    const calls = (mockBot.api.editMessageText as any).mock.calls;
+    const lastCall = calls[calls.length - 1];
+    const opts = lastCall[3] as { reply_markup?: { inline_keyboard: Array<Array<{ callback_data: string }>> } } | undefined;
+    expect(opts?.reply_markup?.inline_keyboard[0][0].callback_data).toBe("cancel:123:");
+  });
+
+  test("editMessageText preserves Cancel button on immediate update when cancelKey is set", async () => {
+    await indicator.start(CHAT_ID, mockBot as any, null, { cancelKey: "999:" });
+
+    await advanceTime(8001); // fire initial sendMessage
+
+    await indicator.update("progress text", { immediate: true });
+
+    expect(mockBot.api.editMessageText).toHaveBeenCalledTimes(1);
+    const call = (mockBot.api.editMessageText as any).mock.calls[0];
+    const opts = call[3] as { reply_markup?: { inline_keyboard: Array<Array<{ callback_data: string }>> } } | undefined;
+    expect(opts?.reply_markup?.inline_keyboard[0][0].callback_data).toBe("cancel:999:");
+  });
+
+  test("editMessageText has NO reply_markup on interval tick when cancelKey is absent", async () => {
+    await indicator.start(CHAT_ID, mockBot as any); // no cancelKey
+
+    await advanceTime(8001);  // fire initial sendMessage
+    await advanceTime(60001); // fire edit interval
+
+    expect(mockBot.api.editMessageText).toHaveBeenCalled();
+    const calls = (mockBot.api.editMessageText as any).mock.calls;
+    const lastCall = calls[calls.length - 1];
+    const opts = lastCall[3] as { reply_markup?: unknown } | undefined;
+    // No cancelKey → options is {} → no reply_markup
+    expect(opts?.reply_markup).toBeUndefined();
+  });
+
+  test("finish() calls editMessageText without reply_markup — button removed on stream end", async () => {
+    await indicator.start(CHAT_ID, mockBot as any, null, { cancelKey: "123:" });
+
+    await advanceTime(8001); // fire initial sendMessage
+
+    await indicator.finish(true);
+
+    // finish() calls editMessageText with just (chatId, msgId, text) — no 4th arg
+    const calls = (mockBot.api.editMessageText as any).mock.calls;
+    const finishCall = calls[calls.length - 1];
+    expect(finishCall[3]).toBeUndefined();
+  });
 });

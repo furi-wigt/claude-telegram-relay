@@ -9,7 +9,7 @@
  */
 
 import { callOllamaGenerate } from "../ollama.ts";
-import { runClaudePrint } from "./claudeRunner.ts";
+import { claudeText } from "../claude-process.ts";
 
 export interface TeamRole {
   name: string;  // e.g., "implementer", "reviewer", "tester"
@@ -151,7 +151,7 @@ function buildOrchestrationPrompt(task: string, roles: TeamRole[]): string {
 export async function analyzeWithClaude(task: string): Promise<TeamComposition> {
   const prompt = buildAiPrompt(task);
 
-  const stdout = await runClaudePrint(prompt);
+  const stdout = await claudeText(prompt, { timeoutMs: 30_000 });
 
   // Extract JSON from the output — Claude may include prose around it
   const jsonMatch = stdout.match(/\{[\s\S]*\}/);

@@ -6,10 +6,10 @@
 
 import { describe, test, expect, mock, beforeEach } from "bun:test";
 
-// Mock callClaudeText before importing the module under test
+// Mock claudeText before importing the module under test
 const callClaudeTextMock = mock(() => Promise.resolve("none"));
-mock.module("../claude.ts", () => ({
-  callClaudeText: callClaudeTextMock,
+mock.module("../claude-process.ts", () => ({
+  claudeText: callClaudeTextMock,
 }));
 
 import { parseModelIndices, findPotentialDuplicates, wordsContained } from "./duplicateDetector.ts";
@@ -294,11 +294,12 @@ describe("findPotentialDuplicates", () => {
     callClaudeTextMock.mockImplementation(() => {
       throw new Error("Claude unavailable");
     });
+    // Items must share a 4+ char stem with newContent to pass the pre-filter
     const items = [
-      { id: "1", content: "Learn TypeScript" },
+      { id: "1", content: "Learn TypeScript basics" },
       { id: "2", content: "Ship API v2" },
     ];
-    const result = await findPotentialDuplicates(items, "Master Deno");
+    const result = await findPotentialDuplicates(items, "Master TypeScript deeply");
     expect(result).toEqual([]);
     expect(callClaudeTextMock).toHaveBeenCalled();
   });
@@ -306,10 +307,10 @@ describe("findPotentialDuplicates", () => {
   test('Claude returns "none" → returns []', async () => {
     callClaudeTextMock.mockImplementation(() => Promise.resolve("none"));
     const items = [
-      { id: "1", content: "Learn TypeScript" },
+      { id: "1", content: "Learn TypeScript basics" },
       { id: "2", content: "Ship API v2" },
     ];
-    const result = await findPotentialDuplicates(items, "Master Deno");
+    const result = await findPotentialDuplicates(items, "Master TypeScript deeply");
     expect(result).toEqual([]);
     expect(callClaudeTextMock).toHaveBeenCalled();
   });
@@ -326,15 +327,16 @@ describe("findPotentialDuplicates", () => {
 
   test('Claude returns "1,2" → returns [existingItems[0], existingItems[1]]', async () => {
     callClaudeTextMock.mockImplementation(() => Promise.resolve("1,2"));
+    // Items must share a 4+ char stem with newContent to pass the pre-filter
     const items = [
-      { id: "a", content: "Learn TypeScript" },
-      { id: "b", content: "Master JavaScript" },
+      { id: "a", content: "Learn TypeScript deeply" },
+      { id: "b", content: "Master TypeScript patterns" },
       { id: "c", content: "Ship API v2" },
     ];
-    const result = await findPotentialDuplicates(items, "Study web languages");
+    const result = await findPotentialDuplicates(items, "Study TypeScript concepts");
     expect(result).toEqual([
-      { id: "a", content: "Learn TypeScript" },
-      { id: "b", content: "Master JavaScript" },
+      { id: "a", content: "Learn TypeScript deeply" },
+      { id: "b", content: "Master TypeScript patterns" },
     ]);
   });
 

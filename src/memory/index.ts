@@ -41,3 +41,9 @@ export {
   registerMemoryConfirmHandler,
   sendMemoryConfirmation,
 } from "./memoryConfirm.ts";
+
+// Per-chat async queue for LTM extraction — replaces the old extractionInFlight mutex
+export {
+  enqueueExtraction,
+  type QueueItem,
+} from "./extractionQueue.ts";

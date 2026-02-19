@@ -7,10 +7,12 @@
  * Uses Claude Haiku for extraction (primary) with Ollama as fallback.
  */
 
+import { tmpdir } from "os";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { callClaudeText } from "../claude.ts";
+import { claudeText } from "../claude-process.ts";
 import { callOllamaGenerate } from "../ollama.ts";
 import { checkSemanticDuplicate } from "../utils/semanticDuplicateChecker.ts";
+import { trace } from "../utils/tracer.ts";
 
 const MEMORY_SCORES: Record<string, { importance: number; stability: number }> = {
   fact_personal: { importance: 0.85, stability: 0.90 },
@@ -24,6 +26,43 @@ function getMemoryScores(type: string, category?: string): { importance: number;
   if (type === "fact") return MEMORY_SCORES.fact_personal;
   return MEMORY_SCORES[type] ?? { importance: 0.70, stability: 0.70 };
 }
+
+/**
+ * Strip {placeholder} template variables from text.
+ * These appear when profile.md or system prompts contain unsubstituted variables,
+ * causing them to be echoed back by the assistant and mistaken for real user facts.
+ *
+ * Exported for testing only — prefix `_` signals internal use.
+ */
+export function _filterPlaceholders(text: string): string {
+  return text.replace(/\{[a-zA-Z_][a-zA-Z0-9_]*\}/g, "").trim();
+}
+
+/** Internal alias so production code keeps the same readable name. */
+const filterPlaceholders = _filterPlaceholders;
+
+/**
+ * Returns true if the user message is a query about their own stored memory/profile.
+ * These turns contain no new user facts — they read back existing data.
+ * Extracting from them causes circular writes (memory echoed → re-stored as fact).
+ *
+ * Exported for testing only — prefix `_` signals internal use.
+ */
+export function _isMemoryQuery(userMessage: string): boolean {
+  const patterns = [
+    /what('s| is) (in |my )?(my |the )?(goals?|memory|profile|facts?|preferences?)/i,
+    /what do you (know|remember) about me/i,
+    /what have i (told|said) (to )?you/i,
+    /show (me )?my (goals?|memory|profile|facts?|preferences?)/i,
+    /^list (my )?(goals?|memory|profile|facts?|preferences?)$/i,
+    // Slash commands that display stored memory — no new facts to extract
+    /^\/(goals?|memory|facts?|prefs?|history|remember|forget)(\s|$)/i,
+  ];
+  return patterns.some((p) => p.test(userMessage.trim()));
+}
+
+/** Internal alias so production code keeps the same readable name. */
+const isMemoryQuery = _isMemoryQuery;
 
 export interface ExtractedMemories {
   facts?: string[];
@@ -77,22 +116,26 @@ export function hasMemoryItems(m: ExtractedMemories): boolean {
 }
 
 /**
- * Main entry point: extract memories from a user message and store certain ones.
+ * Main entry point: extract memories from a conversation exchange and store certain ones.
  * Returns uncertain items for the caller to handle (e.g. ask user to confirm).
  * Designed to run async/non-blocking after response is sent to user.
  *
- * NOTE: Only the user's message is analyzed — assistant responses are NOT passed
- * to the extraction model to prevent contamination from the bot's own output.
+ * Analyzes both the user's message and the assistant's reply to extract facts
+ * about the user. Bot command responses (/help, /status, etc.) are excluded by
+ * architecture — this function is only called from conversational message handlers.
  */
 export async function extractAndStore(
   supabase: SupabaseClient,
   chatId: number,
   _userId: number,
-  userMessage: string
+  userMessage: string,
+  assistantResponse?: string,
+  traceId?: string,
+  injectedContext?: string
 ): Promise<{ uncertain: ExtractedMemories; inserted: number }> {
   try {
-    const { certain, uncertain } = await extractMemoriesFromExchange(userMessage);
-    const inserted = await storeExtractedMemories(supabase, chatId, certain);
+    const { certain, uncertain } = await extractMemoriesFromExchange(userMessage, assistantResponse, chatId, traceId, injectedContext);
+    const inserted = await storeExtractedMemories(supabase, chatId, certain, traceId);
     return { uncertain, inserted };
   } catch (err) {
     console.error("extractAndStore failed:", err);
@@ -101,19 +144,66 @@ export async function extractAndStore(
 }
 
 /**
- * Call Ollama to extract structured memories from a user message only.
+ * Extract structured memories from a conversation exchange (user + optional assistant reply).
  * Returns { certain, uncertain } to distinguish auto-store vs user-confirm items.
  *
- * Only the user's message is passed — assistant responses are intentionally
- * excluded to prevent the model from inferring facts from the bot's own output.
+ * Both the user's message and the assistant's reply are analyzed to extract facts
+ * about the user. The assistant's restatement or confirmation of user facts improves
+ * extraction quality. The assistant's own persona/knowledge is explicitly excluded.
  */
 export async function extractMemoriesFromExchange(
-  userMessage: string
+  userMessage: string,
+  assistantResponse?: string,
+  chatId?: number,
+  traceId?: string,
+  injectedContext?: string
 ): Promise<ExchangeExtractionResult> {
   const empty: ExchangeExtractionResult = { certain: {}, uncertain: {} };
 
+  // Skip extraction for memory-query turns — user is reading back existing data,
+  // not sharing new facts. Extracting here causes circular writes.
+  if (isMemoryQuery(userMessage)) {
+    return empty;
+  }
+
+  // Strip {placeholder} template variables that appear when profile.md or system prompts
+  // contain unsubstituted variables and the assistant echoes them back.
+  const cleanUser = filterPlaceholders(userMessage.slice(0, 1000));
+  const MAX_ASSISTANT_CHARS = 2000;
+  const cleanAssistant = assistantResponse
+    ? filterPlaceholders(assistantResponse.slice(0, MAX_ASSISTANT_CHARS))
+    : undefined;
+
+  // If the caller provides the system context that was injected into Claude's prompt,
+  // wrap it in XML tags so the extractor can attribute content to the correct source.
+  // XML tags are preferred over custom Unicode delimiters — Claude is specifically
+  // trained to respect them as reliable section boundaries.
+  // This prevents re-extraction of facts Claude echoed back from the injected profile.
+  const knownContextSection = injectedContext
+    ? `<known_context>\n${injectedContext.slice(0, 2000)}\n</known_context>\n\n`
+    : "";
+
+  // Wrap each turn in its own XML tag so the model can attribute facts to the user
+  // turn only, and treat the assistant turn as context (not as a source of user facts).
+  const exchangeSection = cleanAssistant
+    ? `<exchange>\n<user_turn>\n${cleanUser}\n</user_turn>\n<assistant_turn>\n${cleanAssistant}\n</assistant_turn>\n</exchange>`
+    : `<exchange>\n<user_turn>\n${cleanUser}\n</user_turn>\n</exchange>`;
+
   const prompt =
-    `Analyze this user message and extract information about the user. ` +
+    `You are extracting NEW user facts from a conversation turn.\n\n` +
+    knownContextSection +
+    `RULES:\n` +
+    `- Extract ONLY facts explicitly stated BY or ABOUT the user in <user_turn> below\n` +
+    `- Content inside <known_context> is previously retrieved system data — do NOT re-extract it\n` +
+    `- Content inside <assistant_turn> may echo known context — do NOT treat it as new user facts\n` +
+    `- Ignore {placeholder} text — these are template variables, not real values\n` +
+    `- If the user is dismissing or negating something ("forget about X", "ignore X", "don't remember X"), do NOT store X\n` +
+    `- Do NOT extract assistant explanations, code details, or technical implementation content as user facts\n` +
+    `- "certain" = user explicitly and directly stated this fact, or assistant confirmed a user's statement\n` +
+    `- "uncertain" = implied, ambiguous, or could be interpreted multiple ways\n` +
+    `- Omit keys with empty arrays\n` +
+    `- Be specific and concrete (not vague)\n` +
+    `- If nothing new to extract, return {}\n\n` +
     `Return ONLY valid JSON (no markdown, no explanation):\n` +
     `{\n` +
     `  "certain": {\n` +
@@ -129,23 +219,48 @@ export async function extractMemoriesFromExchange(
     `    "dates": ["possibly relevant dates"]\n` +
     `  }\n` +
     `}\n\n` +
-    `Rules:\n` +
-    `- ONLY analyze what the USER wrote in this message\n` +
-    `- "certain" = user explicitly and directly stated this fact\n` +
-    `- "uncertain" = implied, ambiguous, or could be interpreted multiple ways\n` +
-    `- Omit keys with empty arrays\n` +
-    `- Be specific and concrete (not vague)\n` +
-    `- If nothing to extract, return {}\n\n` +
-    `User message: ${userMessage.slice(0, 1000)}`;
+    exchangeSection;
 
   try {
+    const llmStart = Date.now();
     let raw: string;
+    let provider: "claude" | "ollama" | "none" = "none";
     try {
-      raw = await callClaudeText(prompt, { timeoutMs: 15_000 });
-    } catch {
+      // 60s timeout: LTM extraction is a background task that doesn't block
+      // the user response. Claude Haiku typically responds in 11-15s; the
+      // previous 15s limit caused frequent timeouts under PM2 where process
+      // startup adds latency.
+      //
+      // cwd=tmpdir(): Run from a temp directory with no CLAUDE.md files.
+      // This prevents Claude CLI from loading project/global CLAUDE.md context,
+      // which caused it to hallucinate user profile data (role, domain, clients)
+      // from the configuration files rather than from the conversation exchange.
+      raw = await claudeText(prompt, { timeoutMs: 60_000, cwd: tmpdir() });
+      provider = "claude";
+    } catch (claudeErr) {
+      trace({
+        event: "ltm_claude_fallback",
+        traceId: traceId ?? "no-trace",
+        chatId: chatId ?? 0,
+        error: claudeErr instanceof Error ? claudeErr.message : String(claudeErr),
+      });
       // Fallback to local Ollama when Claude CLI is unavailable
-      raw = await callOllamaGenerate(prompt, { timeoutMs: 20_000 });
+      raw = await callOllamaGenerate(prompt, { timeoutMs: 30_000 });
+      provider = "ollama";
     }
+    const llmDurationMs = Date.now() - llmStart;
+
+    trace({
+      event: "ltm_llm_call",
+      traceId: traceId ?? "no-trace",
+      chatId: chatId ?? 0,
+      provider,
+      prompt,
+      rawResponse: raw,
+      durationMs: llmDurationMs,
+      error: null,
+    });
+
     const text = raw.trim();
     if (!text || text === "{}") return empty;
 
@@ -154,11 +269,47 @@ export async function extractMemoriesFromExchange(
     if (!jsonMatch) return empty;
 
     const parsed = JSON.parse(jsonMatch[0]) as Record<string, unknown>;
-    return {
-      certain: sanitizeMemories(parsed.certain),
-      uncertain: sanitizeMemories(parsed.uncertain),
-    };
-  } catch {
+    const certain = sanitizeMemories(parsed.certain);
+    const uncertain = sanitizeMemories(parsed.uncertain);
+
+    const countItems = (m: ExtractedMemories) => ({
+      facts: m.facts?.length ?? 0,
+      preferences: m.preferences?.length ?? 0,
+      goals: m.goals?.length ?? 0,
+      dates: m.dates?.length ?? 0,
+    });
+
+    trace({
+      event: "ltm_parse_result",
+      traceId: traceId ?? "no-trace",
+      chatId: chatId ?? 0,
+      certainCounts: countItems(certain),
+      uncertainCounts: countItems(uncertain),
+      parsedCertain: certain,
+      parsedUncertain: uncertain,
+      parseError: null,
+    });
+
+    return { certain, uncertain };
+  } catch (err) {
+    trace({
+      event: "ltm_llm_call",
+      traceId: traceId ?? "no-trace",
+      chatId: chatId ?? 0,
+      provider: "none",
+      prompt,
+      rawResponse: "",
+      durationMs: 0,
+      error: String(err),
+    });
+    trace({
+      event: "ltm_parse_result",
+      traceId: traceId ?? "no-trace",
+      chatId: chatId ?? 0,
+      certainCounts: { facts: 0, preferences: 0, goals: 0, dates: 0 },
+      uncertainCounts: { facts: 0, preferences: 0, goals: 0, dates: 0 },
+      parseError: String(err),
+    });
     return empty;
   }
 }
@@ -171,9 +322,20 @@ export async function extractMemoriesFromExchange(
 export async function storeExtractedMemories(
   supabase: SupabaseClient,
   chatId: number,
-  memories: ExtractedMemories
+  memories: ExtractedMemories,
+  traceId?: string
 ): Promise<number> {
-  const isJunk = (s: unknown): boolean => typeof s !== 'string' || !s.trim() || s.trim().length < 5;
+  // Tag fragment check: catches partial tag remnants like `]`/`[DONE:` or full template
+  // examples like `[GOAL: goal text | DEADLINE: optional date]` that Ollama extracts from
+  // the MEMORY MANAGEMENT instructions block when it appears in the assistant response.
+  const isJunk = (s: unknown): boolean => {
+    if (typeof s !== 'string' || !s.trim()) return true;
+    const t = s.trim();
+    if (t.length < 5) return true;
+    if (/\[(GOAL|DONE|REMEMBER):/i.test(t)) return true;
+    return false;
+  };
+  let duplicatesSkipped = 0;
 
   const inserts: Array<{
     type: string;
@@ -190,6 +352,7 @@ export async function storeExtractedMemories(
     if (!isJunk(fact)) {
       const dup = await checkSemanticDuplicate(supabase, fact.trim(), "fact", chatId);
       if (dup.isDuplicate) {
+        duplicatesSkipped++;
         console.log(`[extractor] Skipping duplicate fact: "${fact}"`);
         continue;
       }
@@ -211,6 +374,7 @@ export async function storeExtractedMemories(
     if (!isJunk(pref)) {
       const dup = await checkSemanticDuplicate(supabase, pref.trim(), "preference", chatId);
       if (dup.isDuplicate) {
+        duplicatesSkipped++;
         console.log(`[extractor] Skipping duplicate preference: "${pref}"`);
         continue;
       }
@@ -232,6 +396,7 @@ export async function storeExtractedMemories(
     if (!isJunk(goal)) {
       const dup = await checkSemanticDuplicate(supabase, goal.trim(), "goal", chatId);
       if (dup.isDuplicate) {
+        duplicatesSkipped++;
         console.log(`[extractor] Skipping duplicate goal: "${goal}"`);
         continue;
       }
@@ -253,6 +418,7 @@ export async function storeExtractedMemories(
     if (!isJunk(date)) {
       const dup = await checkSemanticDuplicate(supabase, date.trim(), "fact", chatId);
       if (dup.isDuplicate) {
+        duplicatesSkipped++;
         console.log(`[extractor] Skipping duplicate date: "${date}"`);
         continue;
       }
@@ -274,8 +440,26 @@ export async function storeExtractedMemories(
 
   try {
     await supabase.from("memory").insert(inserts);
+    trace({
+      event: "ltm_store_result",
+      traceId: traceId ?? "no-trace",
+      chatId,
+      attempted: inserts.length,
+      inserted: inserts.length,
+      duplicatesSkipped,
+      error: null,
+    });
     return inserts.length;
   } catch (err) {
+    trace({
+      event: "ltm_store_result",
+      traceId: traceId ?? "no-trace",
+      chatId,
+      attempted: inserts.length,
+      inserted: 0,
+      duplicatesSkipped,
+      error: String(err),
+    });
     console.error("storeExtractedMemories insert error:", err);
     return 0;
   }
@@ -326,14 +510,14 @@ export async function rebuildProfileSummary(
     try {
       let narrative: string;
       try {
-        narrative = await callClaudeText(
+        narrative = await claudeText(
           `Write a concise 2-3 sentence profile summary for this person based on these facts. Plain text only:\n\n${memorySummary}`,
-          { timeoutMs: 15_000 }
+          { timeoutMs: 45_000 }
         );
       } catch {
         narrative = await callOllamaGenerate(
           `Write a concise 2-3 sentence profile summary for this person based on these facts. Plain text only:\n\n${memorySummary}`,
-          { timeoutMs: 20_000 }
+          { timeoutMs: 30_000 }
         );
       }
       if (narrative) profile_summary = narrative;

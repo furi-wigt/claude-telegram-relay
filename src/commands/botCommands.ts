@@ -17,8 +17,9 @@
  */
 
 import type { Bot, Context } from "grammy";
+import { InlineKeyboard } from "grammy";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { getSession, getSessionSummary, resetSession } from "../session/groupSessions.ts";
+import { getSession, getSessionSummary, resetSession, saveSession } from "../session/groupSessions.ts";
 import { getMemoryFull, type FullMemory } from "../memory.ts";
 import { handleRoutinesCommand } from "../routines/routineHandler.ts";
 import { registerMemoryCommands } from "./memoryCommands.ts";
@@ -332,10 +333,51 @@ export function buildContextSwitchPrompt(currentTopics: string[]): string {
     ? `Current topic: ${currentTopics.slice(0, 3).join(", ")}`
     : "Current session is active";
 
-  return (
-    `I notice this might be a different topic. ${topicStr}.\n\n` +
-    `Should I:\n` +
-    `• Continue the current conversation (just reply normally)\n` +
-    `• Start fresh: /new`
-  );
+  return `I notice this might be a different topic. ${topicStr}.`;
+}
+
+/**
+ * Build inline keyboard for context switch confirmation.
+ * Callback data embeds the chatId so the handler can look up the pending message.
+ */
+export function buildContextSwitchKeyboard(chatId: number): InlineKeyboard {
+  return new InlineKeyboard()
+    .text("🆕 New topic", `ctxswitch:new:${chatId}`)
+    .text("▶ Continue", `ctxswitch:continue:${chatId}`);
+}
+
+/**
+ * Register the inline keyboard callback handler for context switch prompts.
+ * On "New": resets the session and processes the stored pending message.
+ * On "Continue": leaves pendingContextSwitch=true so processTextMessage's existing
+ *   bypass branch clears it and skips the relevance check (avoiding a re-trigger loop).
+ */
+export function registerContextSwitchCallbackHandler(
+  bot: Bot,
+  onMessage: (chatId: number, text: string, ctx: Context) => Promise<void>
+): void {
+  bot.on("callback_query:data", async (ctx, next) => {
+    const data = ctx.callbackQuery.data;
+    if (!data.startsWith("ctxswitch:")) return next();
+
+    const parts = data.split(":");
+    const action = parts[1]; // "new" or "continue"
+    const chatId = parseInt(parts[2], 10);
+
+    const session = getSession(chatId);
+    const pendingText = session?.pendingMessage ?? "";
+
+    if (action === "new") {
+      await resetSession(chatId);
+      try { await ctx.editMessageText("Starting fresh! Processing your message..."); } catch {}
+      await ctx.answerCallbackQuery();
+      if (pendingText) await onMessage(chatId, pendingText, ctx as unknown as Context);
+    } else {
+      // Leave pendingContextSwitch=true — processTextMessage's bypass branch will clear
+      // it and skip the relevance check, preventing a re-trigger loop.
+      try { await ctx.editMessageText("Got it, continuing the conversation."); } catch {}
+      await ctx.answerCallbackQuery();
+      if (pendingText) await onMessage(chatId, pendingText, ctx as unknown as Context);
+    }
+  });
 }
