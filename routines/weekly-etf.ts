@@ -538,7 +538,7 @@ async function main() {
   }
 
   const report = await buildReport();
-  await sendAndRecord(GROUPS.GENERAL, report, { routineName: 'weekly-etf', agentId: 'general-assistant' });
+  await sendAndRecord(GROUPS.GENERAL.chatId, report, { routineName: 'weekly-etf', agentId: 'general-assistant' });
   console.log("Weekly UCITS ETF analysis sent to General group");
 }
 

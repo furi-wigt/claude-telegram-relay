@@ -5,10 +5,8 @@
  * structured config (name, cron, prompt) using Claude.
  */
 
-import Anthropic from "@anthropic-ai/sdk";
+import { callClaudeText } from "../claude.ts";
 import type { PendingRoutine } from "./types.ts";
-
-const client = new Anthropic();
 
 // Keywords that suggest the user wants to create a scheduled routine
 const ROUTINE_INTENT_PATTERNS = [
@@ -45,35 +43,29 @@ interface ExtractedRoutine {
 export async function extractRoutineConfig(
   userMessage: string
 ): Promise<PendingRoutine | null> {
-  const systemPrompt = `You extract scheduled routine configurations from user messages.
-
-Respond ONLY with valid JSON matching this schema:
-{
-  "name": "kebab-case-slug (max 30 chars, no spaces)",
-  "cron": "valid cron expression (5 fields)",
-  "scheduleDescription": "human readable, e.g. 'Daily at 6pm' or 'Every Monday at 9am'",
-  "prompt": "the instruction Claude should execute when the routine runs (be specific and actionable)"
-}
-
-Rules:
-- name: lowercase, hyphens only, descriptive (e.g. "daily-aws-cost", "weekly-goals-review")
-- cron: 5-field standard cron (minute hour dom month dow) — use SGT/Asia/Singapore timezone context
-- prompt: write as if asking Claude directly, e.g. "Summarize my AWS costs for today and flag anything unusual"
-- If schedule is unclear, default to daily at 8am (0 8 * * *)
-- If you cannot extract a meaningful routine, respond with: {"error": "reason"}
-
-Do not include any text outside the JSON.`;
+  const prompt =
+    `You extract scheduled routine configurations from user messages.\n\n` +
+    `Respond ONLY with valid JSON matching this schema:\n` +
+    `{\n` +
+    `  "name": "kebab-case-slug (max 30 chars, no spaces)",\n` +
+    `  "cron": "valid cron expression (5 fields)",\n` +
+    `  "scheduleDescription": "human readable, e.g. 'Daily at 6pm' or 'Every Monday at 9am'",\n` +
+    `  "prompt": "the instruction Claude should execute when the routine runs (be specific and actionable)"\n` +
+    `}\n\n` +
+    `Rules:\n` +
+    `- name: lowercase, hyphens only, descriptive (e.g. "daily-aws-cost", "weekly-goals-review")\n` +
+    `- cron: 5-field standard cron (minute hour dom month dow) — use SGT/Asia/Singapore timezone context\n` +
+    `- prompt: write as if asking Claude directly, e.g. "Summarize my AWS costs for today and flag anything unusual"\n` +
+    `- If schedule is unclear, default to daily at 8am (0 8 * * *)\n` +
+    `- If you cannot extract a meaningful routine, respond with: {"error": "reason"}\n\n` +
+    `Do not include any text outside the JSON.\n\n` +
+    `User message: ${userMessage}`;
 
   try {
-    const response = await client.messages.create({
+    const text = await callClaudeText(prompt, {
       model: "claude-haiku-4-5-20251001",
-      max_tokens: 512,
-      system: systemPrompt,
-      messages: [{ role: "user", content: userMessage }],
+      timeoutMs: 30_000,
     });
-
-    const text =
-      response.content[0].type === "text" ? response.content[0].text.trim() : "";
 
     const parsed = JSON.parse(text);
 

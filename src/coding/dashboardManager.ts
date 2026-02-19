@@ -212,7 +212,7 @@ function formatElapsed(isoDate: string): string {
 
 /**
  * Abbreviate a long path for display:
- * /Users/furi/Documents/WorkInGovTech/my-project -> /Users/furi/.../my-project
+ * /Users/alice/Documents/my-project -> /Users/alice/.../my-project
  */
 function abbreviatePath(fullPath: string): string {
   const parts = fullPath.split("/").filter(Boolean);

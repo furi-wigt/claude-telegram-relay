@@ -21,7 +21,7 @@ export class ProjectScanner {
   /**
    * Decode a Claude projects directory name back to an absolute path.
    * Claude encodes paths by replacing slashes with hyphens.
-   * e.g. "-Users-furi-Documents-project" -> "/Users/furi/Documents/project"
+   * e.g. "-Users-alice-Documents-project" -> "/Users/alice/Documents/project"
    */
   decodeProjectDir(encodedName: string): string {
     // The encoded name starts with a hyphen (representing the leading /)

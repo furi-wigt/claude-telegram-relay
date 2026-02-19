@@ -566,12 +566,12 @@ async function scheduleTaskReminders(tasks: SuggestedTask[]): Promise<void> {
    * Uses Telegram's sendMessage with scheduled time
    */
 
-  if (!BOT_TOKEN || !GROUPS.GENERAL) {
+  if (!BOT_TOKEN || !GROUPS.GENERAL.chatId) {
     console.warn("Cannot schedule reminders - missing bot token or chat ID");
     return;
   }
 
-  const chatId = GROUPS.GENERAL;
+  const chatId = GROUPS.GENERAL.chatId;
   const today = new Date();
 
   for (const task of tasks) {
@@ -621,7 +621,7 @@ async function main() {
   }
 
   const { message, tasks } = await buildEnhancedBriefing();
-  await sendAndRecord(GROUPS.GENERAL, message, { routineName: 'morning-summary', agentId: 'general-assistant' });
+  await sendAndRecord(GROUPS.GENERAL.chatId, message, { routineName: 'morning-summary', agentId: 'general-assistant' });
   console.log("Enhanced morning summary sent to General group");
 
   // Note: Task confirmation and reminder scheduling would be handled

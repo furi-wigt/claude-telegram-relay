@@ -102,7 +102,7 @@ async function main() {
   const findings = await getSecurityFindings();
   const message = formatSecurityMessage(findings);
 
-  await sendAndRecord(GROUPS.SECURITY, message, { routineName: 'security-daily-scan', agentId: 'security-analyst' });
+  await sendAndRecord(GROUPS.SECURITY.chatId, message, { routineName: 'security-daily-scan', agentId: 'security-analyst' });
   console.log("Security scan summary sent to Security group");
 }
 

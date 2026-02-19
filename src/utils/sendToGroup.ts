@@ -47,7 +47,7 @@ const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
 export async function sendToGroup(
   chatId: number,
   message: string,
-  options?: { parseMode?: "Markdown" | "HTML" }
+  options?: { parseMode?: "Markdown" | "HTML"; topicId?: number | null }
 ): Promise<void> {
   if (!BOT_TOKEN) {
     throw new Error("TELEGRAM_BOT_TOKEN not set");
@@ -67,6 +67,10 @@ export async function sendToGroup(
       body.parse_mode = options.parseMode;
     }
 
+    if (options?.topicId) {
+      body.message_thread_id = options.topicId;
+    }
+
     const response = await fetch(
       `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`,
       {
@@ -81,7 +85,8 @@ export async function sendToGroup(
       throw new Error(`Telegram API error (${response.status}): ${errorData}`);
     }
 
-    console.log(`Sent routine message to chat ${chatId}`);
+    const topicSuffix = options?.topicId ? ` (topic ${options.topicId})` : "";
+    console.log(`Sent routine message to chat ${chatId}${topicSuffix}`);
   } catch (error) {
     console.error(`Failed to send to chat ${chatId}:`, error);
     throw error;

@@ -250,7 +250,7 @@ async function main() {
   }
 
   const summary = await buildSummary();
-  await sendAndRecord(GROUPS.GENERAL, summary, { routineName: 'night-summary', agentId: 'general-assistant' });
+  await sendAndRecord(GROUPS.GENERAL.chatId, summary, { routineName: 'night-summary', agentId: 'general-assistant' });
   console.log("Night summary sent to General group");
 }
 

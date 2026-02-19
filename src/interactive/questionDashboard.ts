@@ -34,7 +34,7 @@ export class QuestionDashboard {
   /** Send the initial "generating questions..." card. Returns message_id. */
   async createLoadingCard(chatId: number, task: string): Promise<number> {
     const text = this.formatLoading(task);
-    const msg = await this.bot.api.sendMessage(chatId, text, { parse_mode: "Markdown" });
+    const msg = await this.bot.api.sendMessage(chatId, text, { parse_mode: "MarkdownV2" });
     return msg.message_id;
   }
 
@@ -63,12 +63,12 @@ export class QuestionDashboard {
   }
 
   /** Edit the card to show a "checking for follow-up questions" loading state. */
-  async showRoundLoading(session: InteractiveSession, round: number): Promise<void> {
+  async showRoundLoading(session: InteractiveSession): Promise<void> {
     if (!session.cardMessageId) return;
     const text =
       `\u{1F4CB} *plan: ${escapeMarkdown(session.task)}*\n` +
       DIVIDER +
-      `\n\n\u23F3 Round ${round} complete. Checking for follow-up questions\u2026`;
+      `\n\n\u23F3 _Reviewing your answers \u2014 preparing follow\\-up questions\u2026_`;
     await this.editCard(session.chatId, session.cardMessageId, text, new InlineKeyboard());
   }
 
@@ -76,9 +76,9 @@ export class QuestionDashboard {
   async showExecuting(session: InteractiveSession): Promise<void> {
     if (!session.cardMessageId) return;
     const text =
-      `\u{1F680} *Launching Claude...*\n` +
+      `\u{1F680} *Launching Claude\u2026*\n` +
       DIVIDER +
-      `\n\n\u{1F4CB} Task: ${session.task}\n\n` +
+      `\n\n\u{1F4CB} Task: ${escapeMarkdown(session.task)}\n\n` +
       `Questions answered: ${session.questions.length}\n` +
       `Plan saved \u2713`;
     await this.editCard(session.chatId, session.cardMessageId, text, new InlineKeyboard());
@@ -90,7 +90,7 @@ export class QuestionDashboard {
     const text =
       `\u274C *Planning cancelled*\n` +
       DIVIDER +
-      `\n\n_Task: ${session.task}_`;
+      `\n\n_Task: ${escapeMarkdown(session.task)}_`;
     await this.editCard(session.chatId, session.cardMessageId, text, new InlineKeyboard());
   }
 
@@ -115,7 +115,7 @@ export class QuestionDashboard {
     // Previous answers shown below the question
     const prevAnswers = answers
       .slice(0, currentIndex)
-      .map((a, i) => `\u2705 Q${i + 1}: ${shortText(questions[i].question)} \u2192 ${a ?? "\u2014"}`)
+      .map((a, i) => `\u2705 Q${i + 1}: ${escapeMarkdown(shortText(questions[i].question))} \u2192 ${escapeMarkdown(a ?? "\u2014")}`)
       .join("\n");
 
     let text =
@@ -141,7 +141,7 @@ export class QuestionDashboard {
 
     const lines = questions.map(
       (q, i) =>
-        `Q${i + 1}: ${shortText(q.question)} \u2192 *${escapeMarkdown(answers[i] ?? "\u2014")}*`
+        `Q${i + 1}: ${escapeMarkdown(shortText(q.question))} \u2192 *${escapeMarkdown(answers[i] ?? "\u2014")}*`
     );
 
     return (
@@ -151,7 +151,7 @@ export class QuestionDashboard {
       lines.join("\n") +
       `\n\n\u{1F4C1} \`${planPath}\`` +
       `\n\n${THIN_DIVIDER}\n` +
-      `\u{1F194} ${shortId}`
+      `\u{1F194} ${escapeMarkdown(shortId)}`
     );
   }
 
@@ -159,7 +159,7 @@ export class QuestionDashboard {
     const { questions, answers } = session;
     const lines = questions.map(
       (q, i) =>
-        `${i + 1}. ${shortText(q.question)} \u2192 *${escapeMarkdown(answers[i] ?? "\u2014")}*`
+        `Q${i + 1}: ${escapeMarkdown(shortText(q.question))} \u2192 *${escapeMarkdown(answers[i] ?? "\u2014")}*`
     );
 
     return (
@@ -179,15 +179,12 @@ export class QuestionDashboard {
     const q = questions[currentIndex];
     const kb = new InlineKeyboard();
 
-    // Options — max 2 per row to fit label text
-    for (let i = 0; i < q.options.length; i += 2) {
-      const opt1 = q.options[i];
-      kb.text(opt1.label, `iq:a:${currentIndex}:${i}`);
-      if (q.options[i + 1]) {
-        const opt2 = q.options[i + 1];
-        kb.text(opt2.label, `iq:a:${currentIndex}:${i + 1}`);
-      }
-      kb.row();
+    // Options — 1 per row for full-width buttons (readable on mobile).
+    // Guard: skip options with empty labels — Telegram 400s if button text is empty.
+    for (let i = 0; i < q.options.length; i++) {
+      const label = q.options[i]?.label?.trim();
+      if (!label) continue;
+      kb.text(label, `iq:a:${currentIndex}:${i}`).row();
     }
 
     // Nav row
@@ -228,10 +225,13 @@ export class QuestionDashboard {
     try {
       await this.bot.api.editMessageText(chatId, messageId, text, {
         reply_markup: keyboard,
-        parse_mode: "Markdown",
+        parse_mode: "MarkdownV2",
       });
-    } catch {
-      // Telegram ignores edits with identical content — safe to swallow
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!msg.includes("message is not modified")) {
+        console.error("[interactive] editCard failed:", msg);
+      }
     }
   }
 }

@@ -19,7 +19,7 @@ export function getSession(chatId: number): InteractiveSession | undefined {
   const session = sessions.get(chatId);
   if (!session) return undefined;
 
-  if (Date.now() - session.createdAt > SESSION_TTL_MS) {
+  if (Date.now() - session.lastActivityAt > SESSION_TTL_MS) {
     sessions.delete(chatId);
     return undefined;
   }
@@ -33,7 +33,7 @@ export function updateSession(
 ): InteractiveSession | undefined {
   const session = getSession(chatId);
   if (!session) return undefined;
-  const updated = { ...session, ...patch };
+  const updated = { ...session, ...patch, lastActivityAt: Date.now() };
   sessions.set(chatId, updated);
   return updated;
 }

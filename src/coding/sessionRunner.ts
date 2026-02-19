@@ -151,7 +151,8 @@ export class SessionRunner {
 
     const args = SessionRunner.buildArgs(this.claudePath, { resume, useAgentTeam });
     const env = SessionRunner.buildEnv(process.env, { useAgentTeam });
-
+    delete env.CLAUDECODE;
+    
     const proc = spawn(args, {
       stdout: "pipe",
       stderr: "pipe",

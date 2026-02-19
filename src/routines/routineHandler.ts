@@ -43,29 +43,36 @@ function isValidCron(expr: string): boolean {
 interface TargetOption {
   label: string;
   chatId: number;
+  topicId: number | null;
   callbackData: string;
 }
 
 function buildTargetOptions(userChatId: number): TargetOption[] {
   const options: TargetOption[] = [
-    { label: "Personal chat", chatId: userChatId, callbackData: `routine_target:personal:${userChatId}` },
+    {
+      label: "Personal chat",
+      chatId: userChatId,
+      topicId: null,
+      callbackData: `routine_target:personal:${userChatId}:0`,
+    },
   ];
 
   const groupEntries = [
-    { name: "General group", key: "GENERAL" as const },
-    { name: "AWS Architect", key: "AWS_ARCHITECT" as const },
-    { name: "Security", key: "SECURITY" as const },
-    { name: "Code Quality", key: "CODE_QUALITY" as const },
-    { name: "Documentation", key: "DOCUMENTATION" as const },
+    { name: "General group", key: "GENERAL" },
+    { name: "AWS Architect", key: "AWS_ARCHITECT" },
+    { name: "Security", key: "SECURITY" },
+    { name: "Code Quality", key: "CODE_QUALITY" },
+    { name: "Documentation", key: "DOCUMENTATION" },
   ];
 
   for (const g of groupEntries) {
-    const chatId = GROUPS[g.key];
-    if (chatId !== 0) {
+    const group = GROUPS[g.key];
+    if (group && group.chatId !== 0) {
       options.push({
         label: g.name,
-        chatId,
-        callbackData: `routine_target:${g.key.toLowerCase()}:${chatId}`,
+        chatId: group.chatId,
+        topicId: group.topicId,
+        callbackData: `routine_target:${g.key.toLowerCase()}:${group.chatId}:${group.topicId ?? 0}`,
       });
     }
   }
@@ -220,10 +227,12 @@ export function registerCallbackHandler(bot: Bot): void {
       return;
     }
 
-    // Parse: routine_target:<key>:<targetChatId>
+    // Parse: routine_target:<key>:<targetChatId>:<topicId>
     const parts = data.split(":");
     const targetLabel = parts[1];
     const targetChatId = parseInt(parts[2] || "0");
+    const topicIdRaw = parseInt(parts[3] || "0");
+    const topicId: number | null = topicIdRaw !== 0 ? topicIdRaw : null;
 
     if (!targetChatId || targetChatId === 0) {
       await ctx.editMessageText("Invalid target selected. Please try again.");
@@ -235,6 +244,7 @@ export function registerCallbackHandler(bot: Bot): void {
     const config: UserRoutineConfig = {
       ...pending.config,
       chatId: targetChatId,
+      topicId,
       targetLabel: targetLabel === "personal" ? "Personal chat" : targetLabel,
       createdAt: new Date().toISOString(),
     };

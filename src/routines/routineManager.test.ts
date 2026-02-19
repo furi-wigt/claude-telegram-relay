@@ -20,6 +20,7 @@ const TEST_FIXTURE: UserRoutineConfig = {
   scheduleDescription: "Daily at 9am",
   prompt: "Check and summarize my goals for today",
   chatId: 123456789,
+  topicId: null,
   targetLabel: "Personal chat",
   createdAt: "2026-02-17T00:00:00.000Z",
 };

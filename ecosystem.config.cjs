@@ -1,26 +1,26 @@
 // PM2 Ecosystem Configuration
 // Manages telegram-relay (always-on) and scheduled routines (cron-based)
 
-const CWD = "/Users/furi/Documents/WorkInGovTech/01_Projects/Tools/claude-telegram-relay";
-const BUN = "/Users/furi/.bun/bin/bun";
+const CWD = process.env.RELAY_CWD || __dirname;
+const BUN = process.env.BUN_PATH || "bun";
 const ENV = {
   NODE_ENV: "production",
-  PATH: "/Users/furi/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
-  HOME: "/Users/furi",
+  PATH: process.env.PATH || "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
+  HOME: process.env.HOME || "",
 };
 
 module.exports = {
   apps: [
     {
       name: "telegram-relay",
-      script: "src/index.ts",
+      script: "relay-wrapper.js",
       interpreter: BUN,
       exec_mode: "fork",
       cwd: CWD,
       instances: 1,
       autorestart: true,
       watch: false,
-      max_memory_restart: "500M",
+      max_memory_restart: "1500M",
       kill_timeout: 10000,
       wait_ready: true,
       listen_timeout: 15000,

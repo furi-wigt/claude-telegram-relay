@@ -38,7 +38,10 @@ export class InteractiveStateMachine {
 
   constructor(
     private bot: Bot,
-    private callClaude: CallerCallClaude
+    private callClaude: CallerCallClaude,
+    /** Optional lighter callable for question generation (e.g. callClaudeText).
+     * Falls back to callClaude when not provided. */
+    private callClaudeForQuestions?: CallerCallClaude
   ) {
     this.dashboard = new QuestionDashboard(bot);
   }
@@ -68,6 +71,7 @@ export class InteractiveStateMachine {
     // Show loading card immediately
     const cardMessageId = await this.dashboard.createLoadingCard(chatId, task);
 
+    const now = Date.now();
     const session: InteractiveSession = {
       sessionId: crypto.randomUUID(),
       chatId,
@@ -79,7 +83,8 @@ export class InteractiveStateMachine {
       answers: [],
       currentIndex: 0,
       cardMessageId,
-      createdAt: Date.now(),
+      createdAt: now,
+      lastActivityAt: now,
       completedQA: [],
       currentBatchStart: 0,
       round: 1,
@@ -123,8 +128,6 @@ export class InteractiveStateMachine {
     const chatId = ctx.chat?.id;
     if (!chatId) return;
 
-    await ctx.answerCallbackQuery().catch(() => {});
-
     const session = getSession(chatId);
     if (!session) {
       await ctx.answerCallbackQuery({ text: "Session expired. Use /plan to start again." }).catch(() => {});
@@ -134,9 +137,21 @@ export class InteractiveStateMachine {
     // iq:a:{qIdx}:{oIdx}
     if (data.startsWith("iq:a:")) {
       const [, , qIdx, oIdx] = data.split(":");
-      await this.recordAnswer(session, parseInt(qIdx), parseInt(oIdx));
+      const qIdxNum = parseInt(qIdx);
+      // Show instant toast when this is the last answer and will trigger a backend fetch.
+      // This fires before any card edit, closing the "button looks broken" timing gap.
+      const willFetch =
+        qIdxNum === session.currentIndex &&
+        qIdxNum + 1 >= session.questions.length &&
+        session.editingIndex === undefined;
+      await ctx
+        .answerCallbackQuery(willFetch ? { text: "✓ Reviewing your answers…" } : {})
+        .catch(() => {});
+      await this.recordAnswer(session, qIdxNum, parseInt(oIdx));
       return;
     }
+
+    await ctx.answerCallbackQuery().catch(() => {});
 
     if (data === "iq:back") {
       await this.goBack(session);
@@ -152,7 +167,7 @@ export class InteractiveStateMachine {
     // iq:eq:{qIdx}
     if (data.startsWith("iq:eq:")) {
       const qIdx = parseInt(data.split(":")[2]);
-      await this.jumpToQuestion(session, qIdx);
+      await this.editQuestion(session, qIdx);
       return;
     }
 
@@ -198,6 +213,16 @@ export class InteractiveStateMachine {
     const newAnswers = [...session.answers];
     newAnswers[session.currentIndex] = text;
 
+    // Single-question edit mode: update only this answer then return to summary
+    if (session.editingIndex !== undefined) {
+      const updated = updateSession(chatId, { answers: newAnswers, editingIndex: undefined });
+      if (updated) {
+        const planPath = buildPlanPath(updated);
+        await this.dashboard.showSummary(updated, planPath);
+      }
+      return true;
+    }
+
     if (session.currentIndex + 1 < session.questions.length) {
       const updated = updateSession(chatId, {
         answers: newAnswers,
@@ -230,6 +255,16 @@ export class InteractiveStateMachine {
     const newAnswers = [...session.answers];
     newAnswers[qIdx] = option.value;
 
+    // Single-question edit mode: update only this answer then return to summary
+    if (session.editingIndex !== undefined) {
+      const updated = updateSession(chatId, { answers: newAnswers, editingIndex: undefined });
+      if (updated) {
+        const planPath = buildPlanPath(updated);
+        await this.dashboard.showSummary(updated, planPath);
+      }
+      return;
+    }
+
     if (qIdx + 1 < questions.length) {
       const updated = updateSession(chatId, {
         answers: newAnswers,
@@ -256,11 +291,25 @@ export class InteractiveStateMachine {
     if (updated) await this.dashboard.showQuestion(updated);
   }
 
+  /** Called when user picks a question from the edit menu. Preserves all other answers. */
+  private async editQuestion(session: InteractiveSession, qIdx: number): Promise<void> {
+    const { chatId, questions } = session;
+    if (qIdx < 0 || qIdx >= questions.length) return;
+
+    const updated = updateSession(chatId, {
+      phase: "collecting",
+      currentIndex: qIdx,
+      editingIndex: qIdx,
+    });
+    if (updated) await this.dashboard.showQuestion(updated);
+  }
+
+  /** Called when user taps Back during normal Q&A (not edit mode). */
   private async jumpToQuestion(session: InteractiveSession, qIdx: number): Promise<void> {
     const { chatId, questions } = session;
     if (qIdx < 0 || qIdx >= questions.length) return;
 
-    // Clear answers from qIdx onwards so user re-answers them
+    // Clear answers from qIdx onwards so user re-answers them in sequence
     const newAnswers = [...session.answers];
     for (let i = qIdx; i < newAnswers.length; i++) newAnswers[i] = null;
 
@@ -286,7 +335,7 @@ export class InteractiveStateMachine {
     const newCompletedQA = [...completedQA, ...batchPairs];
 
     // Show loading state while generating next batch
-    await this.dashboard.showRoundLoading(session, round);
+    await this.dashboard.showRoundLoading(session);
 
     try {
       const result = await this.generateNextBatch(session.task, newCompletedQA, round + 1);
@@ -311,9 +360,18 @@ export class InteractiveStateMachine {
       }
     } catch (err) {
       console.error("[interactive] Failed to generate next batch:", err);
-      // On error, just advance to summary with what we have
-      const updated = updateSession(chatId, { completedQA: newCompletedQA });
-      if (updated) await this.advanceToSummary(updated);
+      // On error, try to advance to summary with what we have
+      try {
+        const updated = updateSession(chatId, { completedQA: newCompletedQA });
+        if (updated) await this.advanceToSummary(updated);
+      } catch (summaryErr) {
+        console.error("[interactive] advanceToSummary also failed:", summaryErr);
+        // Card is stuck at "Reviewing your answers…" — send a plain error message
+        await this.bot.api
+          .sendMessage(chatId, "❌ Failed to generate follow-up questions. Use /plan to start again.")
+          .catch(() => {});
+        clearSession(chatId);
+      }
     }
   }
 
@@ -338,9 +396,20 @@ export class InteractiveStateMachine {
       .join("\n\n");
 
     const prompt =
+      `You are an expert software engineer who practices strict Test-Driven Development (TDD).\n\n` +
+      `Your approach:\n` +
+      `1. Write failing tests FIRST (red) that precisely capture the requirements\n` +
+      `2. Write the minimal implementation to make tests pass (green)\n` +
+      `3. Refactor for clarity and simplicity without breaking tests\n\n` +
+      `Principles you follow:\n` +
+      `- Each function/module has a single, clear responsibility\n` +
+      `- Tests are the living specification — they document intent, not just behaviour\n` +
+      `- No stubs, placeholders, or TODOs — every function either works or doesn't exist\n` +
+      `- Prefer simple, explicit code over clever abstractions\n` +
+      `- Remove dead code immediately\n\n` +
       `# Task\n${task}\n\n` +
-      `# Requirements (Q&A)\n${qaContext}\n\n` +
-      `Please implement this task. All requirements above were gathered from the user.\n`;
+      `# Requirements (gathered from user)\n${qaContext}\n\n` +
+      `Implement this task using TDD. Show tests first, then implementation.\n`;
 
     try {
       const response = await this.callClaude(prompt);
@@ -429,7 +498,8 @@ Round ${round} of 5 maximum.
 Respond with ONLY valid JSON. Each question needs: id, question, options (2-4 with label ≤ 25 chars and value), allowFreeText.`;
     }
 
-    const raw = await this.callClaude(prompt);
+    const callFn = this.callClaudeForQuestions ?? this.callClaude;
+    const raw = await callFn(prompt);
 
     // Extract JSON robustly — handles preamble text, code fences, postamble
     const extracted = extractJsonObject(raw);
@@ -446,12 +516,19 @@ Respond with ONLY valid JSON. Each question needs: id, question, options (2-4 wi
       throw new Error("Invalid question response from Claude");
     }
 
-    // Re-number question IDs to avoid collisions with previous rounds
+    // Re-number question IDs to avoid collisions with previous rounds.
+    // Also filter out options with empty labels — any LLM (including Ollama fallback)
+    // can return empty strings, which cause Telegram 400 on inline keyboard build.
     const offset = completedQA.length;
-    const questions: Question[] = parsed.questions.slice(0, 4).map((q: Question, i: number) => ({
-      ...q,
-      id: `q${offset + i + 1}`,
-    }));
+    const questions: Question[] = parsed.questions.slice(0, 4)
+      .map((q: any, i: number) => ({
+        ...q,
+        id: `q${offset + i + 1}`,
+        options: (q.options ?? []).filter(
+          (o: any) => typeof o.label === "string" && o.label.trim().length > 0,
+        ),
+      }))
+      .filter((q: any) => q.options.length > 0) as Question[];
 
     return {
       goal: parsed.goal ? slugify(parsed.goal) : undefined,

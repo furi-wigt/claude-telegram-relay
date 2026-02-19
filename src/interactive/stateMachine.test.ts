@@ -54,6 +54,7 @@ function makeSession(overrides: Partial<InteractiveSession> = {}): InteractiveSe
     currentIndex: 0,
     cardMessageId: 42,
     createdAt: Date.now(),
+    lastActivityAt: Date.now(),
     completedQA: [],
     currentBatchStart: 0,
     round: 1,
@@ -414,9 +415,11 @@ describe("InteractiveStateMachine multi-round", () => {
       const callClaude = async () => DONE_RESPONSE;
       const sm = new InteractiveStateMachine(bot, callClaude);
 
-      // Set a session that has already expired
+      // Set a session that has already expired (31 min of inactivity)
+      const expired = Date.now() - 31 * 60 * 1000;
       const session = makeSession({
-        createdAt: Date.now() - 31 * 60 * 1000, // 31 minutes ago
+        createdAt: expired,
+        lastActivityAt: expired,
       });
       setSession(CHAT_ID, session);
 

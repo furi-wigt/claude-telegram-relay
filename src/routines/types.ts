@@ -13,6 +13,8 @@ export interface UserRoutineConfig {
   prompt: string;
   /** Telegram chat_id to send output to */
   chatId: number;
+  /** Telegram forum topic thread ID (message_thread_id). null = root chat. */
+  topicId: number | null;
   /** Human-readable label for the target, e.g. "General group" */
   targetLabel: string;
   /** ISO timestamp of creation */
@@ -20,8 +22,8 @@ export interface UserRoutineConfig {
 }
 
 export interface PendingRoutine {
-  /** Partial config waiting for user confirmation (chatId not yet set) */
-  config: Omit<UserRoutineConfig, "chatId" | "targetLabel" | "createdAt">;
+  /** Partial config waiting for user confirmation (chatId/topicId not yet set) */
+  config: Omit<UserRoutineConfig, "chatId" | "topicId" | "targetLabel" | "createdAt">;
   /** Timestamp the pending entry was created */
   createdAt: number;
 }

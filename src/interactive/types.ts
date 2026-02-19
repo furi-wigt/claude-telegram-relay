@@ -39,8 +39,10 @@ export interface InteractiveSession {
   answers: (string | null)[];  // parallel to questions
   currentIndex: number;
   cardMessageId?: number;  // Telegram message ID — edited in-place
-  createdAt: number;       // Date.now() — used for TTL
+  createdAt: number;          // Date.now() — session creation time
+  lastActivityAt: number;     // Date.now() — reset on every update, used for TTL
   completedQA: { question: string; answer: string }[];  // grows across rounds
   currentBatchStart: number;   // index in questions[] where current round's batch starts
   round: number;               // 1-based, capped at 3
+  editingIndex?: number;       // set when user picks a question from the edit menu — single-Q edit mode
 }

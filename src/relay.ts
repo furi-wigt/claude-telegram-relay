@@ -47,6 +47,7 @@ import { InputRouter } from "./coding/inputRouter.ts";
 import { ReminderManager } from "./coding/reminderManager.ts";
 import { registerCodingCommands } from "./coding/codingCommands.ts";
 import { InteractiveStateMachine } from "./interactive/index.ts";
+import { callClaudeText } from "./claude.ts";
 import { ProgressIndicator } from "./utils/progressIndicator.ts";
 
 const PROJECT_ROOT = dirname(dirname(import.meta.path));
@@ -232,13 +233,18 @@ async function callClaude(
   console.log(`Calling Claude: ${prompt.substring(0, 50)}...`);
 
   try {
+    const env = { ...process.env };
+    // Remove ALL Claude Code session detection vars to prevent nested session errors
+    for (const key of ['CLAUDECODE', 'CLAUDE_CODE_SSE_PORT', 'CLAUDE_CODE_ENTRYPOINT', 'CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS']) {
+      delete env[key];
+    }
+    env.CLAUDE_SUBPROCESS = "1";
+
     const proc = spawn(args, {
       stdout: "pipe",
       stderr: "pipe",
       cwd: PROJECT_DIR || undefined,
-      env: {
-        ...process.env,
-      },
+      env,
     });
 
     let resultText = "";
@@ -386,8 +392,29 @@ await sessionManager.init();
 // Register /code command
 registerCodingCommands(bot, sessionManager, inputRouter, supabase);
 
+// Lightweight Claude caller for /plan question generation.
+// Uses callClaudeText (--output-format text, no project cwd) which is more
+// reliable for structured JSON tasks than the stream-json callClaude.
+// Falls back to Ollama when the CLI is unavailable.
+async function questionCallClaude(prompt: string): Promise<string> {
+  try {
+    return await callClaudeText(prompt, {
+      model: "claude-haiku-4-5-20251001",
+      timeoutMs: 60_000,
+    });
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.error("[interactive] callClaudeText failed:", errMsg);
+    if (fallbackAvailable && process.env.FALLBACK_MODEL) {
+      console.log("[interactive] Falling back to Ollama...");
+      return await callOllama(prompt);
+    }
+    throw err;
+  }
+}
+
 // Interactive Q&A flow (/plan command)
-const interactive = new InteractiveStateMachine(bot, callClaude);
+const interactive = new InteractiveStateMachine(bot, callClaude, questionCallClaude);
 bot.command("plan", (ctx) => interactive.handlePlanCommand(ctx));
 
 // Background: auto-scan for desktop sessions
@@ -539,20 +566,21 @@ async function processTextMessage(
     // NOTE: Only the user's message (text) is passed — assistant response is intentionally
     // excluded to prevent memory contamination from the bot's own output.
     if (supabase && !extractionInFlight) {
+      const db = supabase; // capture non-null ref — TS narrowing doesn't cross setImmediate
       extractionInFlight = true;
       setImmediate(async () => {
         try {
-          const uncertain = await extractAndStore(supabase, chatId, userId, text);
+          const uncertain = await extractAndStore(db, chatId, userId, text);
           // Send confirmation for uncertain items (implied/ambiguous facts)
           if (uncertain) {
             await sendMemoryConfirmation(bot, chatId, uncertain, threadId).catch(() => {});
           }
           // Only run summarize + profile rebuild every 5 messages to reduce Ollama load.
           if (session.messageCount % 5 === 0) {
-            if (await shouldSummarize(supabase, chatId, threadId)) {
-              await summarizeOldMessages(supabase, chatId, threadId);
+            if (await shouldSummarize(db, chatId, threadId)) {
+              await summarizeOldMessages(db, chatId, threadId);
             }
-            await rebuildProfileSummary(supabase, userId);
+            await rebuildProfileSummary(db, userId);
           }
         } catch (err) {
           console.error("Async memory extraction failed:", err);
@@ -722,14 +750,15 @@ bot.on("message:voice", async (ctx) => {
         // Async memory extraction (non-blocking — runs after response is sent)
         // FIX 7: Same mutex as text handler — skip if extraction already in-flight.
         if (supabase && !extractionInFlight) {
+          const db = supabase; // capture non-null ref — TS narrowing doesn't cross setImmediate
           extractionInFlight = true;
           setImmediate(async () => {
             try {
-              await extractAndStore(supabase, chatId, voiceUserId, transcription, claudeResponse);
-              if (await shouldSummarize(supabase, chatId, threadId)) {
-                await summarizeOldMessages(supabase, chatId, threadId);
+              await extractAndStore(db, chatId, voiceUserId, transcription);
+              if (await shouldSummarize(db, chatId, threadId)) {
+                await summarizeOldMessages(db, chatId, threadId);
               }
-              await rebuildProfileSummary(supabase, voiceUserId);
+              await rebuildProfileSummary(db, voiceUserId);
             } catch (err) {
               console.error("Async memory extraction failed:", err);
             } finally {
@@ -1022,6 +1051,12 @@ setInterval(() => {
     ` rss=${Math.round(m.rss / 1024 / 1024)}MB` +
     ` external=${Math.round(m.external / 1024 / 1024)}MB`
   );
+  // Heap-based OOM guard: exit if heap genuinely leaks (not just high RSS from Bun runtime)
+  const HEAP_OOM_THRESHOLD = 400 * 1024 * 1024; // 400MB heap = genuine leak
+  if (m.heapUsed > HEAP_OOM_THRESHOLD) {
+    console.error(`[MEM] CRITICAL: heapUsed exceeds ${HEAP_OOM_THRESHOLD / 1024 / 1024}MB — exiting for PM2 restart`);
+    process.exit(1);
+  }
 }, 60_000).unref();
 
 // Start bot without await so launchd doesn't time out

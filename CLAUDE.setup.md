@@ -5,7 +5,7 @@
 
 ## How This Works
 
-This project turns Telegram into a personal AI assistant powered by Claude — with multi-agent group chats, persistent memory, scheduled routines, and agentic coding sessions you can start directly from Telegram.
+This project turns Telegram into a personal AI assistant powered by Claude.
 
 The user cloned this repo (or gave you the link). Your job: guide them through setup conversationally. Ask questions, save their answers to `.env`, test each step, move on.
 
@@ -36,7 +36,7 @@ If this is a fresh clone, run `bun run setup` first to install dependencies and 
 
 ---
 
-## Phase 2: Database & Memory — Supabase (~15 min)
+## Phase 2: Database & Memory — Supabase (~12 min)
 
 Your bot's memory lives in Supabase: conversation history, facts, goals, and semantic search.
 
@@ -71,7 +71,7 @@ claude mcp add supabase -- npx -y @supabase/mcp-server-supabase@latest --access-
 
 ### Step 3: Create Tables
 
-Use the Supabase MCP to run the complete schema:
+Use the Supabase MCP to run the schema:
 1. Read `db/schema.sql`
 2. Execute it via `execute_sql` (or tell the user to paste it in the SQL Editor)
 3. Run `bun run test:supabase` to verify tables exist
@@ -104,7 +104,7 @@ This gives your bot real memory — it finds relevant past conversations automat
 ### Step 5: Verify
 
 Run `bun run test:supabase` to confirm:
-- Tables exist: `messages`, `memory`, `logs`, `conversation_summaries`, `user_profile`
+- Tables exist (messages, memory, logs)
 - Edge Functions respond
 - Embedding generation works
 
@@ -130,7 +130,7 @@ Run `bun run test:supabase` to confirm:
 
 ---
 
-## Phase 4: Test — Single Chat (~2 min)
+## Phase 4: Test (~2 min)
 
 **What you do:**
 1. Run `bun run start`
@@ -148,72 +148,49 @@ Run `bun run test:supabase` to confirm:
 
 ---
 
-## Phase 5: Multi-Agent Groups (Optional, ~10 min)
+## Phase 5: Always On (~5 min)
 
-This enables 5 specialized AI agents, each living in its own Telegram supergroup with a tailored persona.
+Make the bot run in the background, start on boot, restart on crash.
 
-**The 5 agents:**
+**Recommended — PM2 (Cross-platform):**
+```
+bun run setup:pm2 -- --service relay
+```
+Works on macOS, Linux, and Windows. Easiest to manage and monitor.
 
-| Group Name | Agent ID | Specialty |
-|---|---|---|
-| AWS Cloud Architect | `aws-architect` | AWS infrastructure, cost optimization, Well-Architected |
-| Security & Compliance | `security-analyst` | Security audits, PDPA, threat modeling |
-| Technical Documentation | `documentation-specialist` | ADRs, system design docs, runbooks |
-| Code Quality & TDD | `code-quality-coach` | Code review, test generation, refactoring |
-| General AI Assistant | `general-assistant` | General Q&A, meeting summaries, task breakdown |
+**Alternative — launchd (macOS only):**
+```
+bun run setup:launchd -- --service relay
+```
+Native macOS integration, but PM2 is more user-friendly.
 
-**Steps:**
+**Verify:** `npx pm2 status` (PM2) or `launchctl list | grep com.claude` (launchd)
 
-1. For each agent, create a Telegram supergroup with the **exact group name** from the table above
-2. In each group: go to Settings → Make it a Supergroup → optionally enable Forum Topics
-3. Add the bot to each group as an admin
-4. Run `bun run test:groups` — the bot auto-discovers groups by matching their exact title
-5. If auto-discovery fails, manually set the chat IDs in `.env`:
-   - `GROUP_AWS_CHAT_ID` — "AWS Cloud Architect" group
-   - `GROUP_SECURITY_CHAT_ID` — "Security & Compliance" group
-   - `GROUP_DOCS_CHAT_ID` — "Technical Documentation" group
-   - `GROUP_CODE_CHAT_ID` — "Code Quality & TDD" group
-   - `GROUP_GENERAL_CHAT_ID` — "General AI Assistant" group
-6. For forum topic routing, set `GROUP_*_TOPIC_ID` for each group (right-click a topic in Telegram desktop → Copy Link → extract the number at the end of the URL)
-7. For coding progress routing in forum topics, set `GROUP_*_CODING_TOPIC_ID` similarly
-
-**Done when:** `bun run test:groups` shows all groups discovered, or the `GROUP_*_CHAT_ID` values are set manually and the bot responds in each group.
+**Done when:** Bot runs in the background and survives a terminal close.
 
 ---
 
-## Phase 6: Always On with PM2 (~5 min)
+## Phase 6: Proactive AI (Optional, ~5 min)
 
-Make the bot and all services run in the background, start on boot, restart on crash.
+Two features that turn a chatbot into an assistant.
 
-**What you do:**
+### Smart Check-ins
+`examples/smart-checkin.ts` — runs on a schedule, gathers context, asks Claude if it should reach out. If yes, sends a brief message. If no, stays silent.
+
+### Morning Briefing
+`examples/morning-briefing.ts` — sends a daily summary. Pattern file with placeholder data fetchers.
+
+**Recommended — PM2 (Cross-platform):**
 ```
 bun run setup:pm2 -- --service all
 ```
-
-This starts 6 services:
-
-| Service | What it does |
-|---|---|
-| `telegram-relay` | The main bot — always running |
-| `enhanced-morning-summary` | Daily morning briefing (7am) |
-| `smart-checkin` | Periodic context-aware check-ins (every 30 min) |
-| `night-summary` | Daily night summary (11pm) |
-| `weekly-etf` | Weekly ETF portfolio analysis (Friday 5pm) |
-| `watchdog` | Health monitor (every 2 hours) |
 
 **Alternative — launchd (macOS only):**
 ```
 bun run setup:launchd -- --service all
 ```
 
-**Verify:** `npx pm2 status`
-
-After PM2 is set up, optionally configure additional scheduled routines:
-```
-bun run setup:routines
-```
-
-**Done when:** `npx pm2 status` shows the relay as "online" and survives a terminal close.
+**Done when:** User has scheduled services running, or explicitly skips this phase.
 
 ---
 
@@ -252,46 +229,6 @@ Lets the bot understand voice messages sent on Telegram.
 
 ---
 
-## Phase 8: Fallback AI — Ollama (Optional, ~5 min)
-
-When Claude is unavailable, the bot auto-switches to a local Ollama model. Ollama is also used for memory extraction (pulling facts, goals, and preferences from conversations).
-
-**Steps:**
-
-1. Install Ollama from ollama.com
-2. Pull the default model:
-   ```
-   ollama pull gemma3:4b
-   ```
-3. Save in `.env`:
-   - `FALLBACK_MODEL=gemma3:4b`
-   - `OLLAMA_API_URL=http://localhost:11434` (default, can omit)
-   - `OLLAMA_URL=http://localhost:11434` (used by memory extraction)
-   - `OLLAMA_MODEL=gemma3:4b` (used by memory extraction)
-4. Run `bun run test:fallback` to verify
-
-**Done when:** `bun run test:fallback` passes.
-
----
-
-## Phase 9: Agentic Coding via `/code` (Optional, ~3 min)
-
-Lets the user start, manage, and interact with Claude CLI coding sessions directly from Telegram. Send `/code` to start a session, reply to messages to provide input, approve or deny tool permissions via inline buttons.
-
-**Steps:**
-
-1. No extra installation needed — uses the Claude CLI already installed
-2. Optionally set in `.env`:
-   - `CODING_SESSIONS_DIR=~/.claude-relay/coding-sessions`
-   - `CODING_LOG_DIR=~/.claude-relay/coding-logs`
-3. If using forum topics for coding progress (recommended for group chats), set `GROUP_*_CODING_TOPIC_ID` in `.env` for each group that should receive coding progress updates
-
-**Usage:** Send `/code` in any chat → bot asks what you want to build → spawns a Claude coding session → progress updates appear in chat.
-
-**Done when:** User sends `/code`, describes a task, and sees the coding session start.
-
----
-
 ## After Setup
 
 Run the full health check:
@@ -301,41 +238,28 @@ bun run setup:verify
 
 Summarize what was set up and what is running. Remind the user:
 - Test by sending a message on Telegram
-- Their bot runs in the background (if Phase 6 was done)
+- Their bot runs in the background (if Phase 5 was done)
 - Come back to this project folder and type `claude` anytime to make changes
-
-### Bot Commands Reference
-
-| Command | What it does |
-|---------|-------------|
-| `/help` | All available commands |
-| `/new` | Start a fresh conversation |
-| `/status` | Session status |
-| `/memory` | Browse your memory (goals, facts, prefs, dates) |
-| `/remember [text]` | Save something to memory |
-| `/forget [text]` | Remove something from memory |
-| `/goals` | View your goals |
-| `/history` | Recent messages |
-| `/routines` | Manage scheduled routines |
-| `/plan [task]` | Interactive clarification Q&A before Claude starts |
-| `/code` | Start an agentic coding session |
 
 ---
 
-## What Comes Next
+## What Comes Next — The Full Version
 
-This relay already includes significant capabilities beyond basic chat:
+This free relay covers the essentials. The full version unlocks:
 
-- **5 Specialized AI Agents** — AWS Cloud Architect, Security & Compliance, Technical Documentation, Code Quality & TDD, and General Assistant. Each lives in its own Telegram supergroup with a tailored persona.
-- **Production Routines** — The `routines/` directory has ready-to-use scheduled tasks: `enhanced-morning-summary`, `night-summary`, `smart-checkin`, `weekly-etf`, `watchdog`, `aws-daily-cost`, and `security-daily-scan`. All managed via PM2.
-- **Create Your Own Routines** — Describe what you want in natural language via Telegram and the bot creates a scheduled routine for you. Or write a code-based routine in `routines/` for anything requiring real data (API calls, database queries).
-- **Forum Topic Support** — Route messages to specific forum topics within supergroups for clean message isolation.
-- **Agentic Coding** — Start and manage Claude CLI coding sessions from Telegram with `/code`.
-- **Fallback AI** — Auto-switch to Ollama when Claude is unavailable.
+- **6 Specialized AI Agents** — Research, Content, Finance, Strategy, Critic + General orchestrator. Route messages through Telegram forum topics. Run board meetings where all six weigh in.
+- **VPS Deployment** — Your bot on a cloud server that never sleeps. Hybrid mode: free local processing when awake, paid API only when sleeping. $2-5/month.
+- **Real Integrations** — Gmail, Google Calendar, Notion tasks connected via MCP. Smart check-ins pull real data, not patterns.
+- **Human-in-the-Loop** — Claude takes actions (send email, update calendar) but asks first via inline Telegram buttons.
+- **Voice & Phone Calls** — Bot speaks back via ElevenLabs. Calls you when something is urgent.
+- **Fallback AI Models** — Auto-switch to OpenRouter or Ollama when Claude is down. Three layers of intelligence.
+- **Production Infrastructure** — Auto-deploy from GitHub, watchdog monitoring, uninstall scripts, full health checks.
 
-**Want more? Get the full course with video walkthroughs:**
+**Get the full course with video walkthroughs:**
 - YouTube: youtube.com/@GodaGo (subscribe for tutorials)
 - Community: skool.com/autonomee (full course, direct support, help personalizing for your business)
+
+We also help you personalize the full version for your specific business and workflow. Or package it as a product you sell to your own clients.
 
 The free version gives you a real, working AI assistant.
 The full version gives you a personal AI infrastructure.

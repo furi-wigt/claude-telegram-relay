@@ -85,7 +85,7 @@ async function main() {
   const costData = await getAWSCostData();
   const message = formatCostMessage(costData);
 
-  await sendAndRecord(GROUPS.AWS_ARCHITECT, message, { routineName: 'aws-daily-cost', agentId: 'aws-architect' });
+  await sendAndRecord(GROUPS.AWS_ARCHITECT.chatId, message, { routineName: 'aws-daily-cost', agentId: 'aws-architect' });
   console.log("AWS cost alert sent to AWS Architect group");
 }
 

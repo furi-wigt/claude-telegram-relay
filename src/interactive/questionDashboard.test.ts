@@ -98,7 +98,8 @@ describe("QuestionDashboard.formatSummary", () => {
     expect(text).toContain("express");
     expect(text).toContain("cookie");
     expect(text).toContain(".claude/todos/jwt-auth/implement-jwt-auth.md");
-    expect(text).toContain("abc-def-123".slice(0, 11)); // short session ID
+    // shortId is MarkdownV2-escaped: hyphens become \-
+    expect(text).toContain("abc\\-def\\-123");
   });
 });
 

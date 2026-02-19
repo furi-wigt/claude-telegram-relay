@@ -36,8 +36,8 @@ describe("ProjectScanner", () => {
 
   describe("decodeProjectDir", () => {
     test("decodes hyphen-encoded path back to slashes", () => {
-      const result = scanner.decodeProjectDir("-Users-furi-Documents-project");
-      expect(result).toBe("/Users/furi/Documents/project");
+      const result = scanner.decodeProjectDir("-Users-alice-Documents-project");
+      expect(result).toBe("/Users/alice/Documents/project");
     });
 
     test("handles single-segment name", () => {
@@ -51,24 +51,24 @@ describe("ProjectScanner", () => {
     });
 
     test("KNOWN BUG: hyphenated directory names decoded incorrectly", () => {
-      // Input: "-Users-furi-my-api" should represent "/Users/furi/my-api"
+      // Input: "-Users-alice-my-api" should represent "/Users/alice/my-api"
       // but the implementation replaces ALL hyphens with slashes, corrupting
       // directory names that contain hyphens.
       // This test documents the actual (buggy) behavior.
-      const result = scanner.decodeProjectDir("-Users-furi-my-api");
+      const result = scanner.decodeProjectDir("-Users-alice-my-api");
       // Actual (buggy) output: all hyphens become slashes
-      expect(result).toBe("/Users/furi/my/api");
-      // The correct output should be "/Users/furi/my-api" but is NOT.
+      expect(result).toBe("/Users/alice/my/api");
+      // The correct output should be "/Users/alice/my-api" but is NOT.
     });
 
     test("KNOWN BUG: e2e-tests directory name corrupted during decode", () => {
-      // Input represents a project at "/Users/furi/e2e-tests-app"
-      // encoded as "-Users-furi-e2e-tests-app"
+      // Input represents a project at "/Users/alice/e2e-tests-app"
+      // encoded as "-Users-alice-e2e-tests-app"
       // The bug causes ALL hyphens to become slashes.
-      const result = scanner.decodeProjectDir("-Users-furi-e2e-tests-app");
+      const result = scanner.decodeProjectDir("-Users-alice-e2e-tests-app");
       // Actual (buggy) output: hyphens within directory names become slashes
-      expect(result).toBe("/Users/furi/e2e/tests/app");
-      // The correct output should be "/Users/furi/e2e-tests-app" but is NOT.
+      expect(result).toBe("/Users/alice/e2e/tests/app");
+      // The correct output should be "/Users/alice/e2e-tests-app" but is NOT.
     });
   });
 

@@ -18,7 +18,7 @@ const PROJECT_ROOT = join(dirname(dirname(dirname(import.meta.path))));
 const USER_ROUTINES_DIR = join(PROJECT_ROOT, "routines", "user");
 const CODE_ROUTINES_DIR = join(PROJECT_ROOT, "routines");
 const ECOSYSTEM_PATH = join(PROJECT_ROOT, "ecosystem.config.cjs");
-const BUN_PATH = process.env.BUN_PATH || "/Users/furi/.bun/bin/bun";
+const BUN_PATH = process.env.BUN_PATH || "bun";
 
 // ============================================================
 // ROUTINE FILE GENERATION
@@ -37,25 +37,18 @@ function generateRoutineFile(config: UserRoutineConfig): string {
  */
 
 import { sendToGroup } from "../../src/utils/sendToGroup.ts";
-import Anthropic from "@anthropic-ai/sdk";
+import { runPrompt } from "../../src/tools/runPrompt.ts";
 
 const PROMPT = \`${safePrompt}\`;
 const CHAT_ID = ${config.chatId};
+const TOPIC_ID: number | null = ${config.topicId ?? "null"};
 
 async function main() {
   console.log("Running user routine: ${config.name}");
 
-  const client = new Anthropic();
-  const response = await client.messages.create({
-    model: "claude-haiku-4-5-20251001",
-    max_tokens: 1024,
-    messages: [{ role: "user", content: PROMPT }],
-  });
+  const text = await runPrompt(PROMPT);
 
-  const text =
-    response.content[0].type === "text" ? response.content[0].text : "";
-
-  await sendToGroup(CHAT_ID, text);
+  await sendToGroup(CHAT_ID, text, { topicId: TOPIC_ID });
   console.log("Routine complete: ${config.name}");
 }
 
@@ -85,7 +78,7 @@ function generateEcosystemEntry(config: UserRoutineConfig): string {
       env: {
         NODE_ENV: "production",
         PATH: "${BUN_PATH.replace("/bun", "")}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
-        HOME: "${process.env.HOME || "/Users/furi"}",
+        HOME: "${process.env.HOME || ""}",
       },
       error_file: "${PROJECT_ROOT}/logs/${config.name}-error.log",
       out_file: "${PROJECT_ROOT}/logs/${config.name}.log",
@@ -402,7 +395,7 @@ export async function registerCodeRoutine(name: string, cron: string): Promise<v
       env: {
         NODE_ENV: "production",
         PATH: "${BUN_PATH.replace("/bun", "")}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
-        HOME: "${process.env.HOME || "/Users/furi"}",
+        HOME: "${process.env.HOME || ""}",
       },
       error_file: "${PROJECT_ROOT}/logs/${name}-error.log",
       out_file: "${PROJECT_ROOT}/logs/${name}.log",
