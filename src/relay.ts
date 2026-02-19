@@ -29,6 +29,7 @@ import {
   extractAndStore,
   rebuildProfileSummary,
   getUserProfile,
+  hasMemoryItems,
 } from "./memory/longTermExtractor.ts";
 import {
   registerMemoryConfirmHandler,
@@ -561,7 +562,7 @@ async function processTextMessage(
     await saveMessage("user", text, undefined, chatId, agent.id, threadId);
     await saveMessage("assistant", response || rawResponse, undefined, chatId, agent.id, threadId);
 
-    // Async memory extraction (non-blocking — runs after response is sent)
+    // Async LTM extraction (non-blocking — runs after response is sent)
     // FIX 7: Skip if a previous extraction is still running to prevent Ollama queue buildup.
     // NOTE: Only the user's message (text) is passed — assistant response is intentionally
     // excluded to prevent memory contamination from the bot's own output.
@@ -570,22 +571,31 @@ async function processTextMessage(
       extractionInFlight = true;
       setImmediate(async () => {
         try {
-          const uncertain = await extractAndStore(db, chatId, userId, text);
-          // Send confirmation for uncertain items (implied/ambiguous facts)
-          if (uncertain) {
+          const { uncertain, inserted } = await extractAndStore(db, chatId, userId, text);
+          if (uncertain && hasMemoryItems(uncertain)) {
             await sendMemoryConfirmation(bot, chatId, uncertain, threadId).catch(() => {});
           }
-          // Only run summarize + profile rebuild every 5 messages to reduce Ollama load.
-          if (session.messageCount % 5 === 0) {
-            if (await shouldSummarize(db, chatId, threadId)) {
-              await summarizeOldMessages(db, chatId, threadId);
-            }
+          if (session.messageCount % 5 === 0 && inserted > 0) {
             await rebuildProfileSummary(db, userId);
           }
         } catch (err) {
           console.error("Async memory extraction failed:", err);
         } finally {
           extractionInFlight = false;
+        }
+      });
+    }
+
+    // Async STM summarization (independent, every 5 messages)
+    if (supabase && session.messageCount % 5 === 0) {
+      const db = supabase;
+      setImmediate(async () => {
+        try {
+          if (await shouldSummarize(db, chatId, threadId)) {
+            await summarizeOldMessages(db, chatId, threadId);
+          }
+        } catch (err) {
+          console.error("STM summarization failed:", err);
         }
       });
     }
@@ -747,22 +757,35 @@ bot.on("message:voice", async (ctx) => {
 
         await saveMessage("assistant", claudeResponse, undefined, chatId, agent.id, threadId);
 
-        // Async memory extraction (non-blocking — runs after response is sent)
+        // Async LTM extraction (non-blocking — runs after response is sent)
         // FIX 7: Same mutex as text handler — skip if extraction already in-flight.
         if (supabase && !extractionInFlight) {
           const db = supabase; // capture non-null ref — TS narrowing doesn't cross setImmediate
           extractionInFlight = true;
           setImmediate(async () => {
             try {
-              await extractAndStore(db, chatId, voiceUserId, transcription);
-              if (await shouldSummarize(db, chatId, threadId)) {
-                await summarizeOldMessages(db, chatId, threadId);
+              const { inserted } = await extractAndStore(db, chatId, voiceUserId, transcription);
+              if (session.messageCount % 5 === 0 && inserted > 0) {
+                await rebuildProfileSummary(db, voiceUserId);
               }
-              await rebuildProfileSummary(db, voiceUserId);
             } catch (err) {
               console.error("Async memory extraction failed:", err);
             } finally {
               extractionInFlight = false;
+            }
+          });
+        }
+
+        // Async STM summarization (independent, every 5 messages)
+        if (supabase && session.messageCount % 5 === 0) {
+          const db = supabase;
+          setImmediate(async () => {
+            try {
+              if (await shouldSummarize(db, chatId, threadId)) {
+                await summarizeOldMessages(db, chatId, threadId);
+              }
+            } catch (err) {
+              console.error("STM summarization failed:", err);
             }
           });
         }

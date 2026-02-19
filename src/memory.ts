@@ -4,11 +4,14 @@
  * Persistent facts, goals, and preferences stored in Supabase.
  * Claude manages memory automatically via intent tags in its responses:
  *   [REMEMBER: fact]
+ *   [REMEMBER_GLOBAL: fact]
  *   [GOAL: text | DEADLINE: date]
  *   [DONE: search text]
  *
- * The relay parses these tags, saves to Supabase, and strips them
- * from the response before sending to the user.
+ * The relay parses these tags, checks for semantic duplicates via
+ * the Supabase `search` Edge Function, saves to Supabase (skipping
+ * near-exact duplicates), and strips tags from the response before
+ * sending to the user.
  *
  * Memory is GLOBAL — reads return all facts and goals regardless of
  * which chat created them. The chat_id column is retained on writes
@@ -16,6 +19,7 @@
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { checkSemanticDuplicate } from "./utils/semanticDuplicateChecker.ts";
 
 /**
  * Detect the appropriate category for a fact stored via [REMEMBER:] tag.
@@ -34,7 +38,9 @@ export function detectMemoryCategory(content: string): string {
 
 /**
  * Parse Claude's response for memory intent tags.
- * Saves facts/goals to Supabase and returns the cleaned response.
+ * Each tag is checked for semantic duplicates (via checkSemanticDuplicate)
+ * before inserting — duplicates are silently skipped and logged.
+ * Returns the cleaned response with all tags stripped.
  * When chatId is provided, all stored memory is tagged with that chat
  * so it stays isolated to the originating group.
  *
@@ -56,6 +62,12 @@ export async function processMemoryIntents(
 
   // [REMEMBER: fact to store]
   for (const match of response.matchAll(/\[REMEMBER:\s*(.+?)\]/gi)) {
+    const dupCheck = await checkSemanticDuplicate(supabase, match[1], "fact", chatId ?? null);
+    if (dupCheck.isDuplicate) {
+      console.log(`[memory] Skipping duplicate fact: "${match[1]}" (similar: "${dupCheck.match?.content}")`);
+      clean = clean.replace(match[0], "");
+      continue;
+    }
     await supabase.from("memory").insert({
       type: "fact",
       content: match[1],
@@ -67,6 +79,12 @@ export async function processMemoryIntents(
 
   // [REMEMBER_GLOBAL: fact to share across all groups]
   for (const match of response.matchAll(/\[REMEMBER_GLOBAL:\s*(.+?)\]/gi)) {
+    const dupCheck = await checkSemanticDuplicate(supabase, match[1], "fact", null);
+    if (dupCheck.isDuplicate) {
+      console.log(`[memory] Skipping duplicate global fact: "${match[1]}" (similar: "${dupCheck.match?.content}")`);
+      clean = clean.replace(match[0], "");
+      continue;
+    }
     await supabase.from("memory").insert({
       type: "fact",
       content: match[1],
@@ -80,6 +98,12 @@ export async function processMemoryIntents(
   for (const match of response.matchAll(
     /\[GOAL:\s*(.+?)(?:\s*\|\s*DEADLINE:\s*(.+?))?\]/gi
   )) {
+    const dupCheck = await checkSemanticDuplicate(supabase, match[1], "goal", chatId ?? null);
+    if (dupCheck.isDuplicate) {
+      console.log(`[memory] Skipping duplicate goal: "${match[1]}" (similar: "${dupCheck.match?.content}")`);
+      clean = clean.replace(match[0], "");
+      continue;
+    }
     await supabase.from("memory").insert({
       type: "goal",
       content: match[1],
@@ -131,6 +155,7 @@ export async function getMemoryContext(
       .from("memory")
       .select("id, content")
       .eq("type", "fact")
+      .eq("status", "active")
       .order("created_at", { ascending: false })
       .limit(50);
 
@@ -138,6 +163,7 @@ export async function getMemoryContext(
       .from("memory")
       .select("id, content, deadline, priority")
       .eq("type", "goal")
+      .eq("status", "active")
       .order("priority", { ascending: false })
       .order("created_at", { ascending: false })
       .limit(20);
@@ -220,6 +246,7 @@ export async function getMemoryContextRaw(
       .from("memory")
       .select("id, content")
       .eq("type", "fact")
+      .eq("status", "active")
       .order("created_at", { ascending: false })
       .limit(50);
 
@@ -227,6 +254,7 @@ export async function getMemoryContextRaw(
       .from("memory")
       .select("id, content, deadline, priority")
       .eq("type", "goal")
+      .eq("status", "active")
       .order("priority", { ascending: false })
       .order("created_at", { ascending: false })
       .limit(20);
@@ -301,19 +329,20 @@ export async function getMemoryFull(
       ? `chat_id.eq.${chatId},chat_id.is.null`
       : undefined;
 
-    const makeQuery = (type: string) => {
+    const makeQuery = (type: string, filterActive = true) => {
       let q = supabase
         .from("memory")
         .select("id, content, deadline, category, completed_at, created_at")
         .eq("type", type)
         .order("created_at", { ascending: false });
+      if (filterActive) q = q.eq("status", "active");
       if (scope) q = q.or(scope);
       return q;
     };
 
     const [goalsRes, completedRes, prefsRes, factsRes] = await Promise.all([
       makeQuery("goal"),
-      makeQuery("completed_goal"),
+      makeQuery("completed_goal", false),
       makeQuery("preference"),
       makeQuery("fact"),
     ]);
@@ -345,7 +374,9 @@ export async function getMemoryFull(
 }
 
 /**
- * Searches past messages via semantic search (Edge Function).
+ * Searches past messages and memory items via semantic search (Edge Function).
+ * Queries both `messages` and `memory` tables in parallel, merging results.
+ * Memory matches are appended as a separate "Related memories" section.
  * When chatId is provided, passes it to the Edge Function for filtering.
  *
  * @param supabase   Supabase client instance
@@ -379,26 +410,54 @@ export async function getRelevantContext(
   if (cached && Date.now() < cached.expiry) return cached.result;
 
   try {
-    const body: Record<string, unknown> = {
-      query,
-      match_count: 5,
-      table: "messages",
-      chat_id: chatId ?? null,
-      filter_chat_id: chatId ?? null,
-    };
+    const [messageResult, memoryResult] = await Promise.all([
+      supabase.functions.invoke("search", {
+        body: {
+          query,
+          match_count: 5,
+          table: "messages",
+          chat_id: chatId ?? null,
+          filter_chat_id: chatId ?? null,
+        },
+      }),
+      supabase.functions.invoke("search", {
+        body: {
+          query,
+          match_count: 3,
+          match_threshold: 0.7,
+          table: "memory",
+          chat_id: chatId ?? null,
+        },
+      }),
+    ]);
 
-    const { data, error } = await supabase.functions.invoke("search", {
-      body,
-    });
+    const parts: string[] = [];
 
-    if (error || !data?.length) {
-      searchCache.set(cacheKey, { result: "", expiry: Date.now() + 60_000 });
-      return "";
+    if (!messageResult.error && messageResult.data?.length) {
+      parts.push(
+        messageResult.data
+          .map((m: any) => `[${m.role}]: ${m.content}`)
+          .join("\n")
+      );
     }
 
-    const result = data
-      .map((m: any) => `[${m.role}]: ${m.content}`)
-      .join("\n");
+    if (!memoryResult.error && memoryResult.data?.length) {
+      const memoryLines = memoryResult.data
+        .map((m: any) => `• ${m.content}`)
+        .join("\n");
+      parts.push(`\n\n📌 Related memories:\n${memoryLines}`);
+
+      // Fire-and-forget: increment access_count + last_used_at via atomic RPC
+      const ids = (memoryResult.data as any[]).map((m) => m.id).filter(Boolean);
+      if (ids.length) {
+        supabase
+          .rpc("touch_memory_access", { p_ids: ids })
+          .then(() => {})
+          .catch(() => {});
+      }
+    }
+
+    const result = parts.join("");
     searchCache.set(cacheKey, { result, expiry: Date.now() + 60_000 });
     return result;
   } catch {

@@ -113,9 +113,9 @@ describe("E2E-1: extractAndStore — user message only, no assistant response", 
     ) as any;
 
     const sb = mockSupabase();
-    const uncertain = await extractAndStore(sb, CHAT_ID, USER_ID, "maybe I should exercise more");
+    const result = await extractAndStore(sb, CHAT_ID, USER_ID, "maybe I should exercise more");
 
-    expect(uncertain.goals).toEqual(["Might want to get fit"]);
+    expect(result.uncertain.goals).toEqual(["Might want to get fit"]);
     globalThis.fetch = origFetch;
   });
 
@@ -128,8 +128,8 @@ describe("E2E-1: extractAndStore — user message only, no assistant response", 
     ) as any;
 
     const sb = mockSupabase();
-    const uncertain = await extractAndStore(sb, CHAT_ID, USER_ID, "hi there");
-    expect(uncertain).toEqual({});
+    const result = await extractAndStore(sb, CHAT_ID, USER_ID, "hi there");
+    expect(result.uncertain).toEqual({});
     globalThis.fetch = origFetch;
   });
 });
@@ -247,12 +247,12 @@ describe("E2E-3: no confirmation needed for explicit (certain) facts", () => {
     const insertFn = mock(() => Promise.resolve({ data: null, error: null }));
     const sb = mockSupabase(insertFn);
 
-    const uncertain = await extractAndStore(sb, CHAT_ID, USER_ID, "My name is John");
+    const result = await extractAndStore(sb, CHAT_ID, USER_ID, "My name is John");
 
     // Certain items stored
     expect(insertFn).toHaveBeenCalledTimes(1);
     // No uncertain items returned
-    expect(uncertain).toEqual({});
+    expect(result.uncertain).toEqual({});
 
     globalThis.fetch = origFetch;
   });

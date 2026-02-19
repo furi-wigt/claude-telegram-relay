@@ -3,12 +3,15 @@
  *
  * Adds four commands for explicit memory management with +/- syntax:
  *   /goals  +goal1, +goal2, -old goal text
+ *   /goals  *goal1, *2  — mark goal as done (index or fuzzy match)
+ *   /goals  *           — list completed/archived goals
  *   /facts  +fact1, -old fact
  *   /prefs  +prefer X, -old preference
  *   /reminders +Meeting Friday 3pm, -old reminder
  *
  * - `+item` adds a new entry
  * - `-item` removes matching entry using Ollama fuzzy match (fallback: ilike)
+ * - `*item` or `*N` marks matching goal as done/undone (toggle)
  * - Question UI (InlineKeyboard) is shown when multiple candidates match
  */
 
@@ -17,6 +20,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { InlineKeyboard } from "grammy";
 import { callClaudeText } from "../claude.ts";
 import { saveCommandInteraction } from "../utils/saveMessage.ts";
+import { findPotentialDuplicates, parseModelIndices } from "../utils/duplicateDetector.ts";
 
 export interface DirectMemoryOptions {
   supabase: SupabaseClient | null;
@@ -68,6 +72,25 @@ const COMMAND_CONFIG: Record<string, CommandConfig> = {
   },
 };
 
+// ── Pending duplicate confirmations ───────────────────────────────────────
+
+interface PendingAdd {
+  content: string;
+  chatId: number;
+  config: CommandConfig;
+  expiresAt: number;
+}
+
+const pendingAdds = new Map<string, PendingAdd>();
+
+// Evict expired entries every 60s
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of pendingAdds) {
+    if (now >= v.expiresAt) pendingAdds.delete(k);
+  }
+}, 60_000).unref();
+
 // ── Parsing ────────────────────────────────────────────────────────────────
 
 /**
@@ -82,9 +105,11 @@ const COMMAND_CONFIG: Record<string, CommandConfig> = {
 export function parseAddRemoveArgs(input: string): {
   adds: string[];
   removes: string[];
+  toggleDone: string[];
 } {
   const adds: string[] = [];
   const removes: string[] = [];
+  const toggleDone: string[] = [];
 
   // Split on commas, but be careful not to split within items
   // Strategy: split on ", +" or ", -" boundaries
@@ -96,14 +121,20 @@ export function parseAddRemoveArgs(input: string): {
     if (trimmed.startsWith("+")) {
       const content = trimmed.slice(1).trim();
       if (content) adds.push(content);
+    } else if (trimmed.startsWith("*")) {
+      // *goal text → toggleDone: ["goal text"]
+      // *1        → toggleDone: ["1"] (index-based)
+      // * alone   → toggleDone: [""]  (list completed)
+      const content = trimmed.slice(1).trim();
+      toggleDone.push(content);
     } else if (trimmed.startsWith("-")) {
       const content = trimmed.slice(1).trim();
       if (content) removes.push(content);
     }
-    // Items without +/- prefix are silently ignored
+    // Items without +/-/* prefix are silently ignored
   }
 
-  return { adds, removes };
+  return { adds, removes, toggleDone };
 }
 
 // ── Fuzzy Matching ─────────────────────────────────────────────────────────
@@ -146,11 +177,21 @@ async function findMatchingItems(
   }
   // goals: no category filter — same as listItems
 
-  const { data, error } = await baseQuery.limit(20);
+  const { data, error } = await baseQuery
+    .order("created_at", { ascending: true })
+    .order("id", { ascending: true })
+    .limit(50);
 
   if (error || !data || data.length === 0) return [];
 
   const candidates = data as MemoryItem[];
+
+  // Index-based: purely numeric query like "1", "2"
+  if (/^\d+$/.test(query)) {
+    const idx = parseInt(query, 10) - 1;
+    if (idx >= 0 && idx < candidates.length) return [candidates[idx]];
+    return []; // out of range
+  }
 
   // Strategy: substring match first (fast, reliable).
   // Ollama is used only as a semantic fallback when substring yields nothing,
@@ -179,20 +220,13 @@ async function findMatchingItems(
       `Be lenient — partial or semantic matches count.`;
 
     const response = await callClaudeText(prompt, { timeoutMs: 8_000 });
-    const raw = response.trim().toLowerCase();
-
-    if (raw === "none" || !raw) return [];
-
-    const indices = raw
-      .split(",")
-      .map((s) => parseInt(s.trim(), 10) - 1)
-      .filter((i) => i >= 0 && i < candidates.length);
+    const indices = parseModelIndices(response, candidates.length);
 
     if (indices.length > 0) {
       return indices.map((i) => candidates[i]);
     }
   } catch {
-    // Ollama unavailable
+    // Claude unavailable
   }
 
   return [];
@@ -248,19 +282,179 @@ async function listItems(
   }
   // goals: no category filter — includes items stored via [GOAL:] intent tags
 
-  const usageHint =
-    `\nUse /${config.name} +item to add, -item to remove.`;
+  const usageHint = config.name === "goals"
+    ? `\nUse /${config.name} +item to add, -N or -text to remove, *N or *text to mark done.`
+    : `\nUse /${config.name} +item to add, -N or -text to remove.`;
 
   const { data, error } = await query
     .order("created_at", { ascending: true })
+    .order("id", { ascending: true })
     .limit(50);
 
   if (error || !data || data.length === 0) {
     return `No ${config.label}s stored yet.${usageHint}`;
   }
 
-  const lines = (data as MemoryItem[]).map((item) => `  • ${item.content}`).join("\n");
+  // Number all items for index-based addressing (-1, -2, etc.)
+  const lines = (data as MemoryItem[]).map((item, i) => `  ${i + 1}. ${item.content}`).join("\n");
   return `${config.emoji} ${config.label.charAt(0).toUpperCase() + config.label.slice(1)}s\n${"─".repeat(24)}\n${lines}${usageHint}`;
+}
+
+// ── Goal done helpers ─────────────────────────────────────────────────────
+
+/**
+ * Find active goals by 1-based index or substring/semantic query.
+ */
+async function findGoalsByIndexOrQuery(
+  supabase: SupabaseClient,
+  chatId: number,
+  query: string
+): Promise<MemoryItem[]> {
+  if (query === "") return []; // caller handles "list completed" path
+
+  const scope = `chat_id.eq.${chatId},chat_id.is.null`;
+  const { data, error } = await supabase
+    .from("memory")
+    .select("id, content")
+    .or(scope)
+    .eq("type", "goal")
+    .order("created_at", { ascending: true })
+    .order("id", { ascending: true })
+    .limit(50);
+
+  if (error || !data || data.length === 0) return [];
+
+  const goals = data as MemoryItem[];
+
+  // Index-based: purely numeric query like "1", "2"
+  if (/^\d+$/.test(query)) {
+    const idx = parseInt(query, 10) - 1;
+    if (idx >= 0 && idx < goals.length) return [goals[idx]];
+    return [];
+  }
+
+  // Substring match
+  const queryLower = query.toLowerCase();
+  const substringMatches = goals.filter((g) =>
+    g.content.toLowerCase().includes(queryLower)
+  );
+  if (substringMatches.length > 0) return substringMatches;
+
+  // Claude Haiku semantic fallback (same pattern as findMatchingItems)
+  try {
+    const numberedList = goals
+      .map((g, i) => `${i + 1}. "${g.content}"`)
+      .join("\n");
+
+    const prompt =
+      `Given these goals:\n${numberedList}\n\n` +
+      `Which goal(s) best match: "${query}"?\n` +
+      `Reply with ONLY comma-separated numbers (e.g. "1" or "2,3") or "none" if nothing matches.\n` +
+      `Be lenient — partial or semantic matches count.`;
+
+    const response = await callClaudeText(prompt, { timeoutMs: 8_000 });
+    const indices = parseModelIndices(response, goals.length);
+
+    if (indices.length > 0) return indices.map((i) => goals[i]);
+  } catch {
+    // Claude unavailable — no matches
+  }
+
+  return [];
+}
+
+/**
+ * Toggle a goal between active and completed.
+ * Returns whether the goal was previously active (i.e., just marked done).
+ */
+async function toggleGoalDone(
+  supabase: SupabaseClient,
+  id: string
+): Promise<{ wasActive: boolean }> {
+  const { data, error } = await supabase
+    .from("memory")
+    .select("type")
+    .eq("id", id)
+    .single();
+
+  if (error || !data) throw new Error("Goal not found");
+
+  if (data.type === "goal") {
+    await supabase
+      .from("memory")
+      .update({ type: "completed_goal", completed_at: new Date().toISOString() })
+      .eq("id", id);
+    return { wasActive: true };
+  } else {
+    await supabase
+      .from("memory")
+      .update({ type: "goal", completed_at: null })
+      .eq("id", id);
+    return { wasActive: false };
+  }
+}
+
+/**
+ * List completed/archived goals for a chat, split by recency.
+ */
+async function listCompletedGoals(
+  supabase: SupabaseClient,
+  chatId: number
+): Promise<string> {
+  const scope = `chat_id.eq.${chatId},chat_id.is.null`;
+  const { data, error } = await supabase
+    .from("memory")
+    .select("id, content, completed_at")
+    .or(scope)
+    .eq("type", "completed_goal")
+    .order("completed_at", { ascending: false })
+    .limit(50);
+
+  if (error || !data || data.length === 0) {
+    return "No completed goals yet.\n\nMark a goal as done with /goals *N or /goals *text";
+  }
+
+  const thirtyDaysAgo = new Date();
+  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+  const recent: typeof data = [];
+  const archived: typeof data = [];
+
+  for (const item of data) {
+    const completedDate = item.completed_at ? new Date(item.completed_at) : null;
+    if (completedDate && completedDate < thirtyDaysAgo) {
+      archived.push(item);
+    } else {
+      recent.push(item);
+    }
+  }
+
+  const parts: string[] = [];
+  let counter = 1;
+
+  if (recent.length > 0) {
+    const lines = recent.map((g) => {
+      const when = g.completed_at
+        ? new Date(g.completed_at).toLocaleDateString("en-SG", { day: "numeric", month: "short" })
+        : "";
+      return `  ${counter++}. ${g.content}${when ? ` (done ${when})` : ""}`;
+    }).join("\n");
+    parts.push(`✅ Done\n${"─".repeat(24)}\n${lines}`);
+  }
+
+  if (archived.length > 0) {
+    const lines = archived.map((g) => {
+      const when = g.completed_at
+        ? new Date(g.completed_at).toLocaleDateString("en-SG", { day: "numeric", month: "short", year: "numeric" })
+        : "";
+      return `  ${counter++}. ${g.content}${when ? ` (done ${when})` : ""}`;
+    }).join("\n");
+    parts.push(`📦 Archived (30+ days ago)\n${"─".repeat(24)}\n${lines}`);
+  }
+
+  parts.push("Use /goals *N or /goals *text to toggle goals.");
+
+  return parts.join("\n\n");
 }
 
 // ── Command handler ────────────────────────────────────────────────────────
@@ -286,7 +480,71 @@ async function handleDirectMemoryCommand(
     return;
   }
 
-  const { adds, removes } = parseAddRemoveArgs(input);
+  const { adds, removes, toggleDone } = parseAddRemoveArgs(input);
+
+  // ── Handle * syntax (goals only) ────────────────────────────────────────
+  if (config.name === "goals" && toggleDone.length > 0) {
+    // "/goals *" alone → list completed goals
+    if (toggleDone.length === 1 && toggleDone[0] === "") {
+      const replyText = await listCompletedGoals(supabase, chatId);
+      await ctx.reply(replyText);
+      await saveCommandInteraction(supabase, chatId, `/${config.name} *`, replyText);
+      return;
+    }
+
+    const results: string[] = [];
+
+    for (const query of toggleDone) {
+      if (query === "") continue; // skip empty from mixed input like "+add, *"
+      try {
+        const matches = await findGoalsByIndexOrQuery(supabase, chatId, query);
+
+        if (matches.length === 0) {
+          results.push(`❓ Not found: "${query}"`);
+          continue;
+        }
+
+        if (matches.length === 1) {
+          const { wasActive } = await toggleGoalDone(supabase, matches[0].id);
+          if (wasActive) {
+            results.push(`✅ Marked as done: ${matches[0].content}`);
+          } else {
+            results.push(`♻️ Reactivated: ${matches[0].content}`);
+          }
+          continue;
+        }
+
+        // Multiple matches — disambiguation keyboard
+        const keyboard = new InlineKeyboard();
+        for (const match of matches.slice(0, 4)) {
+          keyboard
+            .text(
+              `✅ ${match.content.slice(0, 28)}`,
+              `dmem_done:${match.id}`
+            )
+            .row();
+        }
+        keyboard.text("❌ Cancel", "dmem_cancel");
+
+        await ctx.reply(
+          `Multiple goals match "${query}". Which one to mark done?`,
+          { reply_markup: keyboard }
+        );
+      } catch (err) {
+        results.push(`❌ Error toggling "${query}"`);
+        console.error(`[directMemory] toggle error:`, err);
+      }
+    }
+
+    if (results.length > 0) {
+      const replyText = results.join("\n");
+      await ctx.reply(replyText);
+      await saveCommandInteraction(supabase, chatId, `/${config.name} ${input}`, replyText);
+    }
+
+    // If there are also +/- items mixed in, fall through to process them
+    if (adds.length === 0 && removes.length === 0) return;
+  }
 
   if (adds.length === 0 && removes.length === 0) {
     await ctx.reply(
@@ -298,9 +556,59 @@ async function handleDirectMemoryCommand(
 
   const results: string[] = [];
 
-  // ── Process additions ──────────────────────────────────────────────────
+  // ── Process additions (with duplicate detection) ────────────────────────
   for (const content of adds) {
     try {
+      // Check for semantic duplicates before inserting
+      const scope = `chat_id.eq.${chatId},chat_id.is.null`;
+      let existingQuery = supabase
+        .from("memory")
+        .select("id, content")
+        .or(scope)
+        .eq("type", config.type);
+
+      if (config.name === "prefs" || config.name === "reminders") {
+        existingQuery = existingQuery.eq("category", config.category);
+      } else if (config.name === "facts") {
+        existingQuery = existingQuery.or("category.eq.personal,category.is.null");
+      }
+
+      const { data: existingItems } = await existingQuery
+        .order("created_at", { ascending: true })
+        .order("id", { ascending: true })
+        .limit(50);
+
+      const duplicates = await findPotentialDuplicates(
+        (existingItems ?? []) as { id: string; content: string }[],
+        content
+      );
+
+      if (duplicates.length > 0) {
+        // Show confirmation keyboard instead of inserting
+        const key = crypto.randomUUID().slice(0, 8);
+        pendingAdds.set(key, {
+          content,
+          chatId,
+          config,
+          expiresAt: Date.now() + 5 * 60 * 1000, // 5 min TTL
+        });
+
+        const dupList = duplicates
+          .map((d) => `  - ${d.content}`)
+          .join("\n");
+
+        const keyboard = new InlineKeyboard()
+          .text("✅ Yes, add it anyway", `dmem_dup_yes:${key}`)
+          .row()
+          .text("❌ No, skip", `dmem_dup_no:${key}`);
+
+        await ctx.reply(
+          `⚠️ Similar item(s) already exist:\n${dupList}\n\nStill add "${content}"?`,
+          { reply_markup: keyboard }
+        );
+        continue;
+      }
+
       const { error } = await supabase.from("memory").insert({
         type: config.type,
         content,
@@ -413,6 +721,79 @@ export function registerDirectMemoryCommands(
     } catch {
       await ctx.answerCallbackQuery("Failed");
     }
+  });
+
+  // Callback: mark goal as done (toggle)
+  bot.callbackQuery(/^dmem_done:/, async (ctx) => {
+    if (!supabase) {
+      await ctx.answerCallbackQuery("Not configured");
+      return;
+    }
+    const goalId = ctx.callbackQuery.data.replace("dmem_done:", "");
+    try {
+      // Fetch content for the response message
+      const { data } = await supabase
+        .from("memory")
+        .select("content")
+        .eq("id", goalId)
+        .single();
+      const content = data?.content ?? "goal";
+
+      const { wasActive } = await toggleGoalDone(supabase, goalId);
+      if (wasActive) {
+        await ctx.editMessageText(`✅ Marked as done: ${content}`);
+        await ctx.answerCallbackQuery("Done!");
+      } else {
+        await ctx.editMessageText(`♻️ Reactivated: ${content}`);
+        await ctx.answerCallbackQuery("Reactivated");
+      }
+    } catch {
+      await ctx.answerCallbackQuery("Failed");
+    }
+  });
+
+  // Callback: confirm duplicate add
+  bot.callbackQuery(/^dmem_dup_yes:/, async (ctx) => {
+    if (!supabase) {
+      await ctx.answerCallbackQuery("Not configured");
+      return;
+    }
+    const key = ctx.callbackQuery.data.replace("dmem_dup_yes:", "");
+    const pending = pendingAdds.get(key);
+    if (!pending) {
+      await ctx.editMessageText("Expired. Please try again.");
+      await ctx.answerCallbackQuery("Expired");
+      return;
+    }
+    pendingAdds.delete(key);
+
+    try {
+      const { error } = await supabase.from("memory").insert({
+        type: pending.config.type,
+        content: pending.content,
+        chat_id: pending.chatId,
+        category: pending.config.category,
+        extracted_from_exchange: false,
+        confidence: 1.0,
+      });
+
+      if (error) {
+        await ctx.editMessageText(`❌ Failed to add: ${pending.content}`);
+      } else {
+        await ctx.editMessageText(`${pending.config.emoji} Added: ${pending.content}`);
+      }
+      await ctx.answerCallbackQuery("Added");
+    } catch {
+      await ctx.answerCallbackQuery("Failed");
+    }
+  });
+
+  // Callback: skip duplicate add
+  bot.callbackQuery(/^dmem_dup_no:/, async (ctx) => {
+    const key = ctx.callbackQuery.data.replace("dmem_dup_no:", "");
+    pendingAdds.delete(key);
+    await ctx.editMessageText("Skipped.");
+    await ctx.answerCallbackQuery("Skipped");
   });
 
   // Callback: cancel deletion

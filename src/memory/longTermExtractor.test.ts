@@ -5,6 +5,13 @@
  */
 
 import { describe, test, expect, mock, beforeEach, afterEach } from "bun:test";
+
+// Mock callClaudeText so tests exercise the Ollama fallback path via mocked fetch.
+// This must be declared before importing the module under test.
+mock.module("../claude.ts", () => ({
+  callClaudeText: mock(() => Promise.reject(new Error("Claude unavailable in tests"))),
+}));
+
 import {
   extractMemoriesFromExchange,
   storeExtractedMemories,
@@ -14,9 +21,8 @@ import {
   type ExchangeExtractionResult,
 } from "./longTermExtractor.ts";
 
-// We need to mock `spawn` from bun. Since bun:test doesn't have module mocking
-// built-in, we test the public functions via their actual behavior where possible,
-// and mock Supabase for DB interactions.
+// Supabase DB interactions are tested via a mock factory.
+// The fetch mock controls Ollama responses in extractMemoriesFromExchange tests.
 
 // ============================================================
 // Supabase mock factory
@@ -73,6 +79,8 @@ describe("storeExtractedMemories", () => {
       category: "personal",
       extracted_from_exchange: true,
       confidence: 0.9,
+      importance: 0.85,
+      stability: 0.9,
     });
   });
 

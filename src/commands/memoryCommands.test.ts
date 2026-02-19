@@ -405,3 +405,110 @@ describe("forget callback handlers", () => {
     expect(ctx.answerCallbackQuery).toHaveBeenCalled();
   });
 });
+
+// ============================================================
+// /forget N — index-based forget
+// ============================================================
+
+describe("/forget N — index-based forget", () => {
+  /** Build a Supabase mock for the index-based /forget path.
+   * The query chain is:
+   *   .select("id, type, content").eq(chat_id).not(type, "eq", "completed_goal").order().limit(100)
+   */
+  function mockSupabaseForForgetIndex(items: Array<{ id: string; type: string; content: string }>) {
+    const insertFn = mock(() => Promise.resolve({ data: null, error: null }));
+
+    const chain: any = {};
+    chain.eq = mock(() => chain);
+    chain.not = mock(() => chain);
+    chain.order = mock(() => chain);
+    chain.limit = mock(() => Promise.resolve({ data: items, error: null }));
+    const selectFn = mock(() => chain);
+
+    return {
+      from: mock((table: string) => {
+        if (table === "messages") return { insert: insertFn };
+        return { select: selectFn };
+      }),
+    } as any;
+  }
+
+  test("/forget 2 with 3 memory items shows item #2 with InlineKeyboard", async () => {
+    const bot = mockBot();
+    const sb = mockSupabaseForForgetIndex([
+      { id: "m1", type: "goal", content: "Learn Rust" },
+      { id: "m2", type: "fact", content: "My AWS account is 123" },
+      { id: "m3", type: "fact", content: "I live in Singapore" },
+    ]);
+    registerMemoryCommands(bot as any, { supabase: sb, userId: 1 });
+
+    const ctx = mockCtx({ match: "2" });
+    await bot._triggerCommand("forget", ctx);
+
+    expect(ctx.reply).toHaveBeenCalledTimes(1);
+    const replyText = ctx.reply.mock.calls[0][0] as string;
+    expect(replyText).toContain("#2");
+    expect(replyText).toContain("My AWS account is 123");
+
+    // Should have InlineKeyboard with forget_item and forget_keep
+    const opts = ctx.reply.mock.calls[0][1] as any;
+    expect(opts?.reply_markup).toBeDefined();
+    const allButtons: Array<{ text: string; callback_data: string }> =
+      opts.reply_markup.inline_keyboard.flat();
+    const buttonDatas = allButtons.map((b) => b.callback_data);
+    expect(buttonDatas).toContain(`forget_item:m2`);
+    expect(buttonDatas.some((d) => d.startsWith("forget_keep:"))).toBe(true);
+  });
+
+  test("/forget 1 shows first item", async () => {
+    const bot = mockBot();
+    const sb = mockSupabaseForForgetIndex([
+      { id: "m1", type: "goal", content: "Ship v2 by March" },
+      { id: "m2", type: "fact", content: "Some fact" },
+    ]);
+    registerMemoryCommands(bot as any, { supabase: sb, userId: 1 });
+
+    const ctx = mockCtx({ match: "1" });
+    await bot._triggerCommand("forget", ctx);
+
+    expect(ctx.reply).toHaveBeenCalledTimes(1);
+    const replyText = ctx.reply.mock.calls[0][0] as string;
+    expect(replyText).toContain("#1");
+    expect(replyText).toContain("Ship v2 by March");
+  });
+
+  test("/forget 99 with 3 items shows out-of-range error", async () => {
+    const bot = mockBot();
+    const sb = mockSupabaseForForgetIndex([
+      { id: "m1", type: "goal", content: "Goal 1" },
+      { id: "m2", type: "fact", content: "Fact 1" },
+      { id: "m3", type: "fact", content: "Fact 2" },
+    ]);
+    registerMemoryCommands(bot as any, { supabase: sb, userId: 1 });
+
+    const ctx = mockCtx({ match: "99" });
+    await bot._triggerCommand("forget", ctx);
+
+    expect(ctx.reply).toHaveBeenCalledTimes(1);
+    const replyText = ctx.reply.mock.calls[0][0] as string;
+    expect(replyText).toContain("No memory item #99");
+    expect(replyText).toContain("3 item(s)");
+  });
+
+  test("/forget 0 shows out-of-range error (0 is not valid 1-based index)", async () => {
+    const bot = mockBot();
+    const sb = mockSupabaseForForgetIndex([
+      { id: "m1", type: "goal", content: "Goal 1" },
+      { id: "m2", type: "fact", content: "Fact 1" },
+    ]);
+    registerMemoryCommands(bot as any, { supabase: sb, userId: 1 });
+
+    const ctx = mockCtx({ match: "0" });
+    await bot._triggerCommand("forget", ctx);
+
+    expect(ctx.reply).toHaveBeenCalledTimes(1);
+    const replyText = ctx.reply.mock.calls[0][0] as string;
+    expect(replyText).toContain("No memory item #0");
+    expect(replyText).toContain("2 item(s)");
+  });
+});

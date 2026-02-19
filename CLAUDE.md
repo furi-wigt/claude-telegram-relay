@@ -314,7 +314,11 @@ Summarize what was set up and what is running. Remind the user:
 | `/memory` | Browse your memory (goals, facts, prefs, dates) |
 | `/remember [text]` | Save something to memory |
 | `/forget [text]` | Remove something from memory |
-| `/goals` | View your goals |
+| `/goals` | View and manage goals |
+| `/goals +goal text` | Add a new goal |
+| `/goals -old goal` | Remove a goal |
+| `/goals *N or *text` | Mark goal as done (toggle active / done) |
+| `/goals *` | View completed/archived goals |
 | `/history` | Recent messages |
 | `/routines` | Manage scheduled routines |
 | `/plan [task]` | Interactive clarification Q&A before Claude starts |

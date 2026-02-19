@@ -55,13 +55,20 @@ CREATE TABLE IF NOT EXISTS memory (
   confidence               FLOAT       DEFAULT 1.0,    -- extraction confidence score
   category                 TEXT,                       -- 'personal', 'preference', 'goal', 'date'
   chat_id                  BIGINT,                     -- group isolation (NULL = DM / default)
-  thread_id                BIGINT                      -- forum topic isolation (NULL = non-forum)
+  thread_id                BIGINT,                     -- forum topic isolation (NULL = non-forum)
+  status        TEXT        NOT NULL DEFAULT 'active' CHECK (status IN ('active','archived','invalidated')),
+  last_used_at  TIMESTAMPTZ,
+  access_count  INTEGER     NOT NULL DEFAULT 0,
+  importance    FLOAT       NOT NULL DEFAULT 0.7 CHECK (importance >= 0 AND importance <= 1),
+  stability     FLOAT       NOT NULL DEFAULT 0.7 CHECK (stability >= 0 AND stability <= 1)
 );
 
 CREATE INDEX IF NOT EXISTS idx_memory_type         ON memory(type);
 CREATE INDEX IF NOT EXISTS idx_memory_created_at   ON memory(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_memory_chat_id      ON memory(chat_id);
 CREATE INDEX IF NOT EXISTS idx_memory_chat_thread  ON memory(chat_id, thread_id);
+CREATE INDEX IF NOT EXISTS idx_memory_status       ON memory(status);
+CREATE INDEX IF NOT EXISTS idx_memory_last_used_at ON memory(last_used_at DESC NULLS LAST);
 
 -- ============================================================
 -- LOGS TABLE (Observability)
@@ -173,6 +180,7 @@ BEGIN
   SELECT m.id, m.content, m.deadline, m.priority
   FROM memory m
   WHERE m.type = 'goal'
+    AND m.status = 'active'
     AND (filter_chat_id IS NULL OR m.chat_id = filter_chat_id)
   ORDER BY m.priority DESC, m.created_at DESC;
 END;
@@ -191,6 +199,7 @@ BEGIN
   SELECT m.id, m.content
   FROM memory m
   WHERE m.type = 'fact'
+    AND m.status = 'active'
     AND (filter_chat_id IS NULL OR m.chat_id = filter_chat_id)
   ORDER BY m.created_at DESC;
 END;
@@ -221,6 +230,19 @@ BEGIN
     AND (latest_summary_ts IS NULL OR created_at > latest_summary_ts);
 
   RETURN COALESCE(count, 0);
+END;
+$$ LANGUAGE plpgsql;
+
+-- Atomic helper: increment access_count and update last_used_at in one round-trip.
+-- Called fire-and-forget from getRelevantContext() after memory items are retrieved.
+CREATE OR REPLACE FUNCTION touch_memory_access(p_ids UUID[])
+RETURNS VOID AS $$
+BEGIN
+  UPDATE memory
+  SET access_count = access_count + 1,
+      last_used_at = NOW()
+  WHERE id = ANY(p_ids)
+    AND status = 'active';
 END;
 $$ LANGUAGE plpgsql;
 
@@ -289,6 +311,7 @@ BEGIN
     1 - (m.embedding <=> query_embedding) AS similarity
   FROM memory m
   WHERE m.embedding IS NOT NULL
+    AND m.status = 'active'
     AND 1 - (m.embedding <=> query_embedding) > match_threshold
     AND (filter_chat_id IS NULL OR m.chat_id = filter_chat_id)
   ORDER BY m.embedding <=> query_embedding

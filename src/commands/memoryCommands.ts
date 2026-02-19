@@ -11,6 +11,8 @@ import type { Bot, Context } from "grammy";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { InlineKeyboard } from "grammy";
 import { saveCommandInteraction } from "../utils/saveMessage.ts";
+import { checkSemanticDuplicate } from "../utils/semanticDuplicateChecker.ts";
+import { findPotentialDuplicates } from "../utils/duplicateDetector.ts";
 
 export interface MemoryCommandOptions {
   supabase: SupabaseClient | null;
@@ -85,6 +87,36 @@ export function registerMemoryCommands(
     const type = category === "goal" ? "goal" : "fact";
 
     try {
+      // Fast-path: word-level containment check (catches paraphrases like
+      // "I prefer AWS" vs "prefers AWS cloud services for development")
+      const { data: existingMemories } = await supabase
+        .from("memory")
+        .select("id, content")
+        .eq("type", type)
+        .eq("chat_id", chatId);
+
+      console.log(`[remember] dedup: fetched ${existingMemories?.length ?? 0} existing ${type}s for chat ${chatId}`);
+      if (existingMemories?.length) {
+        console.log(`[remember] dedup: existing items: ${existingMemories.map(m => JSON.stringify(m.content)).join(", ")}`);
+      }
+
+      const wordMatches = await findPotentialDuplicates(existingMemories ?? [], fact);
+      console.log(`[remember] dedup: wordMatches=${wordMatches.length} for "${fact}"`);
+      if (wordMatches.length > 0) {
+        const existing = wordMatches[0].content;
+        await ctx.reply(`⚠️ Similar memory already exists:\n• ${existing}\n\nNot added to avoid duplicates.`);
+        return;
+      }
+
+      // Semantic duplicate check (embedding similarity, threshold 0.80)
+      const dupCheck = await checkSemanticDuplicate(supabase, fact, type, chatId);
+      console.log(`[remember] dedup: semantic isDuplicate=${dupCheck.isDuplicate} similarity=${dupCheck.match?.similarity ?? "n/a"}`);
+      if (dupCheck.isDuplicate) {
+        const existing = dupCheck.match?.content ?? "(unknown)";
+        await ctx.reply(`⚠️ Similar memory already exists:\n• ${existing}\n\nNot added to avoid duplicates.`);
+        return;
+      }
+
       const { error } = await supabase.from("memory").insert({
         type,
         content: fact,
@@ -127,6 +159,42 @@ export function registerMemoryCommands(
         { reply_markup: keyboard }
       );
       return;
+    }
+
+    // Index-based: purely numeric like "/forget 2"
+    if (/^\d+$/.test(topic)) {
+      try {
+        const idx = parseInt(topic, 10) - 1;
+        const { data } = await supabase
+          .from("memory")
+          .select("id, type, content")
+          .eq("chat_id", chatId)
+          .not("type", "eq", "completed_goal")
+          .order("created_at", { ascending: true })
+          .limit(100);
+
+        const items = data ?? [];
+        if (idx < 0 || idx >= items.length) {
+          await ctx.reply(`No memory item #${topic}. You have ${items.length} item(s). Use /memory to view them.`);
+          return;
+        }
+
+        const item = items[idx];
+        const typeEmoji = item.type === "goal" ? "🎯" : "📌";
+        const keyboard = new InlineKeyboard()
+          .text("🗑️ Forget this", `forget_item:${item.id}`)
+          .text("✅ Keep", `forget_keep:${item.id}`);
+
+        await ctx.reply(
+          `${typeEmoji} #${topic}: ${item.content.slice(0, 200)}\n(use /memory to browse all items)`,
+          { reply_markup: keyboard }
+        );
+        return;
+      } catch (err) {
+        console.error("/forget index error:", err);
+        await ctx.reply("Failed to look up memory by index. Please try again.");
+        return;
+      }
     }
 
     // Topic given: search for matching memories

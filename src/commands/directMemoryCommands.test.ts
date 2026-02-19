@@ -7,10 +7,20 @@
 import { describe, test, expect, mock, beforeAll } from "bun:test";
 
 // Mock callClaudeText before tests run so the remove path uses the deterministic ilike fallback.
+// Mock duplicateDetector — controlled per test via findPotentialDuplicatesMock.
 // Bun updates live bindings on mock.module, so this affects the already-loaded module.
+const findPotentialDuplicatesMock = mock(() => Promise.resolve([] as any[]));
+const parseModelIndicesMock = mock((raw: string, max: number) => {
+  // Passthrough to real implementation is not needed; the module mock replaces the import
+  return [];
+});
 beforeAll(() => {
   mock.module("../claude.ts", () => ({
     callClaudeText: mock(() => Promise.reject(new Error("Claude unavailable in tests"))),
+  }));
+  mock.module("../utils/duplicateDetector.ts", () => ({
+    findPotentialDuplicates: findPotentialDuplicatesMock,
+    parseModelIndices: parseModelIndicesMock,
   }));
 });
 
@@ -25,6 +35,7 @@ describe("parseAddRemoveArgs", () => {
     expect(parseAddRemoveArgs("+Learn TypeScript")).toEqual({
       adds: ["Learn TypeScript"],
       removes: [],
+      toggleDone: [],
     });
   });
 
@@ -32,6 +43,7 @@ describe("parseAddRemoveArgs", () => {
     expect(parseAddRemoveArgs("-Old goal")).toEqual({
       adds: [],
       removes: ["Old goal"],
+      toggleDone: [],
     });
   });
 
@@ -39,28 +51,70 @@ describe("parseAddRemoveArgs", () => {
     const result = parseAddRemoveArgs("+Goal A, +Goal B, -Old thing, +Goal C");
     expect(result.adds).toEqual(["Goal A", "Goal B", "Goal C"]);
     expect(result.removes).toEqual(["Old thing"]);
+    expect(result.toggleDone).toEqual([]);
   });
 
-  test("ignores items without +/- prefix", () => {
+  test("ignores items without +/-/* prefix", () => {
     const result = parseAddRemoveArgs("no prefix, +valid add, bare text");
     expect(result.adds).toEqual(["valid add"]);
     expect(result.removes).toEqual([]);
+    expect(result.toggleDone).toEqual([]);
   });
 
   test("trims whitespace from items", () => {
     const result = parseAddRemoveArgs("  +  trimmed goal  ,  -  trimmed remove  ");
     expect(result.adds).toEqual(["trimmed goal"]);
     expect(result.removes).toEqual(["trimmed remove"]);
+    expect(result.toggleDone).toEqual([]);
   });
 
   test("ignores empty items after stripping prefix", () => {
     const result = parseAddRemoveArgs("+, -, +valid");
     expect(result.adds).toEqual(["valid"]);
     expect(result.removes).toEqual([]);
+    expect(result.toggleDone).toEqual([]);
   });
 
   test("returns empty arrays for empty input", () => {
-    expect(parseAddRemoveArgs("")).toEqual({ adds: [], removes: [] });
+    expect(parseAddRemoveArgs("")).toEqual({ adds: [], removes: [], toggleDone: [] });
+  });
+
+  // ── * prefix (toggleDone) tests ──────────────────────────────────────
+
+  test("*goal text populates toggleDone", () => {
+    const result = parseAddRemoveArgs("*goal text");
+    expect(result).toEqual({ adds: [], removes: [], toggleDone: ["goal text"] });
+  });
+
+  test("*1 populates toggleDone with index string", () => {
+    const result = parseAddRemoveArgs("*1");
+    expect(result).toEqual({ adds: [], removes: [], toggleDone: ["1"] });
+  });
+
+  test("* alone populates toggleDone with empty string (list completed)", () => {
+    const result = parseAddRemoveArgs("*");
+    expect(result).toEqual({ adds: [], removes: [], toggleDone: [""] });
+  });
+
+  test("mixed +add, *done, -remove populates all three fields", () => {
+    const result = parseAddRemoveArgs("+add me, *done goal, -remove me");
+    expect(result.adds).toEqual(["add me"]);
+    expect(result.removes).toEqual(["remove me"]);
+    expect(result.toggleDone).toEqual(["done goal"]);
+  });
+
+  test("mixed *3, +new goal, -old stuff routes correctly", () => {
+    const result = parseAddRemoveArgs("*3, +new goal, -old stuff");
+    expect(result.adds).toEqual(["new goal"]);
+    expect(result.removes).toEqual(["old stuff"]);
+    expect(result.toggleDone).toEqual(["3"]);
+  });
+
+  test("multiple * items in one command", () => {
+    const result = parseAddRemoveArgs("*first goal, *second goal");
+    expect(result.toggleDone).toEqual(["first goal", "second goal"]);
+    expect(result.adds).toEqual([]);
+    expect(result.removes).toEqual([]);
   });
 });
 
@@ -119,10 +173,11 @@ function mockSupabaseWithCandidates(candidates: Array<{ id: string; content: str
   const eqDeleteFn = mock(() => Promise.resolve({ data: null, error: null }));
   const deleteFn = mock(() => ({ eq: eqDeleteFn }));
 
-  // Self-returning chain — any .eq()/.or() returns the chain; .limit() returns data
+  // Self-returning chain — any .eq()/.or()/.order() returns the chain; .limit() returns data
   const chain: any = {};
   chain.eq = mock(() => chain);
   chain.or = mock(() => chain);
+  chain.order = mock(() => chain);
   chain.limit = mock(() => Promise.resolve({ data: candidates, error: null }));
   const selectFn = mock(() => chain);
 
@@ -231,9 +286,15 @@ describe("/goals command — add path", () => {
     const bot = mockBot();
     const memInsert = mock(() => Promise.resolve({ data: null, error: null }));
     const msgInsert = mock(() => Promise.resolve({ data: null, error: null }));
+    // Add path now queries existing items for duplicate detection
+    const dupChain: any = {};
+    dupChain.eq = mock(() => dupChain);
+    dupChain.or = mock(() => dupChain);
+    dupChain.order = mock(() => dupChain);
+    dupChain.limit = mock(() => Promise.resolve({ data: [], error: null }));
     const supabase = {
       from: mock((table: string) =>
-        table === "messages" ? { insert: msgInsert } : { insert: memInsert }
+        table === "messages" ? { insert: msgInsert } : { insert: memInsert, select: mock(() => dupChain) }
       ),
     } as any;
     registerDirectMemoryCommands(bot as any, { supabase });
@@ -257,9 +318,14 @@ describe("/goals command — add path", () => {
     const bot = mockBot();
     const memInsert = mock(() => Promise.resolve({ data: null, error: null }));
     const msgInsert = mock(() => Promise.resolve({ data: null, error: null }));
+    const dupChain: any = {};
+    dupChain.eq = mock(() => dupChain);
+    dupChain.or = mock(() => dupChain);
+    dupChain.order = mock(() => dupChain);
+    dupChain.limit = mock(() => Promise.resolve({ data: [], error: null }));
     const supabase = {
       from: mock((table: string) =>
-        table === "messages" ? { insert: msgInsert } : { insert: memInsert }
+        table === "messages" ? { insert: msgInsert } : { insert: memInsert, select: mock(() => dupChain) }
       ),
     } as any;
     registerDirectMemoryCommands(bot as any, { supabase });
@@ -284,9 +350,14 @@ describe("/facts command — add path", () => {
     const bot = mockBot();
     const memInsert = mock(() => Promise.resolve({ data: null, error: null }));
     const msgInsert = mock(() => Promise.resolve({ data: null, error: null }));
+    const dupChain: any = {};
+    dupChain.eq = mock(() => dupChain);
+    dupChain.or = mock(() => dupChain);
+    dupChain.order = mock(() => dupChain);
+    dupChain.limit = mock(() => Promise.resolve({ data: [], error: null }));
     const supabase = {
       from: mock((table: string) =>
-        table === "messages" ? { insert: msgInsert } : { insert: memInsert }
+        table === "messages" ? { insert: msgInsert } : { insert: memInsert, select: mock(() => dupChain) }
       ),
     } as any;
     registerDirectMemoryCommands(bot as any, { supabase });
@@ -310,9 +381,14 @@ describe("/prefs command — add path", () => {
     const bot = mockBot();
     const memInsert = mock(() => Promise.resolve({ data: null, error: null }));
     const msgInsert = mock(() => Promise.resolve({ data: null, error: null }));
+    const dupChain: any = {};
+    dupChain.eq = mock(() => dupChain);
+    dupChain.or = mock(() => dupChain);
+    dupChain.order = mock(() => dupChain);
+    dupChain.limit = mock(() => Promise.resolve({ data: [], error: null }));
     const supabase = {
       from: mock((table: string) =>
-        table === "messages" ? { insert: msgInsert } : { insert: memInsert }
+        table === "messages" ? { insert: msgInsert } : { insert: memInsert, select: mock(() => dupChain) }
       ),
     } as any;
     registerDirectMemoryCommands(bot as any, { supabase });
@@ -335,9 +411,14 @@ describe("/reminders command — add path", () => {
     const bot = mockBot();
     const memInsert = mock(() => Promise.resolve({ data: null, error: null }));
     const msgInsert = mock(() => Promise.resolve({ data: null, error: null }));
+    const dupChain: any = {};
+    dupChain.eq = mock(() => dupChain);
+    dupChain.or = mock(() => dupChain);
+    dupChain.order = mock(() => dupChain);
+    dupChain.limit = mock(() => Promise.resolve({ data: [], error: null }));
     const supabase = {
       from: mock((table: string) =>
-        table === "messages" ? { insert: msgInsert } : { insert: memInsert }
+        table === "messages" ? { insert: msgInsert } : { insert: memInsert, select: mock(() => dupChain) }
       ),
     } as any;
     registerDirectMemoryCommands(bot as any, { supabase });
@@ -1104,5 +1185,321 @@ describe("E2E — /facts shows items without category (fix for [REMEMBER:] tag i
     const text = ctx.reply.mock.calls[0][0] as string;
     expect(text).toContain("User works at GovTech");
     expect(text).toContain("User has TradingView Essential subscription");
+  });
+});
+
+// ============================================================
+// Index-based delete (-N syntax)
+// ============================================================
+
+describe("index-based delete (-N syntax)", () => {
+  test("/goals -2 with 3 goals deletes the 2nd goal", async () => {
+    const bot = mockBot();
+    const { supabase, eqDeleteFn } = mockSupabaseWithCandidates([
+      { id: "g1", content: "Learn Rust" },
+      { id: "g2", content: "Ship API v2" },
+      { id: "g3", content: "Read 12 books" },
+    ]);
+    registerDirectMemoryCommands(bot as any, { supabase });
+
+    const ctx = mockCtx({ match: "-2" });
+    await bot._triggerCommand("goals", ctx);
+
+    // Index 2 (1-based) maps to candidates[1] → id "g2"
+    expect(eqDeleteFn).toHaveBeenCalledWith("id", "g2");
+    const text = ctx.reply.mock.calls[0][0] as string;
+    expect(text).toContain("Removed");
+    expect(text).toContain("Ship API v2");
+  });
+
+  test("/facts -1 with 2 facts deletes the 1st fact", async () => {
+    const bot = mockBot();
+    const { supabase, eqDeleteFn } = mockSupabaseWithCandidates([
+      { id: "f1", content: "I live in Singapore" },
+      { id: "f2", content: "My AWS account is 123" },
+    ]);
+    registerDirectMemoryCommands(bot as any, { supabase });
+
+    const ctx = mockCtx({ match: "-1" });
+    await bot._triggerCommand("facts", ctx);
+
+    expect(eqDeleteFn).toHaveBeenCalledWith("id", "f1");
+    const text = ctx.reply.mock.calls[0][0] as string;
+    expect(text).toContain("Removed");
+    expect(text).toContain("I live in Singapore");
+  });
+
+  test("/prefs -3 out of range (only 2 prefs) shows 'Not found'", async () => {
+    const bot = mockBot();
+    const { supabase, eqDeleteFn } = mockSupabaseWithCandidates([
+      { id: "p1", content: "Prefer concise" },
+      { id: "p2", content: "Use bullet points" },
+    ]);
+    registerDirectMemoryCommands(bot as any, { supabase });
+
+    const ctx = mockCtx({ match: "-3" });
+    await bot._triggerCommand("prefs", ctx);
+
+    // No delete should happen
+    expect(eqDeleteFn).not.toHaveBeenCalled();
+    const text = ctx.reply.mock.calls[0][0] as string;
+    expect(text).toContain("Not found");
+  });
+
+  test("/reminders -2 deletes the 2nd reminder", async () => {
+    const bot = mockBot();
+    const { supabase, eqDeleteFn } = mockSupabaseWithCandidates([
+      { id: "r1", content: "Team standup Monday 9am" },
+      { id: "r2", content: "Doctor appointment Friday 3pm" },
+      { id: "r3", content: "Gym session Tuesday" },
+    ]);
+    registerDirectMemoryCommands(bot as any, { supabase });
+
+    const ctx = mockCtx({ match: "-2" });
+    await bot._triggerCommand("reminders", ctx);
+
+    expect(eqDeleteFn).toHaveBeenCalledWith("id", "r2");
+    const text = ctx.reply.mock.calls[0][0] as string;
+    expect(text).toContain("Removed");
+    expect(text).toContain("Doctor appointment Friday 3pm");
+  });
+});
+
+// ============================================================
+// Duplicate detection on add (+text when duplicates exist)
+// ============================================================
+
+describe("duplicate detection on add", () => {
+  test("/goals +text when findPotentialDuplicates returns a match shows InlineKeyboard", async () => {
+    findPotentialDuplicatesMock.mockImplementation(() =>
+      Promise.resolve([{ id: "g1", content: "Learn Python basics" }])
+    );
+
+    const bot = mockBot();
+    const memInsert = mock(() => Promise.resolve({ data: null, error: null }));
+    const msgInsert = mock(() => Promise.resolve({ data: null, error: null }));
+    const dupChain: any = {};
+    dupChain.eq = mock(() => dupChain);
+    dupChain.or = mock(() => dupChain);
+    dupChain.order = mock(() => dupChain);
+    dupChain.limit = mock(() =>
+      Promise.resolve({
+        data: [{ id: "g1", content: "Learn Python basics" }],
+        error: null,
+      })
+    );
+    const supabase = {
+      from: mock((table: string) =>
+        table === "messages"
+          ? { insert: msgInsert }
+          : { insert: memInsert, select: mock(() => dupChain) }
+      ),
+    } as any;
+    registerDirectMemoryCommands(bot as any, { supabase });
+
+    const ctx = mockCtx({ match: "+Learn Python" });
+    await bot._triggerCommand("goals", ctx);
+
+    // Should NOT insert directly
+    expect(memInsert).not.toHaveBeenCalled();
+
+    // Should show duplicate confirmation keyboard
+    expect(ctx.reply).toHaveBeenCalledTimes(1);
+    const replyText = ctx.reply.mock.calls[0][0] as string;
+    expect(replyText).toContain("Similar item");
+    expect(replyText).toContain("Learn Python basics");
+
+    const opts = ctx.reply.mock.calls[0][1] as any;
+    expect(opts?.reply_markup).toBeDefined();
+    const allButtons: Array<{ text: string; callback_data: string }> =
+      opts.reply_markup.inline_keyboard.flat();
+    const buttonDatas = allButtons.map((b) => b.callback_data);
+    expect(buttonDatas.some((d) => d.startsWith("dmem_dup_yes:"))).toBe(true);
+    expect(buttonDatas.some((d) => d.startsWith("dmem_dup_no:"))).toBe(true);
+
+    // Reset mock for other tests
+    findPotentialDuplicatesMock.mockImplementation(() => Promise.resolve([]));
+  });
+
+  test("dmem_dup_yes callback inserts the pending item", async () => {
+    // First, trigger the duplicate flow to populate pendingAdds
+    findPotentialDuplicatesMock.mockImplementation(() =>
+      Promise.resolve([{ id: "g1", content: "Existing goal" }])
+    );
+
+    const bot = mockBot();
+    const memInsert = mock(() => Promise.resolve({ data: null, error: null }));
+    const msgInsert = mock(() => Promise.resolve({ data: null, error: null }));
+    const dupChain: any = {};
+    dupChain.eq = mock(() => dupChain);
+    dupChain.or = mock(() => dupChain);
+    dupChain.order = mock(() => dupChain);
+    dupChain.limit = mock(() =>
+      Promise.resolve({
+        data: [{ id: "g1", content: "Existing goal" }],
+        error: null,
+      })
+    );
+    const supabase = {
+      from: mock((table: string) =>
+        table === "messages"
+          ? { insert: msgInsert }
+          : { insert: memInsert, select: mock(() => dupChain) }
+      ),
+    } as any;
+    registerDirectMemoryCommands(bot as any, { supabase });
+
+    // Step 1: Trigger the add which creates a pending entry
+    const addCtx = mockCtx({ match: "+My new goal" });
+    await bot._triggerCommand("goals", addCtx);
+
+    // Extract the key from the callback button
+    const opts = addCtx.reply.mock.calls[0][1] as any;
+    const allButtons: Array<{ text: string; callback_data: string }> =
+      opts.reply_markup.inline_keyboard.flat();
+    const yesButton = allButtons.find((b) => b.callback_data.startsWith("dmem_dup_yes:"));
+    expect(yesButton).toBeDefined();
+    const key = yesButton!.callback_data.replace("dmem_dup_yes:", "");
+
+    // Step 2: Simulate user pressing "Yes, add it anyway"
+    const callbackCtx = mockCtx({ callbackData: `dmem_dup_yes:${key}` });
+    await bot._triggerCallback(`dmem_dup_yes:${key}`, callbackCtx);
+
+    // Should insert now
+    expect(memInsert).toHaveBeenCalledTimes(1);
+    const inserted = memInsert.mock.calls[0][0];
+    expect(inserted.content).toBe("My new goal");
+    expect(inserted.type).toBe("goal");
+
+    // Should edit message with confirmation
+    expect(callbackCtx.editMessageText).toHaveBeenCalled();
+    const editText = callbackCtx.editMessageText.mock.calls[0][0] as string;
+    expect(editText).toContain("Added");
+    expect(editText).toContain("My new goal");
+
+    findPotentialDuplicatesMock.mockImplementation(() => Promise.resolve([]));
+  });
+
+  test("dmem_dup_no callback skips insert and replies 'Skipped.'", async () => {
+    findPotentialDuplicatesMock.mockImplementation(() =>
+      Promise.resolve([{ id: "g1", content: "Existing goal" }])
+    );
+
+    const bot = mockBot();
+    const memInsert = mock(() => Promise.resolve({ data: null, error: null }));
+    const msgInsert = mock(() => Promise.resolve({ data: null, error: null }));
+    const dupChain: any = {};
+    dupChain.eq = mock(() => dupChain);
+    dupChain.or = mock(() => dupChain);
+    dupChain.order = mock(() => dupChain);
+    dupChain.limit = mock(() =>
+      Promise.resolve({
+        data: [{ id: "g1", content: "Existing goal" }],
+        error: null,
+      })
+    );
+    const supabase = {
+      from: mock((table: string) =>
+        table === "messages"
+          ? { insert: msgInsert }
+          : { insert: memInsert, select: mock(() => dupChain) }
+      ),
+    } as any;
+    registerDirectMemoryCommands(bot as any, { supabase });
+
+    // Trigger the add to populate pendingAdds
+    const addCtx = mockCtx({ match: "+My new goal" });
+    await bot._triggerCommand("goals", addCtx);
+
+    // Extract key
+    const opts = addCtx.reply.mock.calls[0][1] as any;
+    const allButtons: Array<{ text: string; callback_data: string }> =
+      opts.reply_markup.inline_keyboard.flat();
+    const noButton = allButtons.find((b) => b.callback_data.startsWith("dmem_dup_no:"));
+    const key = noButton!.callback_data.replace("dmem_dup_no:", "");
+
+    // Simulate "No, skip" press
+    const callbackCtx = mockCtx({ callbackData: `dmem_dup_no:${key}` });
+    await bot._triggerCallback(`dmem_dup_no:${key}`, callbackCtx);
+
+    // Should NOT insert
+    expect(memInsert).not.toHaveBeenCalled();
+
+    // Should edit message to "Skipped."
+    expect(callbackCtx.editMessageText).toHaveBeenCalledWith("Skipped.");
+
+    findPotentialDuplicatesMock.mockImplementation(() => Promise.resolve([]));
+  });
+
+  test("dmem_dup_no with expired/unknown key replies 'Expired. Please try again.'", async () => {
+    const bot = mockBot();
+    const supabase = {
+      from: mock(() => ({ insert: mock(() => Promise.resolve({ data: null, error: null })) })),
+    } as any;
+    registerDirectMemoryCommands(bot as any, { supabase });
+
+    // Use a key that was never added to pendingAdds
+    const callbackCtx = mockCtx({ callbackData: "dmem_dup_no:nonexistent-key" });
+    await bot._triggerCallback("dmem_dup_no:nonexistent-key", callbackCtx);
+
+    // The dmem_dup_no handler always calls editMessageText("Skipped.") and deletes from pendingAdds
+    // regardless of whether the key exists — it's a no-op delete on the Map
+    expect(callbackCtx.editMessageText).toHaveBeenCalledWith("Skipped.");
+  });
+
+  test("dmem_dup_yes with expired/unknown key replies 'Expired. Please try again.'", async () => {
+    const bot = mockBot();
+    const memInsert = mock(() => Promise.resolve({ data: null, error: null }));
+    const supabase = {
+      from: mock(() => ({ insert: memInsert })),
+    } as any;
+    registerDirectMemoryCommands(bot as any, { supabase });
+
+    // Use a key that was never added to pendingAdds
+    const callbackCtx = mockCtx({ callbackData: "dmem_dup_yes:nonexistent-key" });
+    await bot._triggerCallback("dmem_dup_yes:nonexistent-key", callbackCtx);
+
+    // Should NOT insert anything
+    expect(memInsert).not.toHaveBeenCalled();
+    // Should show expired message
+    expect(callbackCtx.editMessageText).toHaveBeenCalledWith("Expired. Please try again.");
+  });
+
+  test("Claude unavailable (findPotentialDuplicates returns []) → insert proceeds directly", async () => {
+    findPotentialDuplicatesMock.mockImplementation(() => Promise.resolve([]));
+
+    const bot = mockBot();
+    const memInsert = mock(() => Promise.resolve({ data: null, error: null }));
+    const msgInsert = mock(() => Promise.resolve({ data: null, error: null }));
+    const dupChain: any = {};
+    dupChain.eq = mock(() => dupChain);
+    dupChain.or = mock(() => dupChain);
+    dupChain.order = mock(() => dupChain);
+    dupChain.limit = mock(() =>
+      Promise.resolve({
+        data: [{ id: "g1", content: "Some existing goal" }],
+        error: null,
+      })
+    );
+    const supabase = {
+      from: mock((table: string) =>
+        table === "messages"
+          ? { insert: msgInsert }
+          : { insert: memInsert, select: mock(() => dupChain) }
+      ),
+    } as any;
+    registerDirectMemoryCommands(bot as any, { supabase });
+
+    const ctx = mockCtx({ match: "+Brand new goal" });
+    await bot._triggerCommand("goals", ctx);
+
+    // Should insert directly without showing duplicate keyboard
+    expect(memInsert).toHaveBeenCalledTimes(1);
+    const inserted = memInsert.mock.calls[0][0];
+    expect(inserted.content).toBe("Brand new goal");
+
+    const text = ctx.reply.mock.calls[0][0] as string;
+    expect(text).toContain("Added");
+    expect(text).toContain("Brand new goal");
   });
 });

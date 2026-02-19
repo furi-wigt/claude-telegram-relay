@@ -4,12 +4,26 @@
  * Automatically extracts personal facts, preferences, goals, and important
  * dates from each conversation exchange. Runs async after every response.
  *
- * Uses Claude haiku for extraction (fast, cheap) and rebuilds a user profile
- * narrative periodically.
+ * Uses Claude Haiku for extraction (primary) with Ollama as fallback.
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { callClaudeText } from "../claude.ts";
 import { callOllamaGenerate } from "../ollama.ts";
+import { checkSemanticDuplicate } from "../utils/semanticDuplicateChecker.ts";
+
+const MEMORY_SCORES: Record<string, { importance: number; stability: number }> = {
+  fact_personal: { importance: 0.85, stability: 0.90 },
+  fact_date:     { importance: 0.70, stability: 0.50 },
+  preference:    { importance: 0.70, stability: 0.75 },
+  goal:          { importance: 0.80, stability: 0.60 },
+};
+
+function getMemoryScores(type: string, category?: string): { importance: number; stability: number } {
+  if (type === "fact" && category === "date") return MEMORY_SCORES.fact_date;
+  if (type === "fact") return MEMORY_SCORES.fact_personal;
+  return MEMORY_SCORES[type] ?? { importance: 0.70, stability: 0.70 };
+}
 
 export interface ExtractedMemories {
   facts?: string[];
@@ -24,9 +38,8 @@ export interface ExchangeExtractionResult {
 }
 
 /**
- * Normalize Ollama output to ensure all fields are string arrays.
- * Ollama sometimes returns objects {} instead of arrays [], or arrays
- * containing non-string items. This sanitizes the raw parsed JSON.
+ * Normalize raw LLM output to ensure all fields are string arrays.
+ * Handles cases where the model returns objects or non-string items.
  */
 function sanitizeMemories(raw: unknown): ExtractedMemories {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
@@ -76,14 +89,14 @@ export async function extractAndStore(
   chatId: number,
   _userId: number,
   userMessage: string
-): Promise<ExtractedMemories> {
+): Promise<{ uncertain: ExtractedMemories; inserted: number }> {
   try {
     const { certain, uncertain } = await extractMemoriesFromExchange(userMessage);
-    await storeExtractedMemories(supabase, chatId, certain);
-    return uncertain;
+    const inserted = await storeExtractedMemories(supabase, chatId, certain);
+    return { uncertain, inserted };
   } catch (err) {
     console.error("extractAndStore failed:", err);
-    return {};
+    return { uncertain: {}, inserted: 0 };
   }
 }
 
@@ -126,7 +139,13 @@ export async function extractMemoriesFromExchange(
     `User message: ${userMessage.slice(0, 1000)}`;
 
   try {
-    const raw = await callOllamaGenerate(prompt, { timeoutMs: 20_000 });
+    let raw: string;
+    try {
+      raw = await callClaudeText(prompt, { timeoutMs: 15_000 });
+    } catch {
+      // Fallback to local Ollama when Claude CLI is unavailable
+      raw = await callOllamaGenerate(prompt, { timeoutMs: 20_000 });
+    }
     const text = raw.trim();
     if (!text || text === "{}") return empty;
 
@@ -147,12 +166,13 @@ export async function extractMemoriesFromExchange(
 /**
  * Store extracted memories in the memory table.
  * Skips items that are too short or appear to be junk.
+ * Each item is checked for semantic duplicates before inserting.
  */
 export async function storeExtractedMemories(
   supabase: SupabaseClient,
   chatId: number,
   memories: ExtractedMemories
-): Promise<void> {
+): Promise<number> {
   const isJunk = (s: unknown): boolean => typeof s !== 'string' || !s.trim() || s.trim().length < 5;
 
   const inserts: Array<{
@@ -162,10 +182,18 @@ export async function storeExtractedMemories(
     category: string;
     extracted_from_exchange: boolean;
     confidence: number;
+    importance: number;
+    stability: number;
   }> = [];
 
   for (const fact of Array.isArray(memories.facts) ? memories.facts : []) {
     if (!isJunk(fact)) {
+      const dup = await checkSemanticDuplicate(supabase, fact.trim(), "fact", chatId);
+      if (dup.isDuplicate) {
+        console.log(`[extractor] Skipping duplicate fact: "${fact}"`);
+        continue;
+      }
+      const scores = getMemoryScores("fact", "personal");
       inserts.push({
         type: "fact",
         content: fact.trim(),
@@ -173,12 +201,20 @@ export async function storeExtractedMemories(
         category: "personal",
         extracted_from_exchange: true,
         confidence: 0.9,
+        importance: scores.importance,
+        stability: scores.stability,
       });
     }
   }
 
   for (const pref of Array.isArray(memories.preferences) ? memories.preferences : []) {
     if (!isJunk(pref)) {
+      const dup = await checkSemanticDuplicate(supabase, pref.trim(), "preference", chatId);
+      if (dup.isDuplicate) {
+        console.log(`[extractor] Skipping duplicate preference: "${pref}"`);
+        continue;
+      }
+      const scores = getMemoryScores("preference");
       inserts.push({
         type: "preference",
         content: pref.trim(),
@@ -186,12 +222,20 @@ export async function storeExtractedMemories(
         category: "preference",
         extracted_from_exchange: true,
         confidence: 0.9,
+        importance: scores.importance,
+        stability: scores.stability,
       });
     }
   }
 
   for (const goal of Array.isArray(memories.goals) ? memories.goals : []) {
     if (!isJunk(goal)) {
+      const dup = await checkSemanticDuplicate(supabase, goal.trim(), "goal", chatId);
+      if (dup.isDuplicate) {
+        console.log(`[extractor] Skipping duplicate goal: "${goal}"`);
+        continue;
+      }
+      const scores = getMemoryScores("goal");
       inserts.push({
         type: "goal",
         content: goal.trim(),
@@ -199,12 +243,20 @@ export async function storeExtractedMemories(
         category: "goal",
         extracted_from_exchange: true,
         confidence: 0.9,
+        importance: scores.importance,
+        stability: scores.stability,
       });
     }
   }
 
   for (const date of Array.isArray(memories.dates) ? memories.dates : []) {
     if (!isJunk(date)) {
+      const dup = await checkSemanticDuplicate(supabase, date.trim(), "fact", chatId);
+      if (dup.isDuplicate) {
+        console.log(`[extractor] Skipping duplicate date: "${date}"`);
+        continue;
+      }
+      const scores = getMemoryScores("fact", "date");
       inserts.push({
         type: "fact",
         content: date.trim(),
@@ -212,16 +264,20 @@ export async function storeExtractedMemories(
         category: "date",
         extracted_from_exchange: true,
         confidence: 0.9,
+        importance: scores.importance,
+        stability: scores.stability,
       });
     }
   }
 
-  if (inserts.length === 0) return;
+  if (inserts.length === 0) return 0;
 
   try {
     await supabase.from("memory").insert(inserts);
+    return inserts.length;
   } catch (err) {
     console.error("storeExtractedMemories insert error:", err);
+    return 0;
   }
 }
 
@@ -239,6 +295,7 @@ export async function rebuildProfileSummary(
       .from("memory")
       .select("type, content, category, deadline")
       .in("type", ["fact", "preference", "goal"])
+      .eq("status", "active")
       .order("created_at", { ascending: false })
       .limit(100);
 
@@ -255,7 +312,7 @@ export async function rebuildProfileSummary(
     const raw_goals = goals.map((m: any) => ({ goal: m.content, deadline: m.deadline ?? null }));
     const raw_dates = dates.map((m: any) => ({ event: m.content }));
 
-    // Generate narrative profile via Claude haiku
+    // Generate narrative profile via Claude Haiku (Ollama as fallback)
     const memorySummary = [
       facts.length > 0 ? `Facts: ${facts.map((m: any) => m.content).join("; ")}` : "",
       prefs.length > 0 ? `Preferences: ${prefs.map((m: any) => m.content).join("; ")}` : "",
@@ -267,11 +324,18 @@ export async function rebuildProfileSummary(
 
     let profile_summary = memorySummary; // default fallback
     try {
-      const narrative = await callOllamaGenerate(
-        `Write a concise 2-3 sentence profile summary for this person based on these facts. ` +
-          `Plain text only:\n\n${memorySummary}`,
-        { timeoutMs: 20_000 }
-      );
+      let narrative: string;
+      try {
+        narrative = await callClaudeText(
+          `Write a concise 2-3 sentence profile summary for this person based on these facts. Plain text only:\n\n${memorySummary}`,
+          { timeoutMs: 15_000 }
+        );
+      } catch {
+        narrative = await callOllamaGenerate(
+          `Write a concise 2-3 sentence profile summary for this person based on these facts. Plain text only:\n\n${memorySummary}`,
+          { timeoutMs: 20_000 }
+        );
+      }
       if (narrative) profile_summary = narrative;
     } catch {
       // Keep fallback
