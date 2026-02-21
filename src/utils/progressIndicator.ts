@@ -48,6 +48,15 @@ function formatElapsed(ms: number): string {
   return `${minutes}m ${seconds < 10 ? "0" : ""}${seconds}s`;
 }
 
+/** Returns current wall-clock time as HH:MM:SS (24-hour). */
+function formatTimestamp(): string {
+  const d = new Date();
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  const ss = String(d.getSeconds()).padStart(2, "0");
+  return `${hh}:${mm}:${ss}`;
+}
+
 /** Truncate a string to at most maxChars, appending "…" if cut. */
 function truncate(s: string, maxChars: number): string {
   return s.length > maxChars ? s.slice(0, maxChars - 1) + "\u2026" : s;
@@ -70,9 +79,14 @@ export class ProgressIndicator {
 
   /**
    * Rolling buffer of the last N unique events (no consecutive duplicates).
+   * Each entry is pre-formatted as "[HH:MM:SS] summary".
    * Most-recent event is at the end.
    */
   private eventBuffer: string[] = [];
+  /** Raw (un-timestamped) text of the last pushed event — used for dedup. */
+  private lastRawEvent = "";
+  /** Short model label shown in each progress line, e.g. "Haiku", "Sonnet", "Opus". */
+  private modelLabel = "Sonnet";
 
   /**
    * Begin the progress indicator lifecycle.
@@ -181,15 +195,21 @@ export class ProgressIndicator {
   // Internal helpers
   // ------------------------------------------------------------------
 
+  /** Set the model label displayed in each progress line (e.g. "Haiku", "Sonnet", "Opus"). */
+  setModelLabel(label: string): void {
+    this.modelLabel = label;
+  }
+
   /**
    * Push an event into the rolling buffer.
-   * Skips the entry if it is identical to the most-recent event (dedup).
+   * Skips the entry if it is identical to the most-recent event (dedup on raw text).
+   * Stores entries as "[HH:MM:SS ModelLabel] summary" so each line shows when it arrived and which model is running.
    * Evicts the oldest entry when the buffer exceeds EVENT_BUFFER_SIZE.
    */
   private pushEvent(summary: string): void {
-    const last = this.eventBuffer[this.eventBuffer.length - 1];
-    if (last === summary) return; // consecutive duplicate — skip
-    this.eventBuffer.push(summary);
+    if (this.lastRawEvent === summary) return; // consecutive duplicate — skip
+    this.lastRawEvent = summary;
+    this.eventBuffer.push(`[${formatTimestamp()} ${this.modelLabel}] ${summary}`);
     if (this.eventBuffer.length > EVENT_BUFFER_SIZE) {
       this.eventBuffer.shift();
     }
@@ -294,6 +314,7 @@ export class ProgressIndicator {
     this.cancelKey = null;
     this.onMessageId = null;
     this.eventBuffer = [];
+    this.lastRawEvent = "";
     this.lastImmediateEdit = 0;
   }
 }

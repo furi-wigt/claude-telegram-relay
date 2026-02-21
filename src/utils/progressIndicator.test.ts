@@ -485,9 +485,11 @@ describe("ProgressIndicator", () => {
     const calls = (mockBot.api.editMessageText as any).mock.calls;
     const text = calls[calls.length - 1][2] as string;
     const lines = text.split("\n");
-    // Find the line containing the truncated event (not the header)
-    const eventLine = lines.find((l) => l.startsWith("x"));
+    // Find the line containing the truncated event (not the header).
+    // Each event line is prefixed with "[HH:MM:SS] " (11 chars) so we match on "x" content.
+    const eventLine = lines.find((l) => l.includes("x"));
     expect(eventLine).toBeDefined();
+    // Truncation limit is 80 chars and applies to the full stored string (timestamp + text).
     expect(eventLine!.length).toBeLessThanOrEqual(80);
     expect(eventLine!.endsWith("\u2026")).toBe(true); // ends with ellipsis
   });

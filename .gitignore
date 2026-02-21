@@ -33,5 +33,3 @@ Thumbs.db
 worktrees/
 current_session_id
 .claude/
-!.claude/plan/
-!.claude/plan/**

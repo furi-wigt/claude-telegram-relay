@@ -14,11 +14,11 @@
  * Target: General AI Assistant group
  *
  * Features:
- * 1. Singapore weather data from NEA API
- * 2. Task suggestions based on yesterday's activities and current goals
- * 3. Daily devotional from Gmail (stub for now)
- * 4. Interactive task confirmation
- * 5. Time reminders for confirmed tasks
+ * 1. Singapore weather: 2hr area forecasts (4 locations) + 24hr + air quality
+ * 2. Yesterday's recap as a Claude Haiku narrative summary
+ * 3. Daily devotional (stub — Gmail integration pending)
+ * 4. Suggested tasks calendar-aware, slotted around Apple Calendar events
+ * 5. HTML output via markdownToHtml, parseMode: "HTML"
  *
  * Run manually: bun run routines/enhanced-morning-summary.ts
  */
@@ -26,30 +26,45 @@
 import { createClient } from "@supabase/supabase-js";
 import { sendAndRecord } from "../src/utils/routineMessage.ts";
 import { GROUPS, validateGroup } from "../src/config/groups.ts";
-import { spawn } from "bun";
-import { getSingaporeWeather2Hr, getSingaporeWeatherOpenMeteo } from "../src/utils/weather.ts";
+import { markdownToHtml } from "../src/utils/htmlFormat.ts";
+import { claudeText } from "../src/claude-process.ts";
+import { createWeatherClient } from "../integrations/weather/index.ts";
+import {
+  createAppleCalendarClient,
+  type AppleCalendarEvent,
+} from "../integrations/osx-calendar/index.ts";
 
 const SUPABASE_URL = process.env.SUPABASE_URL || "";
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || "";
 const USER_NAME = process.env.USER_NAME || "there";
 const USER_TIMEZONE = process.env.USER_TIMEZONE || "Asia/Singapore";
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
-const CLAUDE_PATH = process.env.CLAUDE_PATH || "claude";
-const CLAUDE_TIMEOUT = parseInt(process.env.CLAUDE_TIMEOUT || "900000", 10);
+
+// ── Area targets for 2-hour forecast ─────────────────────────────────────────
+// Matched against NEA area names using case-insensitive substring search.
+
+const FORECAST_AREA_TARGETS = [
+  { label: "Toa Payoh",  match: "toa payoh" },
+  { label: "Novena",     match: "novena" },
+  { label: "Punggol",   match: "punggol" },
+  { label: "Clementi",  match: "clementi" },
+];
 
 // ============================================================
 // TYPES
 // ============================================================
 
-interface WeatherData {
-  summary: string;
-  timestamp: string;
+interface WeatherSection {
+  areaForecasts: { label: string; forecast: string }[];  // 2hr for 4 areas
+  summary24h: string;          // e.g. "Thundery Showers (25–33°C)"
+  airQuality: string;          // e.g. "PSI 42 (Good), PM2.5 12"
+  uvIndex: number;
 }
 
 interface YesterdayActivity {
   messageCount: number;
   factsLearned: number;
-  topicsDiscussed: string[];
+  messageContent: string[];    // up to 15 message snippets for Haiku recap
   completedGoals: string[];
 }
 
@@ -75,38 +90,47 @@ interface DevotionalContent {
 }
 
 // ============================================================
-// WEATHER FETCHER (Singapore NEA API)
+// WEATHER (integration layer)
 // ============================================================
 
-async function getWeather(): Promise<WeatherData> {
-  /**
-   * Uses Singapore weather utilities with automatic fallback
-   * 1. Tries NEA (data.gov.sg) first
-   * 2. Falls back to Open-Meteo if needed
-   */
+async function getWeatherData(): Promise<WeatherSection> {
+  const fallback: WeatherSection = {
+    areaForecasts: [],
+    summary24h: "Forecast unavailable",
+    airQuality: "Air quality unavailable",
+    uvIndex: 0,
+  };
 
   try {
-    const weatherSummary = await getSingaporeWeather2Hr();
-    return {
-      summary: weatherSummary,
-      timestamp: new Date().toISOString(),
-    };
-  } catch (error) {
-    console.warn("NEA API failed, trying Open-Meteo fallback:", error);
+    const weather = createWeatherClient();
+    const [summaryRes, twoHrRes] = await Promise.allSettled([
+      weather.getMorningSummary(),
+      weather.get2HourForecast(),
+    ]);
 
-    try {
-      const weatherSummary = await getSingaporeWeatherOpenMeteo();
-      return {
-        summary: weatherSummary,
-        timestamp: new Date().toISOString(),
-      };
-    } catch (fallbackError) {
-      console.error("All weather APIs failed:", fallbackError);
-      return {
-        summary: "Weather data unavailable",
-        timestamp: new Date().toISOString(),
-      };
+    // 2hr area forecasts — filter for 4 target locations
+    let areaForecasts: { label: string; forecast: string }[] = [];
+    if (twoHrRes.status === "fulfilled") {
+      const allAreas = twoHrRes.value;
+      areaForecasts = FORECAST_AREA_TARGETS.flatMap(({ label, match }) => {
+        const hit = allAreas.find(a => a.area.toLowerCase().includes(match));
+        return hit ? [{ label, forecast: hit.forecast }] : [];
+      });
     }
+
+    if (summaryRes.status === "rejected") {
+      return { ...fallback, areaForecasts };
+    }
+
+    return {
+      areaForecasts,
+      summary24h: summaryRes.value.forecast24h,
+      airQuality: summaryRes.value.airQuality,
+      uvIndex: summaryRes.value.uvIndex,
+    };
+  } catch (err) {
+    console.error("getWeatherData failed:", err);
+    return fallback;
   }
 }
 
@@ -115,31 +139,31 @@ async function getWeather(): Promise<WeatherData> {
 // ============================================================
 
 async function getYesterdaysActivity(): Promise<YesterdayActivity> {
-  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
-    return {
-      messageCount: 0,
-      factsLearned: 0,
-      topicsDiscussed: [],
-      completedGoals: [],
-    };
-  }
+  const empty: YesterdayActivity = {
+    messageCount: 0,
+    factsLearned: 0,
+    messageContent: [],
+    completedGoals: [],
+  };
+
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return empty;
 
   try {
     const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
     const yesterday = new Date();
     yesterday.setDate(yesterday.getDate() - 1);
     yesterday.setHours(0, 0, 0, 0);
-
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    // Get message count and facts
     const [messagesResult, factsResult, goalsResult] = await Promise.all([
       supabase
         .from("messages")
         .select("id, content", { count: "exact" })
         .gte("created_at", yesterday.toISOString())
-        .lt("created_at", today.toISOString()),
+        .lt("created_at", today.toISOString())
+        .order("created_at", { ascending: false })
+        .limit(15),
       supabase
         .from("memory")
         .select("id", { count: "exact", head: true })
@@ -155,41 +179,62 @@ async function getYesterdaysActivity(): Promise<YesterdayActivity> {
         .lt("completed_at", today.toISOString()),
     ]);
 
-    // Extract topics from messages (simple keyword extraction)
-    const topics = extractTopicsFromMessages(messagesResult.data || []);
+    const messageContent = (messagesResult.data || [])
+      .map((m: any) => (m.content || "").slice(0, 200))
+      .filter(Boolean);
 
     return {
       messageCount: messagesResult.count || 0,
       factsLearned: factsResult.count || 0,
-      topicsDiscussed: topics,
+      messageContent,
       completedGoals: goalsResult.data?.map((g: any) => g.content) || [],
     };
   } catch (error) {
     console.error("Error fetching yesterday's activity:", error);
-    return {
-      messageCount: 0,
-      factsLearned: 0,
-      topicsDiscussed: [],
-      completedGoals: [],
-    };
+    return empty;
   }
 }
 
-function extractTopicsFromMessages(messages: any[]): string[] {
-  // Simple topic extraction - can be enhanced with NLP
-  const topics = new Set<string>();
-  const keywords = ["project", "meeting", "code", "design", "deployment", "review", "testing"];
+// ============================================================
+// RECAP NARRATIVE (Claude Haiku)
+// ============================================================
 
-  messages.forEach((msg: any) => {
-    const content = msg.content?.toLowerCase() || "";
-    keywords.forEach((keyword) => {
-      if (content.includes(keyword)) {
-        topics.add(keyword);
-      }
+async function generateRecapNarrative(activity: YesterdayActivity): Promise<string> {
+  if (activity.messageCount === 0) {
+    return "No conversations recorded yesterday.";
+  }
+
+  const sampleContent = activity.messageContent
+    .slice(0, 10)
+    .map((c, i) => `[${i + 1}] ${c}`)
+    .join("\n");
+
+  const completedStr = activity.completedGoals.length > 0
+    ? `Completed goals: ${activity.completedGoals.join(", ")}.`
+    : "No goals were completed.";
+
+  const prompt =
+    `Summarize yesterday's AI assistant activity in 2-3 sentences for a morning briefing.\n\n` +
+    `Stats: ${activity.messageCount} messages, ${activity.factsLearned} new facts learned.\n` +
+    `${completedStr}\n\n` +
+    `Sample messages:\n${sampleContent}\n\n` +
+    `Write a concise, specific narrative in past tense. Plain text only, no markdown, no bullet points.`;
+
+  try {
+    const narrative = await claudeText(prompt, {
+      model: "claude-haiku-4-5-20251001",
+      timeoutMs: 20_000,
     });
-  });
-
-  return Array.from(topics);
+    return narrative.trim();
+  } catch (err) {
+    console.warn("Haiku recap failed, using fallback:", err);
+    const parts: string[] = [`${activity.messageCount} messages exchanged`];
+    if (activity.factsLearned > 0) parts.push(`${activity.factsLearned} facts learned`);
+    if (activity.completedGoals.length > 0) {
+      parts.push(`completed: ${activity.completedGoals.join(", ")}`);
+    }
+    return parts.join(", ") + ".";
+  }
 }
 
 // ============================================================
@@ -224,71 +269,57 @@ async function getActiveGoals(): Promise<Goal[]> {
 }
 
 // ============================================================
-// CLAUDE HELPER
+// CALENDAR (OSX integration — null-safe)
 // ============================================================
 
-async function callClaude(prompt: string): Promise<string> {
-  const args = [CLAUDE_PATH, "-p", prompt, "--output-format", "text"];
-
-  console.log(`Calling Claude for task suggestions...`);
-
+async function getTodayCalendarEvents(): Promise<AppleCalendarEvent[] | null> {
   try {
-    // Remove CLAUDECODE to prevent nested session detection
-    const env = { ...process.env };
-    delete env.CLAUDECODE;
-
-    const proc = spawn(args, {
-      stdout: "pipe",
-      stderr: "pipe",
-      env: env,
-    });
-
-    const timeout = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error(`Claude timeout after ${CLAUDE_TIMEOUT / 1000}s`)), CLAUDE_TIMEOUT)
-    );
-
-    const [output, stderr, exitCode] = await Promise.race([
-      Promise.all([
-        new Response(proc.stdout).text(),
-        new Response(proc.stderr).text(),
-        proc.exited
-      ]),
-      timeout
-    ]).catch(error => {
-      proc.kill();
-      throw error;
-    });
-
-    if (exitCode !== 0) {
-      console.error("Claude error:", stderr);
-      return "";
-    }
-
-    return output.trim();
-  } catch (error) {
-    console.error("Claude call error:", error);
-    return "";
+    const cal = await createAppleCalendarClient();
+    if (!cal) return null;
+    return await cal.getTodayEvents();
+  } catch (err) {
+    console.warn("Calendar fetch failed:", err);
+    return null;
   }
 }
 
+function formatCalendarEvent(e: AppleCalendarEvent): string {
+  if (e.isAllDay) return `All day — ${e.title}`;
+  const startStr = e.start.toLocaleTimeString("en-SG", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    timeZone: USER_TIMEZONE,
+  });
+  const endStr = e.end.toLocaleTimeString("en-SG", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    timeZone: USER_TIMEZONE,
+  });
+  return `${startStr}–${endStr} — ${e.title}`;
+}
+
 // ============================================================
-// TASK SUGGESTION ENGINE (AI-Powered)
+// TASK SUGGESTION ENGINE
 // ============================================================
 
 async function suggestTasks(
   activity: YesterdayActivity,
-  goals: Goal[]
+  goals: Goal[],
+  calendarEvents: AppleCalendarEvent[] | null
 ): Promise<SuggestedTask[]> {
-  // Build context for Claude
+  const calendarContext = calendarEvents === null
+    ? "Calendar access not available."
+    : calendarEvents.length === 0
+      ? "No calendar events today."
+      : `Today's calendar events (slot tasks around these):\n` +
+        calendarEvents.map(formatCalendarEvent).join("\n");
+
   const context = {
     user: USER_NAME,
     timezone: USER_TIMEZONE,
-    yesterday: {
-      messageCount: activity.messageCount,
-      factsLearned: activity.factsLearned,
-      topicsDiscussed: activity.topicsDiscussed,
-      completedGoals: activity.completedGoals,
-    },
+    currentTime: new Date().toISOString(),
     activeGoals: goals.map(g => ({
       content: g.content,
       deadline: g.deadline,
@@ -297,67 +328,41 @@ async function suggestTasks(
         ? Math.ceil((new Date(g.deadline).getTime() - Date.now()) / (1000 * 60 * 60 * 24))
         : null,
     })),
-    currentTime: new Date().toISOString(),
   };
 
-  const prompt = `You are a personal task planner. Based on the user's context below, suggest 3-5 actionable tasks for today.
-
-Context:
-${JSON.stringify(context, null, 2)}
-
-Requirements:
-1. Prioritize urgent goals (deadlines within 3 days)
-2. Consider yesterday's activity and topics
-3. Include high-priority goals
-4. Suggest realistic time slots (08:00 - 18:00)
-5. Estimate duration in minutes (15-120 range)
-6. Provide clear rationale for each task
-
-Output ONLY valid JSON array in this exact format:
-[
-  {
-    "description": "Task description",
-    "rationale": "Why this task is important",
-    "suggestedTime": "HH:MM",
-    "estimatedDuration": 60,
-    "relatedGoal": "goal-id or null"
-  }
-]
-
-Do not include any explanation, markdown formatting, or extra text. Just the JSON array.`;
+  const prompt =
+    `You are a personal task planner. Suggest 3-5 actionable tasks for today.\n\n` +
+    `Calendar:\n${calendarContext}\n\n` +
+    `Goals:\n${JSON.stringify(context.activeGoals, null, 2)}\n\n` +
+    `Requirements:\n` +
+    `1. Prioritise goals with deadlines within 3 days\n` +
+    `2. Suggest realistic time slots (08:00–18:00) that do not overlap calendar events\n` +
+    `3. Estimate duration 15–120 minutes\n` +
+    `4. Provide a brief rationale for each task\n\n` +
+    `Output ONLY a valid JSON array:\n` +
+    `[{"description":"...","rationale":"...","suggestedTime":"HH:MM","estimatedDuration":60,"relatedGoal":"id or null"}]\n` +
+    `No explanation, no markdown, just the JSON array.`;
 
   try {
-    const response = await callClaude(prompt);
+    const response = await claudeText(prompt, {
+      model: "claude-haiku-4-5-20251001",
+      timeoutMs: 30_000,
+    });
 
-    if (!response) {
-      console.warn("Claude returned empty response, using fallback");
-      return getFallbackTasks(activity, goals);
-    }
+    if (!response) return getFallbackTasks(goals);
 
-    // Strip markdown code fences if present (```json ... ``` or ``` ... ```)
     let jsonText = response.trim();
-    if (jsonText.startsWith('```')) {
-      // Remove opening ``` and optional language identifier
-      jsonText = jsonText.replace(/^```(?:json)?\n?/, '');
-      // Remove closing ```
-      jsonText = jsonText.replace(/\n?```$/, '');
+    if (jsonText.startsWith("```")) {
+      jsonText = jsonText.replace(/^```(?:json)?\n?/, "").replace(/\n?```$/, "");
     }
 
-    // Try to parse Claude's response
     const tasks = JSON.parse(jsonText);
+    if (!Array.isArray(tasks)) return getFallbackTasks(goals);
 
-    if (!Array.isArray(tasks)) {
-      console.warn("Claude response is not an array, using fallback");
-      return getFallbackTasks(activity, goals);
-    }
-
-    // Validate and transform tasks
-    const validatedTasks: SuggestedTask[] = tasks
-      .filter((t: any) =>
-        t.description &&
-        t.rationale &&
-        t.suggestedTime &&
-        typeof t.estimatedDuration === 'number'
+    const validated: SuggestedTask[] = tasks
+      .filter(
+        (t: any) =>
+          t.description && t.rationale && t.suggestedTime && typeof t.estimatedDuration === "number"
       )
       .map((t: any) => ({
         description: t.description,
@@ -367,58 +372,44 @@ Do not include any explanation, markdown formatting, or extra text. Just the JSO
         relatedGoal: t.relatedGoal || undefined,
       }));
 
-    if (validatedTasks.length === 0) {
-      console.warn("No valid tasks from Claude, using fallback");
-      return getFallbackTasks(activity, goals);
-    }
+    if (validated.length === 0) return getFallbackTasks(goals);
 
-    console.log(`✓ Generated ${validatedTasks.length} AI-powered task suggestions`);
-    return validatedTasks;
-
+    console.log(`✓ Generated ${validated.length} task suggestions`);
+    return validated;
   } catch (error) {
-    console.error("Error parsing Claude response:", error);
-    console.warn("Using fallback task suggestions");
-    return getFallbackTasks(activity, goals);
+    console.error("suggestTasks error:", error);
+    return getFallbackTasks(goals);
   }
 }
 
-// Fallback task generation (simple heuristics)
-function getFallbackTasks(
-  activity: YesterdayActivity,
-  goals: Goal[]
-): SuggestedTask[] {
+function getFallbackTasks(goals: Goal[]): SuggestedTask[] {
   const tasks: SuggestedTask[] = [];
 
-  // Urgent goals
-  const urgentGoals = goals.filter((g) => {
+  const urgentGoals = goals.filter(g => {
     if (!g.deadline) return false;
-    const daysUntil = Math.ceil((new Date(g.deadline).getTime() - Date.now()) / (1000 * 60 * 60 * 24));
-    return daysUntil <= 3 && daysUntil >= 0;
+    const days = Math.ceil((new Date(g.deadline).getTime() - Date.now()) / 864e5);
+    return days <= 3 && days >= 0;
   });
-
-  urgentGoals.forEach((goal) => {
+  urgentGoals.forEach(g => {
     tasks.push({
-      description: `Work on: ${goal.content}`,
-      rationale: `Deadline approaching (${new Date(goal.deadline!).toLocaleDateString()})`,
+      description: `Work on: ${g.content}`,
+      rationale: `Deadline: ${new Date(g.deadline!).toLocaleDateString()}`,
       suggestedTime: "09:00",
       estimatedDuration: 120,
-      relatedGoal: goal.id,
+      relatedGoal: g.id,
     });
   });
 
-  // High-priority goals
-  const highPriorityGoals = goals.filter((g) => g.priority === "high");
-  highPriorityGoals.slice(0, 2).forEach((goal) => {
+  goals.filter(g => g.priority === "high").slice(0, 2).forEach(g => {
     tasks.push({
-      description: `High priority: ${goal.content}`,
-      rationale: "Marked as high priority",
+      description: g.content,
+      rationale: "High priority goal",
       suggestedTime: "11:00",
       estimatedDuration: 90,
-      relatedGoal: goal.id,
+      relatedGoal: g.id,
     });
   });
 
-  // Default routine task
   tasks.push({
     description: "Review and respond to messages",
     rationale: "Daily routine",
@@ -430,30 +421,11 @@ function getFallbackTasks(
 }
 
 // ============================================================
-// GMAIL DEVOTIONAL READER (STUB)
+// GMAIL DEVOTIONAL (STUB)
 // ============================================================
 
 async function getDailyDevotional(): Promise<DevotionalContent | null> {
-  /**
-   * STUB: Gmail connector to be implemented
-   *
-   * Future implementation:
-   * 1. Connect to Gmail API using MCP or direct API
-   * 2. Search for emails with subject "Daily Devotional" or from specific sender
-   * 3. Extract passage, reference, and reflection from email body
-   * 4. Parse and structure the content
-   *
-   * For now, returning a placeholder structure
-   */
-
   // TODO: Implement Gmail API connector
-  // const gmail = await connectToGmail("furi.karnapi@gmail.com");
-  // const devotional = await gmail.searchEmails({
-  //   from: "devotional@example.com",
-  //   subject: "Daily Devotional",
-  //   after: new Date().toISOString().split("T")[0]
-  // });
-
   return {
     passage: "[Devotional passage will be fetched from Gmail]",
     reference: "Placeholder Reference",
@@ -462,7 +434,7 @@ async function getDailyDevotional(): Promise<DevotionalContent | null> {
 }
 
 // ============================================================
-// BUILD ENHANCED BRIEFING
+// BUILD BRIEFING (HTML output)
 // ============================================================
 
 async function buildEnhancedBriefing(): Promise<{
@@ -477,83 +449,96 @@ async function buildEnhancedBriefing(): Promise<{
     timeZone: USER_TIMEZONE,
   });
 
-  const [weather, goals, activity, devotional] = await Promise.all([
-    getWeather(),
+  // Parallel fetches
+  const [weatherData, goals, activity, devotional, calendarEvents] = await Promise.all([
+    getWeatherData(),
     getActiveGoals(),
     getYesterdaysActivity(),
     getDailyDevotional(),
+    getTodayCalendarEvents(),
   ]);
 
-  const suggestedTasks = await suggestTasks(activity, goals);
+  // Sequential: needs activity + goals + calendar
+  const [recapNarrative, suggestedTasks] = await Promise.all([
+    generateRecapNarrative(activity),
+    suggestTasks(activity, goals, calendarEvents),
+  ]);
 
   const lines: string[] = [];
 
-  // Header
-  lines.push(`🌅 Good morning ${USER_NAME}!`);
-  lines.push(`${dateStr}`);
+  // ── Header ──────────────────────────────────────────────────────────────────
+  lines.push(`🌅 **Good morning ${USER_NAME}!**`);
+  lines.push(dateStr);
   lines.push("");
 
-  // Weather
-  lines.push(`🌤️ **Weather (Singapore)**`);
-  lines.push(weather.summary);
+  // ── Weather ─────────────────────────────────────────────────────────────────
+  lines.push(`🌤️ **Weather Update**`);
+
+  if (weatherData.areaForecasts.length > 0) {
+    lines.push("_2-hour forecast:_");
+    weatherData.areaForecasts.forEach(({ label, forecast }) => {
+      lines.push(`• ${label}: ${forecast}`);
+    });
+  }
+
+  lines.push(`_Today:_ ${weatherData.summary24h}`);
+  lines.push(`_Air quality:_ ${weatherData.airQuality}`);
+  if (weatherData.uvIndex > 0) {
+    lines.push(`_UV index:_ ${weatherData.uvIndex}`);
+  }
   lines.push("");
 
-  // Yesterday's recap
+  // ── Yesterday's Recap ───────────────────────────────────────────────────────
   if (activity.messageCount > 0 || activity.completedGoals.length > 0) {
     lines.push(`📊 **Yesterday's Recap**`);
-    lines.push(`- ${activity.messageCount} messages exchanged`);
-    lines.push(`- ${activity.factsLearned} new facts learned`);
-
-    if (activity.topicsDiscussed.length > 0) {
-      lines.push(`- Topics: ${activity.topicsDiscussed.join(", ")}`);
-    }
-
-    if (activity.completedGoals.length > 0) {
-      lines.push(`- ✅ Completed: ${activity.completedGoals.join(", ")}`);
-    }
+    lines.push(recapNarrative);
     lines.push("");
   }
 
-  // Active goals
+  // ── Active Goals ────────────────────────────────────────────────────────────
   if (goals.length > 0) {
     lines.push(`🎯 **Active Goals**`);
-    goals.slice(0, 5).forEach((g) => {
+    goals.slice(0, 5).forEach(g => {
       const deadline = g.deadline
-        ? ` (by ${new Date(g.deadline).toLocaleDateString()})`
+        ? ` _(by ${new Date(g.deadline).toLocaleDateString()})_`
         : "";
       const priority = g.priority === "high" ? "⚡ " : "";
-      lines.push(`- ${priority}${g.content}${deadline}`);
+      lines.push(`• ${priority}${g.content}${deadline}`);
     });
     lines.push("");
   }
 
-  // Daily devotional
+  // ── Calendar ────────────────────────────────────────────────────────────────
+  if (calendarEvents !== null && calendarEvents.length > 0) {
+    lines.push(`📅 **Today's Calendar**`);
+    calendarEvents.forEach(e => {
+      lines.push(`• ${formatCalendarEvent(e)}`);
+    });
+    lines.push("");
+  }
+
+  // ── Devotional ──────────────────────────────────────────────────────────────
   if (devotional) {
     lines.push(`📖 **Daily Devotional**`);
-    lines.push(`${devotional.reference}`);
+    lines.push(`_${devotional.reference}_`);
     lines.push(`"${devotional.passage}"`);
-    lines.push(`${devotional.reflection}`);
+    lines.push(devotional.reflection);
     lines.push("");
   }
 
-  // Suggested tasks
+  // ── Suggested Tasks ─────────────────────────────────────────────────────────
   if (suggestedTasks.length > 0) {
     lines.push(`✅ **Suggested Tasks for Today**`);
-    lines.push(`Based on your goals and yesterday's activity:`);
-    lines.push("");
-
     suggestedTasks.forEach((task, idx) => {
-      lines.push(`${idx + 1}. [${task.suggestedTime}] ${task.description}`);
-      lines.push(`   ${task.rationale} (Est. ${task.estimatedDuration}min)`);
+      lines.push(`${idx + 1}. **[${task.suggestedTime}]** ${task.description}`);
+      lines.push(`   _${task.rationale}_ (${task.estimatedDuration} min)`);
     });
     lines.push("");
-    lines.push(`Please reply "confirm" to add these to your reminders, or "skip" to proceed without.`);
+    lines.push(`_Reply "confirm" to set reminders, or "skip" to proceed._`);
   }
 
-  return {
-    message: lines.join("\n"),
-    tasks: suggestedTasks,
-  };
+  const htmlMessage = markdownToHtml(lines.join("\n"));
+  return { message: htmlMessage, tasks: suggestedTasks };
 }
 
 // ============================================================
@@ -561,13 +546,8 @@ async function buildEnhancedBriefing(): Promise<{
 // ============================================================
 
 async function scheduleTaskReminders(tasks: SuggestedTask[]): Promise<void> {
-  /**
-   * Schedules Telegram reminders for confirmed tasks
-   * Uses Telegram's sendMessage with scheduled time
-   */
-
   if (!BOT_TOKEN || !GROUPS.GENERAL.chatId) {
-    console.warn("Cannot schedule reminders - missing bot token or chat ID");
+    console.warn("Cannot schedule reminders — missing bot token or chat ID");
     return;
   }
 
@@ -579,31 +559,23 @@ async function scheduleTaskReminders(tasks: SuggestedTask[]): Promise<void> {
     const reminderTime = new Date(today);
     reminderTime.setHours(hours, minutes, 0, 0);
 
-    // Skip if time has passed
     if (reminderTime <= new Date()) continue;
 
     const delayMs = reminderTime.getTime() - Date.now();
-
-    // Schedule reminder
     setTimeout(async () => {
-      const message = `⏰ Reminder: ${task.description}\n(Est. ${task.estimatedDuration} minutes)`;
-
+      const text = `⏰ Reminder: ${task.description}\n(Est. ${task.estimatedDuration} min)`;
       try {
         await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            chat_id: chatId,
-            text: message,
-          }),
+          body: JSON.stringify({ chat_id: chatId, text }),
         });
-        console.log(`Reminder sent for: ${task.description}`);
-      } catch (error) {
-        console.error(`Failed to send reminder for ${task.description}:`, error);
+      } catch (err) {
+        console.error(`Failed to send reminder for ${task.description}:`, err);
       }
     }, delayMs);
 
-    console.log(`Scheduled reminder for ${task.suggestedTime}: ${task.description}`);
+    console.log(`Scheduled reminder ${task.suggestedTime}: ${task.description}`);
   }
 }
 
@@ -621,19 +593,20 @@ async function main() {
   }
 
   const { message, tasks } = await buildEnhancedBriefing();
-  await sendAndRecord(GROUPS.GENERAL.chatId, message, { routineName: 'morning-summary', agentId: 'general-assistant' });
+  await sendAndRecord(GROUPS.GENERAL.chatId, message, {
+    routineName: "morning-summary",
+    agentId: "general-assistant",
+    parseMode: "HTML",
+    topicId: GROUPS.GENERAL.topicId,
+  });
   console.log("Enhanced morning summary sent to General group");
 
-  // Note: Task confirmation and reminder scheduling would be handled
-  // by the interactive response from the user in the main relay loop
-  // For standalone execution, we can save tasks to Supabase for later pickup
   if (tasks.length > 0) {
     console.log(`${tasks.length} tasks suggested, awaiting user confirmation`);
-    // TODO: Store suggested tasks in Supabase for relay to pick up
   }
 }
 
-main().catch((error) => {
+main().catch(error => {
   console.error("Error running enhanced morning summary:", error);
   process.exit(1);
 });
@@ -643,20 +616,21 @@ main().catch((error) => {
 // ============================================================
 
 export {
-  getWeather,
+  getWeatherData,
   getYesterdaysActivity,
   getActiveGoals,
+  getTodayCalendarEvents,
+  generateRecapNarrative,
   suggestTasks,
   getDailyDevotional,
   buildEnhancedBriefing,
   scheduleTaskReminders,
-  extractTopicsFromMessages,
-  callClaude,
   getFallbackTasks,
+  formatCalendarEvent,
 };
 
 export type {
-  WeatherData,
+  WeatherSection,
   YesterdayActivity,
   Goal,
   SuggestedTask,

@@ -1,21 +1,21 @@
 /**
  * Central registry of Telegram group chat IDs and topic IDs.
  *
- * Each group maps to a specialized agent. Routine scripts use these
- * IDs to send messages to the correct group (and optional forum topic)
- * so the right agent processes and responds.
+ * Built dynamically from config/agents.json at startup — no hardcoded groups.
+ * To add or remove a group, edit config/agents.json (set groupKey, chatId,
+ * topicId, codingTopicId) and restart the service.
  *
- * Populated from .env variables (GROUP_*_CHAT_ID, GROUP_*_TOPIC_ID).
  * topicId corresponds to Telegram's message_thread_id for forum supergroups.
  * Set to null if the group has no forum topics or if targeting root chat.
  */
 
 import { readFileSync } from "fs";
 import { join, dirname } from "path";
+import { AGENTS } from "../agents/config.ts";
 
 const PROJECT_ROOT = join(dirname(dirname(dirname(import.meta.path))));
 
-// Load .env for standalone script usage
+// Load .env for standalone script usage (routines run outside the main relay process)
 function loadEnv(): void {
   try {
     const envPath = join(PROJECT_ROOT, ".env");
@@ -45,34 +45,16 @@ export interface GroupEntry {
   topicId: number | null;
 }
 
-function parseTopicId(env: string | undefined): number | null {
-  if (!env) return null;
-  const n = parseInt(env, 10);
-  return isNaN(n) ? null : n;
-}
+// Build GROUPS from agents.json — keyed by groupKey (e.g. "GENERAL", "AWS_ARCHITECT")
+export const GROUPS: Record<string, GroupEntry> = {};
 
-export const GROUPS: Record<string, GroupEntry> = {
-  GENERAL: {
-    chatId: parseInt(process.env.GROUP_GENERAL_CHAT_ID || "0"),
-    topicId: parseTopicId(process.env.GROUP_GENERAL_TOPIC_ID),
-  },
-  AWS_ARCHITECT: {
-    chatId: parseInt(process.env.GROUP_AWS_CHAT_ID || "0"),
-    topicId: parseTopicId(process.env.GROUP_AWS_TOPIC_ID),
-  },
-  SECURITY: {
-    chatId: parseInt(process.env.GROUP_SECURITY_CHAT_ID || "0"),
-    topicId: parseTopicId(process.env.GROUP_SECURITY_TOPIC_ID),
-  },
-  CODE_QUALITY: {
-    chatId: parseInt(process.env.GROUP_CODE_CHAT_ID || "0"),
-    topicId: parseTopicId(process.env.GROUP_CODE_TOPIC_ID),
-  },
-  DOCUMENTATION: {
-    chatId: parseInt(process.env.GROUP_DOCS_CHAT_ID || "0"),
-    topicId: parseTopicId(process.env.GROUP_DOCS_TOPIC_ID),
-  },
-};
+for (const agent of Object.values(AGENTS)) {
+  if (!agent.groupKey) continue;
+  GROUPS[agent.groupKey] = {
+    chatId: agent.chatId ?? 0,
+    topicId: agent.topicId ?? null,
+  };
+}
 
 /**
  * Validate that required groups are configured.
@@ -86,7 +68,7 @@ export function validateGroups(requiredGroups?: string[]): boolean {
 
   if (missing.length > 0) {
     console.warn(`Missing group IDs: ${missing.join(", ")}`);
-    console.warn("Set these in .env (e.g., GROUP_GENERAL_CHAT_ID=-100xxx)");
+    console.warn("Set chatId for these groups in config/agents.json");
     return false;
   }
 

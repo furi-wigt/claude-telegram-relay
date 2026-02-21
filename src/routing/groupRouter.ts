@@ -7,7 +7,7 @@
  */
 
 import type { Context } from "grammy";
-import { AgentConfig, AGENTS } from "../agents/config.ts";
+import { AgentConfig, AGENTS, DEFAULT_AGENT } from "../agents/config.ts";
 
 // Runtime mapping: chat ID -> agent config
 const chatIdToAgent = new Map<number, AgentConfig>();
@@ -30,7 +30,7 @@ export function registerGroup(chatId: number, agentId: string): void {
  * Falls back to general-assistant for unregistered chats (including DMs).
  */
 export function getAgentForChat(chatId: number): AgentConfig {
-  return chatIdToAgent.get(chatId) || AGENTS["general-assistant"];
+  return chatIdToAgent.get(chatId) || DEFAULT_AGENT;
 }
 
 /**
@@ -89,26 +89,16 @@ export async function autoDiscoverGroup(ctx: Context): Promise<void> {
 }
 
 /**
- * Load group mappings from environment variables.
+ * Load group mappings from agents.json.
  * Called once at startup.
  */
 export function loadGroupMappings(): void {
-  const mappings = [
-    { envKey: "GROUP_AWS_CHAT_ID", agentId: "aws-architect" },
-    { envKey: "GROUP_SECURITY_CHAT_ID", agentId: "security-analyst" },
-    { envKey: "GROUP_DOCS_CHAT_ID", agentId: "documentation-specialist" },
-    { envKey: "GROUP_CODE_CHAT_ID", agentId: "code-quality-coach" },
-    { envKey: "GROUP_GENERAL_CHAT_ID", agentId: "general-assistant" },
-  ];
-
-  for (const { envKey, agentId } of mappings) {
-    const chatId = process.env[envKey];
-    if (chatId) {
-      registerGroup(parseInt(chatId, 10), agentId);
-    }
+  for (const agent of Object.values(AGENTS)) {
+    if (!agent.chatId) continue;
+    registerGroup(agent.chatId, agent.id);
   }
 
-  console.log(`Loaded ${chatIdToAgent.size} group mappings from environment`);
+  console.log(`Loaded ${chatIdToAgent.size} group mappings from agents.json`);
 }
 
 /**

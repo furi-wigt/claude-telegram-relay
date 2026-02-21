@@ -161,6 +161,8 @@ export interface ClaudeStreamOptions {
    * The stream is NOT killed — the user can manually cancel via /cancel or the Cancel button.
    */
   onSoftCeiling?: (message: string) => void;
+  /** Claude model to use (e.g. "claude-haiku-4-5-20251001"). Omit to use CLI default. */
+  model?: string;
 }
 
 /**
@@ -185,6 +187,9 @@ export async function claudeStream(
     args.push("--resume", options.sessionId);
   }
   args.push("--output-format", "stream-json", "--verbose");
+  if (options?.model) {
+    args.push("--model", options.model);
+  }
 
   const env = buildClaudeEnv();
 

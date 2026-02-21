@@ -145,9 +145,9 @@ export async function get2HourForecast(): Promise<AreaForecast[]> {
 
 interface TwentyFourHrResponse {
   data?: {
-    items?: Array<{
+    records?: Array<{
       general?: {
-        forecast?: string;
+        forecast?: { code?: string; text?: string };
         temperature?: { low?: number; high?: number };
         relativeHumidity?: { low?: number; high?: number };
       };
@@ -167,13 +167,13 @@ interface TwentyFourHrResponse {
 
 export async function get24HourForecast(): Promise<DayForecast24> {
   const data = await neaFetch<TwentyFourHrResponse>("/twenty-four-hr-forecast", TTL.TWENTY_FOUR_HR);
-  const item = data.data?.items?.[0];
+  const item = data.data?.records?.[0];
   const general = item?.general ?? {};
   const periods = item?.periods ?? [];
 
   return {
     general: {
-      forecast: general.forecast ?? "Unknown",
+      forecast: general.forecast?.text ?? "Unknown",
       temperature: {
         low: general.temperature?.low ?? 0,
         high: general.temperature?.high ?? 0,
@@ -237,8 +237,14 @@ interface PSIResponse {
   data?: {
     items?: Array<{
       readings?: {
-        psiTwentyFourHourly?: {
-          national?: number;
+        psi_twenty_four_hourly?: {
+          north?: number;
+          south?: number;
+          east?: number;
+          west?: number;
+          central?: number;
+        };
+        pm25_twenty_four_hourly?: {
           north?: number;
           south?: number;
           east?: number;
@@ -254,15 +260,31 @@ interface PSIResponse {
 export async function getPSI(): Promise<PSIReading> {
   const data = await neaFetch<PSIResponse>("/psi", TTL.PSI);
   const item = data.data?.items?.[0];
-  const readings = item?.readings?.psiTwentyFourHourly ?? {};
+  const psi = item?.readings?.psi_twenty_four_hourly ?? {};
+  const pm25 = item?.readings?.pm25_twenty_four_hourly ?? {};
+
+  const north = psi.north ?? 0;
+  const south = psi.south ?? 0;
+  const east = psi.east ?? 0;
+  const west = psi.west ?? 0;
+  const central = psi.central ?? 0;
+  const national = Math.max(north, south, east, west, central);
+
+  const pm25_north = pm25.north ?? 0;
+  const pm25_south = pm25.south ?? 0;
+  const pm25_east = pm25.east ?? 0;
+  const pm25_west = pm25.west ?? 0;
+  const pm25_central = pm25.central ?? 0;
+  const pm25_national = Math.max(pm25_north, pm25_south, pm25_east, pm25_west, pm25_central) || undefined;
 
   return {
-    national: readings.national ?? 0,
-    north: readings.north ?? 0,
-    south: readings.south ?? 0,
-    east: readings.east ?? 0,
-    west: readings.west ?? 0,
-    central: readings.central ?? 0,
+    national,
+    north,
+    south,
+    east,
+    west,
+    central,
+    pm25_national,
     timestamp: new Date(item?.timestamp ?? Date.now()),
   };
 }

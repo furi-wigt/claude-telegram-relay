@@ -591,6 +591,7 @@ async function main(): Promise<void> {
     await sendAndRecord(GROUPS.GENERAL.chatId, message, {
       routineName: "memory-cleanup",
       agentId: "general-assistant",
+      topicId: GROUPS.GENERAL.topicId,
     });
     console.log("Summary sent to General group");
   } else if (result.duplicatesFound === 0) {

@@ -308,7 +308,8 @@ async function main() {
     // Still alert since this is unexpected if the watchdog itself is running via PM2
     await sendToGroup(
       GROUPS.GENERAL.chatId,
-      "Watchdog: No PM2 processes detected. PM2 may not be running or ecosystem is not started. Run: npx pm2 start ecosystem.config.cjs"
+      "Watchdog: No PM2 processes detected. PM2 may not be running or ecosystem is not started. Run: npx pm2 start ecosystem.config.cjs",
+      { topicId: GROUPS.GENERAL.topicId }
     );
     return;
   }
@@ -321,7 +322,7 @@ async function main() {
   const alert = buildAlert(issues, statusLines);
 
   if (alert) {
-    await sendToGroup(GROUPS.GENERAL.chatId, alert);
+    await sendToGroup(GROUPS.GENERAL.chatId, alert, { topicId: GROUPS.GENERAL.topicId });
     console.log("Alert sent to General group");
   } else {
     console.log("All processes healthy — no alert needed");

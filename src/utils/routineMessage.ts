@@ -22,6 +22,7 @@ export interface RoutineMessageOptions {
   parseMode?: "Markdown" | "HTML";
   routineName: string;  // e.g. 'smart-checkin', 'morning-summary'
   agentId?: string;     // e.g. 'general-assistant', 'aws-architect'
+  topicId?: number | null;  // forum topic thread ID (message_thread_id)
 }
 
 /**
@@ -64,7 +65,7 @@ export async function sendAndRecord(
   const sentAt = new Date();
 
   // 1. Send to Telegram first (don't block on Supabase)
-  await sendToGroup(chatId, message, { parseMode: options.parseMode });
+  await sendToGroup(chatId, message, { parseMode: options.parseMode, topicId: options.topicId });
 
   // 2. Generate summary at insert time (async — routine already fired)
   const summary = await summarizeRoutineMessage(message, options.routineName);

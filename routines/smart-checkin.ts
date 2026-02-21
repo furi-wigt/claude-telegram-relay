@@ -197,7 +197,7 @@ async function main() {
 
   if (shouldCheckin && message && message !== "none") {
     console.log("Sending check-in to General group...");
-    await sendAndRecord(GROUPS.GENERAL.chatId, message, { routineName: 'smart-checkin', agentId: 'general-assistant' });
+    await sendAndRecord(GROUPS.GENERAL.chatId, message, { routineName: 'smart-checkin', agentId: 'general-assistant', topicId: GROUPS.GENERAL.topicId });
 
     const state = await loadState();
     state.lastCheckinTime = new Date().toISOString();

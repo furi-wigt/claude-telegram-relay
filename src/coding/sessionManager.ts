@@ -17,6 +17,7 @@ import { InputBridge } from "./inputBridge.ts";
 import { PermissionManager } from "./permissionManager.ts";
 import { ReminderManager } from "./reminderManager.ts";
 import { ProjectScanner } from "./projectScanner.ts";
+import { AGENTS } from "../agents/config.ts";
 
 const RELAY_DIR = process.env.RELAY_DIR || join(homedir(), ".claude-relay");
 const CODING_LOG_DIR = process.env.CODING_LOG_DIR || join(RELAY_DIR, "coding-logs");
@@ -918,30 +919,19 @@ export class CodingSessionManager {
    * Resolve the coding topic thread_id for a given chatId.
    *
    * Lookup order:
-   *   1. GROUP_<NAME>_CODING_TOPIC_ID — per-group override (matches GROUP_<NAME>_CHAT_ID)
-   *   2. CODING_TOPIC_ID              — global fallback for single-chat setups
+   *   1. codingTopicId field in agents.json — per-group topic (matched by chatId)
+   *   2. CODING_TOPIC_ID env var           — global fallback for single-chat setups
    *
    * Returns undefined when no topic is configured for this chat.
    */
   private getCodingTopicId(chatId: number): number | undefined {
-    // Build a map of chatId → topic env var name from GROUP_*_CHAT_ID entries
-    const perGroupVars: Array<{ chatIdVar: string; topicVar: string }> = [
-      { chatIdVar: "GROUP_GENERAL_CHAT_ID",  topicVar: "GROUP_GENERAL_CODING_TOPIC_ID" },
-      { chatIdVar: "GROUP_AWS_CHAT_ID",      topicVar: "GROUP_AWS_CODING_TOPIC_ID" },
-      { chatIdVar: "GROUP_SECURITY_CHAT_ID", topicVar: "GROUP_SECURITY_CODING_TOPIC_ID" },
-      { chatIdVar: "GROUP_CODE_CHAT_ID",     topicVar: "GROUP_CODE_CODING_TOPIC_ID" },
-      { chatIdVar: "GROUP_DOCS_CHAT_ID",     topicVar: "GROUP_DOCS_CODING_TOPIC_ID" },
-    ];
-
-    for (const { chatIdVar, topicVar } of perGroupVars) {
-      const groupChatId = process.env[chatIdVar] ? parseInt(process.env[chatIdVar]!, 10) : undefined;
-      if (groupChatId && groupChatId === chatId) {
-        const topicId = process.env[topicVar] ? parseInt(process.env[topicVar]!, 10) : undefined;
-        return topicId; // may be undefined if no topic configured for this group
+    for (const agent of Object.values(AGENTS)) {
+      if (agent.chatId && agent.chatId === chatId) {
+        return agent.codingTopicId;
       }
     }
 
-    // Global fallback
+    // Global fallback for single-chat setups
     return process.env.CODING_TOPIC_ID ? parseInt(process.env.CODING_TOPIC_ID, 10) : undefined;
   }
 

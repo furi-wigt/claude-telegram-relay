@@ -44,6 +44,7 @@ import {
 import { enqueueExtraction } from "./memory/extractionQueue.ts";
 import { callOllama, checkOllamaAvailable } from "./fallback.ts";
 import { getAgentForChat, autoDiscoverGroup, loadGroupMappings } from "./routing/groupRouter.ts";
+import { loadModelRouterConfig, resolveModel } from "./routing/modelRouter.ts";
 import { loadSession as loadGroupSession, updateSessionId, initSessions, saveSession } from "./session/groupSessions.ts";
 import { buildAgentPrompt } from "./agents/promptBuilder.ts";
 import { GroupQueueManager } from "./queue/groupQueueManager.ts";
@@ -106,6 +107,9 @@ const TEMP_DIR = join(RELAY_DIR, "temp");
 const UPLOADS_DIR = join(RELAY_DIR, "uploads");
 
 // Session management is now per-group — see src/session/groupSessions.ts
+
+// Model routing config — loaded once at startup from config/models.json
+const modelRouterConfig = loadModelRouterConfig();
 
 // ============================================================
 // SETUP
@@ -242,6 +246,8 @@ async function callClaude(
     /** When set, registers an AbortController in activeStreams so the user can cancel. */
     chatId?: number;
     threadId?: number | null;
+    /** Claude model to use (resolved by model router). Omit to use CLI default. */
+    model?: string;
   }
 ): Promise<string> {
   console.log(`Calling Claude: ${prompt.substring(0, 50)}...`);
@@ -262,6 +268,7 @@ async function callClaude(
       onProgress: options?.onProgress,
       onSessionId: options?.onSessionId,
       signal: controller.signal,
+      model: options?.model,
       // Notify the user in Telegram when Claude has been running for 30 min (soft ceiling).
       // The stream is NOT killed — the user can tap /cancel if they want to stop.
       onSoftCeiling: chatId != null ? (msg) => {
@@ -443,8 +450,12 @@ async function processTextMessage(
       timeStr,
     });
 
+    // Resolve model via two-pass router (classifier runs in Pass 1, result used in Pass 2)
+    const routing = await resolveModel(text, modelRouterConfig);
+
     const cancelKey = streamKey(chatId, threadId);
     const indicator = new ProgressIndicator();
+    indicator.setModelLabel(routing.displayName);
     indicator.start(chatId, bot, threadId, {
       cancelKey,
       onMessageId: (msgId) => {
@@ -464,6 +475,7 @@ async function processTextMessage(
         onSessionId: (id) => void updateSessionId(chatId, id, threadId),
         chatId,
         threadId,
+        model: routing.model,
       });
       await indicator.finish(true);
     } catch (claudeErr) {
