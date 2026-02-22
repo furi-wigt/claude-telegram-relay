@@ -151,7 +151,16 @@ function buildOrchestrationPrompt(task: string, roles: TeamRole[]): string {
 export async function analyzeWithClaude(task: string): Promise<TeamComposition> {
   const prompt = buildAiPrompt(task);
 
-  const stdout = await claudeText(prompt, { timeoutMs: 30_000 });
+  let stdout: string;
+  try {
+    stdout = await claudeText(prompt, { timeoutMs: 30_000 });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes("empty response")) {
+      throw new Error("Claude CLI: no JSON object found in output");
+    }
+    throw err;
+  }
 
   // Extract JSON from the output — Claude may include prose around it
   const jsonMatch = stdout.match(/\{[\s\S]*\}/);
@@ -166,7 +175,7 @@ export async function analyzeWithClaude(task: string): Promise<TeamComposition> 
     !Array.isArray(parsed.roles) ||
     parsed.roles.length < 2
   ) {
-    throw new Error("Claude CLI: JSON structure invalid");
+    throw new Error("Claude CLI: no JSON object found in output");
   }
 
   const roles = (parsed.roles as Array<{ name?: unknown; focus?: unknown }>).map((r) => {

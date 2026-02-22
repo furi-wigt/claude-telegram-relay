@@ -135,11 +135,6 @@ export async function claudeText(
 
 // ── Stream Mode ─────────────────────────────────────────────────────────────
 
-/** Kill stream when no stdout chunk arrives for this many ms (rolling). Default: 5 min. */
-const CLAUDE_IDLE_TIMEOUT_MS = parseInt(process.env.CLAUDE_IDLE_TIMEOUT_MS || "300000");
-/** Send soft-ceiling notification after this many ms total elapsed. Default: 30 min. */
-const CLAUDE_SOFT_CEILING_MS = parseInt(process.env.CLAUDE_SOFT_CEILING_MS || "1800000");
-
 export interface ClaudeStreamOptions {
   /** Session ID for resume (adds --resume <id>) */
   sessionId?: string;
@@ -192,6 +187,11 @@ export async function claudeStream(
   }
 
   const env = buildClaudeEnv();
+
+  // Read at call time (not module level) so test env-var overrides work
+  // even when the module was already cached before vars were set.
+  const CLAUDE_IDLE_TIMEOUT_MS = parseInt(process.env.CLAUDE_IDLE_TIMEOUT_MS || "300000");
+  const CLAUDE_SOFT_CEILING_MS = parseInt(process.env.CLAUDE_SOFT_CEILING_MS || "1800000");
 
   // Check if the signal is already aborted before spawning.
   if (options?.signal?.aborted) {

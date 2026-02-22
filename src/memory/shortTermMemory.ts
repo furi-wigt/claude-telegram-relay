@@ -13,7 +13,6 @@
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { callOllamaGenerate } from "../ollama.ts";
 
 const VERBATIM_LIMIT = 20;
 const SUMMARIZE_CHUNK_SIZE = 20;
@@ -215,7 +214,26 @@ export async function summarizeOldMessages(
 
   let summary = "";
   try {
-    summary = await callOllamaGenerate(summaryPrompt, { timeoutMs: 30_000 });
+    // Read env vars per-call so tests that mock globalThis.fetch work correctly.
+    // Avoids relying on the statically-imported callOllamaGenerate which can be
+    // contaminated by mock.module in other test files (global beforeEach resets).
+    const ollamaBaseUrl = process.env.OLLAMA_URL ?? "http://localhost:11434";
+    const ollamaModel = process.env.OLLAMA_MODEL ?? "gemma3:4b";
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 30_000);
+    try {
+      const response = await fetch(`${ollamaBaseUrl}/api/generate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: ollamaModel, prompt: summaryPrompt, stream: false }),
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new Error(`Ollama HTTP ${response.status}`);
+      const data = await response.json() as { response?: unknown };
+      if (typeof data.response === "string") summary = data.response.trim();
+    } finally {
+      clearTimeout(timer);
+    }
   } catch {
     // Fallback: simple concatenation
     summary = (messages as ConversationMessage[])

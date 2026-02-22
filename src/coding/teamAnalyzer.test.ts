@@ -1,4 +1,4 @@
-import { describe, test, expect, mock, spyOn, afterEach } from "bun:test";
+import { describe, test, expect, mock, spyOn, beforeEach, afterEach } from "bun:test";
 import {
   analyzeTaskForTeam,
   analyzeTaskHardcoded,
@@ -447,6 +447,11 @@ describe("analyzeTaskForTeam — cascade fallback", () => {
 // ---------------------------------------------------------------------------
 
 describe("analyzeWithClaude — JSON parsing", () => {
+  beforeEach(() => {
+    // Clear any module mocks bleeding in from other test files (e.g. idle-timeout
+    // test mocks ./spawn at module level, which persists across Bun workers).
+    mock.restore();
+  });
   afterEach(() => {
     mock.restore();
   });
@@ -498,46 +503,37 @@ describe("analyzeWithClaude — JSON parsing", () => {
   });
 
   test("parses valid JSON from Claude stdout successfully", async () => {
-    // Use a binary that outputs valid JSON so we can test the happy path.
-    // We'll use node -e to print the expected JSON.
-    const origBinary = process.env.CLAUDE_BINARY;
-    // Use 'node' with -e flag as the "binary" — but execFile passes all args after binary as args.
-    // Instead use a shell wrapper: /bin/sh -c 'echo ...'
-    // Simplest: point at a script that prints JSON.
-    // Since the test is in Bun, use: bun -e "..."
-    // Actually, execFile(binary, [arg1, arg2, ...]) passes the prompt as args[0].
-    // So binary must be a program that ignores its args and prints JSON to stdout.
-    // Use `printf` which ignores extra args on some systems — too fragile.
-    // Best: write a temp script using Bun's built-in.
-    const { writeFileSync, chmodSync, unlinkSync } = await import("node:fs");
-    const { tmpdir } = await import("node:os");
-    const { join } = await import("node:path");
-    const scriptPath = join(tmpdir(), `team-analyzer-test-${Date.now()}.sh`);
-    const json = JSON.stringify({
+    // Override spawn directly with a mock that returns valid JSON text as stdout.
+    // This is more robust than using CLAUDE_BINARY + a temp script because
+    // the spawn module may already be mocked by another test file (e.g.
+    // claude-process.idle-timeout.test.ts) when tests run combined in one
+    // Bun worker — in which case CLAUDE_BINARY is ignored entirely.
+    const jsonStr = JSON.stringify({
       strategy: "test strategy",
       roles: [
         { name: "builder", focus: "build the thing" },
         { name: "checker", focus: "check the thing" },
       ],
     });
-    writeFileSync(scriptPath, `#!/bin/sh\necho '${json}'`);
-    chmodSync(scriptPath, 0o755);
-    process.env.CLAUDE_BINARY = scriptPath;
-    try {
-      const result = await analyzeWithClaude("test task");
-      expect(result.strategy).toBe("test strategy");
-      expect(result.roles).toHaveLength(2);
-      expect(result.roles[0].name).toBe("builder");
-      expect(result.orchestrationPrompt).toMatch(/^Create an agent team/);
-      expect(result.orchestrationPrompt).toContain("test task");
-    } finally {
-      unlinkSync(scriptPath);
-      if (origBinary === undefined) {
-        delete process.env.CLAUDE_BINARY;
-      } else {
-        process.env.CLAUDE_BINARY = origBinary;
-      }
-    }
+    const enc = new TextEncoder();
+    mock.module("../spawn", () => ({
+      spawn: mock(() => ({
+        stdout: new ReadableStream({
+          start(c) { c.enqueue(enc.encode(jsonStr)); c.close(); },
+        }),
+        stderr: new ReadableStream({ start(c) { c.close(); } }),
+        exited: Promise.resolve(0),
+        kill: mock(() => {}),
+        pid: 12345,
+      })),
+    }));
+
+    const result = await analyzeWithClaude("test task");
+    expect(result.strategy).toBe("test strategy");
+    expect(result.roles).toHaveLength(2);
+    expect(result.roles[0].name).toBe("builder");
+    expect(result.orchestrationPrompt).toMatch(/^Create an agent team/);
+    expect(result.orchestrationPrompt).toContain("test task");
   });
 });
 

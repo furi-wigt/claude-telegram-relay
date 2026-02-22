@@ -6,10 +6,21 @@
 
 import { describe, test, expect, mock, beforeEach, afterEach } from "bun:test";
 
-// Mock claudeText so tests exercise the Ollama fallback path via mocked fetch.
+// Mock claudeText so tests exercise the Ollama fallback path.
 // This must be declared before importing the module under test.
 mock.module("../claude-process.ts", () => ({
   claudeText: mock(() => Promise.reject(new Error("Claude unavailable in tests"))),
+}));
+
+// Mock callOllamaGenerate so that this file owns the Ollama mock regardless of
+// execution order. Without this, mock.module("../ollama.ts") from routineMessage.test.ts
+// (or other files) bleeds in via Bun's shared module cache and replaces callOllamaGenerate
+// with a stub that never calls fetch — making globalThis.fetch mocking in these tests
+// ineffective. Owning the mock here ensures consistent behaviour in bun test (full suite)
+// and bun test <file> (isolated run).
+const _callOllamaGenerateMock = mock(async (_prompt: string, _options?: unknown): Promise<string> => "{}");
+mock.module("../ollama.ts", () => ({
+  callOllamaGenerate: _callOllamaGenerateMock,
 }));
 
 import {
@@ -507,54 +518,36 @@ describe("hallucination prevention — memory query skip", () => {
 // extractMemoriesFromExchange — sanitization of malformed Ollama output
 // ============================================================
 
+// These tests use _callOllamaGenerateMock directly (not globalThis.fetch) because
+// routineMessage.test.ts replaces ../ollama.ts via mock.module in the shared Bun
+// process, making globalThis.fetch unreachable. By owning the mock.module for
+// ollama.ts at the top of this file (see above), we control callOllamaGenerate
+// per-test through _callOllamaGenerateMock.
 describe("extractMemoriesFromExchange - sanitization of malformed Ollama JSON", () => {
-  let origFetch: typeof globalThis.fetch;
-
   beforeEach(() => {
-    origFetch = globalThis.fetch;
-  });
-
-  afterEach(() => {
-    globalThis.fetch = origFetch;
+    _callOllamaGenerateMock.mockReset();
   });
 
   test("returns empty certain/uncertain when Ollama returns flat objects instead of nested certain/uncertain", async () => {
-    globalThis.fetch = mock(() =>
-      Promise.resolve({
-        ok: true,
-        json: () => Promise.resolve({ response: '{"facts": {}, "preferences": {}}' }),
-      })
-    ) as any;
+    _callOllamaGenerateMock.mockResolvedValue('{"facts": {}, "preferences": {}}');
 
     const result = await extractMemoriesFromExchange("hello");
     expect(result).toEqual({ certain: {}, uncertain: {} });
   });
 
   test("filters non-string items from certain.facts, preserves valid strings", async () => {
-    globalThis.fetch = mock(() =>
-      Promise.resolve({
-        ok: true,
-        json: () =>
-          Promise.resolve({
-            response: '{"certain": {"facts": [{}, "Works at GovTech", 123, null]}, "uncertain": {}}',
-          }),
-      })
-    ) as any;
+    _callOllamaGenerateMock.mockResolvedValue(
+      '{"certain": {"facts": [{}, "Works at GovTech", 123, null]}, "uncertain": {}}'
+    );
 
     const result = await extractMemoriesFromExchange("hello");
     expect(result.certain.facts).toEqual(["Works at GovTech"]);
   });
 
   test("returns empty certain/uncertain when array fields contain only non-strings after sanitization", async () => {
-    globalThis.fetch = mock(() =>
-      Promise.resolve({
-        ok: true,
-        json: () =>
-          Promise.resolve({
-            response: '{"certain": {"facts": [{}], "preferences": [42]}, "uncertain": {}}',
-          }),
-      })
-    ) as any;
+    _callOllamaGenerateMock.mockResolvedValue(
+      '{"certain": {"facts": [{}], "preferences": [42]}, "uncertain": {}}'
+    );
 
     const result = await extractMemoriesFromExchange("hello");
     expect(result.certain.facts).toBeUndefined();
@@ -562,15 +555,9 @@ describe("extractMemoriesFromExchange - sanitization of malformed Ollama JSON", 
   });
 
   test("correctly parses uncertain items into uncertain field", async () => {
-    globalThis.fetch = mock(() =>
-      Promise.resolve({
-        ok: true,
-        json: () =>
-          Promise.resolve({
-            response: '{"certain": {"facts": ["Works at GovTech"]}, "uncertain": {"goals": ["Might want to improve fitness"]}}',
-          }),
-      })
-    ) as any;
+    _callOllamaGenerateMock.mockResolvedValue(
+      '{"certain": {"facts": ["Works at GovTech"]}, "uncertain": {"goals": ["Might want to improve fitness"]}}'
+    );
 
     const result = await extractMemoriesFromExchange("I work at GovTech and maybe I should exercise more");
     expect(result.certain.facts).toEqual(["Works at GovTech"]);
@@ -578,23 +565,19 @@ describe("extractMemoriesFromExchange - sanitization of malformed Ollama JSON", 
   });
 
   test("extraction prompt does NOT include assistant response text", async () => {
-    let capturedBody: string | null = null;
-    globalThis.fetch = mock((url: string, init?: RequestInit) => {
-      capturedBody = init?.body as string ?? null;
-      return Promise.resolve({
-        ok: true,
-        json: () => Promise.resolve({ response: "{}" }),
-      });
-    }) as any;
+    let capturedPrompt: string | null = null;
+    _callOllamaGenerateMock.mockImplementation(async (prompt: string) => {
+      capturedPrompt = prompt;
+      return "{}";
+    });
 
     await extractMemoriesFromExchange("I live in Singapore");
 
-    expect(capturedBody).not.toBeNull();
-    const bodyParsed = JSON.parse(capturedBody!);
+    expect(capturedPrompt).not.toBeNull();
     // Prompt should contain user message but not any "Assistant:" label
-    expect(bodyParsed.prompt).toContain("I live in Singapore");
-    expect(bodyParsed.prompt).not.toMatch(/^Assistant:/m);
-    expect(bodyParsed.prompt).not.toContain("Assistant:");
+    expect(capturedPrompt).toContain("I live in Singapore");
+    expect(capturedPrompt).not.toMatch(/^Assistant:/m);
+    expect(capturedPrompt).not.toContain("Assistant:");
   });
 });
 

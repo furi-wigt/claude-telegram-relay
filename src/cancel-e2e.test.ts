@@ -22,18 +22,33 @@
  * Run: bun test src/cancel-e2e.test.ts
  */
 
-import { describe, test, expect, mock, beforeEach } from "bun:test";
+import { describe, test, expect, mock, beforeEach, beforeAll, afterAll } from "bun:test";
 import { streamKey, activeStreams, handleCancelCallback } from "./cancel.ts";
+import { ProgressIndicator } from "./utils/progressIndicator.ts";
 
-// ── Env config BEFORE ProgressIndicator import ───────────────────────────────
-// Set delay to 0 so sendInitialMessage fires on the next event-loop tick
-// instead of after the default 2 000 ms. Edit interval is set very high so it
-// never fires during a test.
-process.env.PROGRESS_INDICATOR_DELAY_MS = "0";
-process.env.PROGRESS_UPDATE_INTERVAL_MS = "99999999";
-process.env.PROGRESS_IMMEDIATE_DEBOUNCE_MS = "0";
+// ── Env config scoped to this file ────────────────────────────────────────────
+// Set delay to 0 so sendInitialMessage fires immediately. Edit interval set very
+// high so it never fires during a test. Restored in afterAll to prevent bleed.
+const _savedDelay = process.env.PROGRESS_INDICATOR_DELAY_MS;
+const _savedInterval = process.env.PROGRESS_UPDATE_INTERVAL_MS;
+const _savedDebounce = process.env.PROGRESS_IMMEDIATE_DEBOUNCE_MS;
 
-const { ProgressIndicator } = await import("./utils/progressIndicator.ts");
+beforeAll(() => {
+  process.env.PROGRESS_INDICATOR_DELAY_MS = "0";
+  process.env.PROGRESS_UPDATE_INTERVAL_MS = "99999999";
+  process.env.PROGRESS_IMMEDIATE_DEBOUNCE_MS = "0";
+});
+
+afterAll(() => {
+  if (_savedDelay === undefined) delete process.env.PROGRESS_INDICATOR_DELAY_MS;
+  else process.env.PROGRESS_INDICATOR_DELAY_MS = _savedDelay;
+
+  if (_savedInterval === undefined) delete process.env.PROGRESS_UPDATE_INTERVAL_MS;
+  else process.env.PROGRESS_UPDATE_INTERVAL_MS = _savedInterval;
+
+  if (_savedDebounce === undefined) delete process.env.PROGRESS_IMMEDIATE_DEBOUNCE_MS;
+  else process.env.PROGRESS_IMMEDIATE_DEBOUNCE_MS = _savedDebounce;
+});
 
 // ── Mock bot factory ──────────────────────────────────────────────────────────
 

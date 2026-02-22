@@ -166,12 +166,14 @@ describe("/remember command", () => {
     const memoryInsertFn = mock(() => Promise.resolve({ data: null, error: null }));
     const messagesInsertFn = mock(() => Promise.resolve({ data: null, error: null }));
     const bot = mockBot();
+    const eq2 = mock(() => Promise.resolve({ data: [], error: null }));
+    const eq1 = mock(() => ({ eq: eq2 }));
     const sb = {
-      from: mock((table: string) =>
-        table === "messages"
-          ? { insert: messagesInsertFn }
-          : { insert: memoryInsertFn }
-      ),
+      from: mock((table: string) => {
+        if (table === "messages") return { insert: messagesInsertFn };
+        return { insert: memoryInsertFn, select: mock(() => ({ eq: eq1 })) };
+      }),
+      functions: { invoke: mock(() => Promise.resolve({ data: null, error: "unavailable" })) },
     } as any;
     registerMemoryCommands(bot as any, { supabase: sb, userId: 1 });
 
@@ -197,8 +199,11 @@ describe("/remember command", () => {
   test("detects preference category", async () => {
     const insertFn = mock(() => Promise.resolve({ data: null, error: null }));
     const bot = mockBot();
+    const eq2 = mock(() => Promise.resolve({ data: [], error: null }));
+    const eq1 = mock(() => ({ eq: eq2 }));
     const sb = {
-      from: mock(() => ({ insert: insertFn })),
+      from: mock(() => ({ insert: insertFn, select: mock(() => ({ eq: eq1 })) })),
+      functions: { invoke: mock(() => Promise.resolve({ data: null, error: "unavailable" })) },
     } as any;
     registerMemoryCommands(bot as any, { supabase: sb, userId: 1 });
 
@@ -213,8 +218,11 @@ describe("/remember command", () => {
   test("detects goal category and sets type to 'goal'", async () => {
     const insertFn = mock(() => Promise.resolve({ data: null, error: null }));
     const bot = mockBot();
+    const eq2 = mock(() => Promise.resolve({ data: [], error: null }));
+    const eq1 = mock(() => ({ eq: eq2 }));
     const sb = {
-      from: mock(() => ({ insert: insertFn })),
+      from: mock(() => ({ insert: insertFn, select: mock(() => ({ eq: eq1 })) })),
+      functions: { invoke: mock(() => Promise.resolve({ data: null, error: "unavailable" })) },
     } as any;
     registerMemoryCommands(bot as any, { supabase: sb, userId: 1 });
 

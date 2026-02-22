@@ -11,11 +11,19 @@
  * Run: bun test src/memory/ltmBothRoles.e2e.test.ts
  */
 
-import { describe, test, expect, mock, beforeEach, afterEach } from "bun:test";
+import { describe, test, expect, mock, beforeEach } from "bun:test";
 
-// Mock claudeText so tests use mocked fetch for Ollama path
+// Own the ollama.ts mock so Bun module cache bleed from other test files
+// (routineMessage.test.ts, longTermExtractor.test.ts) doesn't replace
+// callOllamaGenerate with a stub that never calls fetch.
+const _callOllamaGenerateMock = mock(async (_prompt: string, _options?: unknown): Promise<string> => "{}");
+
 mock.module("../claude-process.ts", () => ({
   claudeText: mock(() => Promise.reject(new Error("Claude unavailable in tests"))),
+}));
+
+mock.module("../ollama.ts", () => ({
+  callOllamaGenerate: _callOllamaGenerateMock,
 }));
 
 import {
@@ -29,24 +37,14 @@ import { enqueueExtraction, type QueueItem } from "./extractionQueue.ts";
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 function mockOllamaResponse(json: unknown): void {
-  globalThis.fetch = mock(() =>
-    Promise.resolve(
-      new Response(
-        JSON.stringify({ response: JSON.stringify(json) }),
-        { status: 200 }
-      )
-    )
+  _callOllamaGenerateMock.mockImplementation(
+    async (_prompt: string, _options?: unknown) => JSON.stringify(json)
   );
 }
 
 function mockOllamaText(text: string): void {
-  globalThis.fetch = mock(() =>
-    Promise.resolve(
-      new Response(
-        JSON.stringify({ response: text }),
-        { status: 200 }
-      )
-    )
+  _callOllamaGenerateMock.mockImplementation(
+    async (_prompt: string, _options?: unknown) => text
   );
 }
 
@@ -85,9 +83,7 @@ async function flushAsync(ms = 30): Promise<void> {
   await new Promise<void>((r) => setTimeout(r, ms));
 }
 
-let origFetch: typeof globalThis.fetch;
-beforeEach(() => { origFetch = globalThis.fetch; });
-afterEach(() => { globalThis.fetch = origFetch; });
+beforeEach(() => { _callOllamaGenerateMock.mockReset(); });
 
 // ─── Tests: extractMemoriesFromExchange ─────────────────────────────────────
 

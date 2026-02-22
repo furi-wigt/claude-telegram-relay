@@ -206,7 +206,7 @@ describe("claudeStream — chunks reset idle timer", () => {
     let closed = false;
 
     spawnMock.mockImplementation(() =>
-      mockProc({ stdout: cs, exitCode: 0, exitDelay: 5000 })
+      mockProc({ stdout: cs, exitCode: 0, exitDelay: 500 })
     );
 
     // Schedule chunks at 60ms intervals, then close at ~300ms
