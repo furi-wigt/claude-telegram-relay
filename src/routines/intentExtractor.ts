@@ -8,6 +8,44 @@
 import { claudeText } from "../claude-process.ts";
 import type { PendingRoutine } from "./types.ts";
 
+// Patterns that suggest the user wants to run/trigger an existing routine NOW
+const RUN_ROUTINE_PATTERNS = [
+  /\b(?:run|trigger|execute|start|fire|launch)\b.*\broutine\b/i,
+  /\broutine\b.*\b(?:run|trigger|execute|start|fire|launch)\b/i,
+  /\b(?:run|trigger|execute|start|fire|launch)\b.*\b(?:summary|briefing|checkin|check-in|scan|report|etf|watchdog|cost)\b.*\b(?:now|immediately|please|routine)?\b/i,
+];
+
+// Extracts the routine name hint from a run-intent message
+const RUN_ROUTINE_EXTRACT = /\b(?:run|trigger|execute|start|fire|launch)\b\s+(?:the\s+)?(.+?)(?:\s+routine|\s+now|\s+immediately|\s+please)*\s*$/i;
+const RUN_ROUTINE_EXTRACT_ALT = /\b(.+?)\s+routine\s+(?:now|immediately|please)/i;
+
+/**
+ * Detect if the message is asking to run/trigger an existing routine.
+ * Returns the routine name hint (for fuzzy matching) or null.
+ */
+export function detectRunRoutineIntent(text: string): string | null {
+  const trimmed = text.trim();
+  if (!RUN_ROUTINE_PATTERNS.some((p) => p.test(trimmed))) return null;
+
+  // Try to extract the routine name hint
+  const match = trimmed.match(RUN_ROUTINE_EXTRACT) || trimmed.match(RUN_ROUTINE_EXTRACT_ALT);
+  if (match && match[1]) {
+    // Clean up: remove filler words
+    return match[1]
+      .replace(/\b(the|a|my|please|now|immediately)\b/gi, "")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  // Fallback: strip the verb and "routine" to get the hint
+  const fallback = trimmed
+    .replace(/\b(run|trigger|execute|start|fire|launch|the|a|my|routine|routines|now|immediately|please)\b/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return fallback || null;
+}
+
 // Keywords that suggest the user wants to create a scheduled routine
 const ROUTINE_INTENT_PATTERNS = [
   /\bcreate a routine\b/i,

@@ -13,7 +13,7 @@
 import type { Context, Bot } from "grammy";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { InlineKeyboard } from "grammy";
-import { detectRoutineIntent, extractRoutineConfig } from "./intentExtractor.ts";
+import { detectRoutineIntent, detectRunRoutineIntent, extractRoutineConfig } from "./intentExtractor.ts";
 import { setPending, getPending, clearPending, hasPending } from "./pendingState.ts";
 import {
   createRoutine,
@@ -104,6 +104,39 @@ export async function detectAndHandle(
 ): Promise<boolean> {
   const chatId = ctx.chat?.id;
   if (!chatId) return false;
+
+  // Check for run/trigger intent BEFORE pending registration flow
+  const runHint = detectRunRoutineIntent(text);
+  if (runHint) {
+    try {
+      const codeRoutines = await listCodeRoutines();
+      const hintLower = runHint.toLowerCase();
+      const matches = codeRoutines.filter((r) =>
+        r.name.toLowerCase().includes(hintLower) ||
+        hintLower.includes(r.name.toLowerCase().replace(/-/g, " ")) ||
+        r.name.toLowerCase().replace(/-/g, " ").includes(hintLower)
+      );
+
+      if (matches.length === 1) {
+        try {
+          await triggerCodeRoutine(matches[0].name);
+          await ctx.reply(`Triggering routine \`${matches[0].name}\`... Done.`);
+        } catch (error) {
+          const msg = error instanceof Error ? error.message : String(error);
+          await ctx.reply(`Failed to trigger routine: ${msg}`);
+        }
+      } else if (matches.length === 0) {
+        await ctx.reply(`No routine found matching '${runHint}'. Use /routines list to see available routines.`);
+      } else {
+        const names = matches.map((r) => `  - ${r.name}`).join("\n");
+        await ctx.reply(`Multiple routines match '${runHint}':\n${names}\n\nBe more specific or use /routines run <name>.`);
+      }
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      await ctx.reply(`Error looking up routines: ${msg}`);
+    }
+    return true;
+  }
 
   // Intercept plain-text input for pending registration flow
   if (pendingRegistrations.has(chatId)) {

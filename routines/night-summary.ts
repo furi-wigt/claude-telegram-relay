@@ -25,6 +25,7 @@ import { createClient } from "@supabase/supabase-js";
 import { runPrompt } from "../integrations/claude/index.ts";
 import { callOllama } from "../src/fallback.ts";
 import { sendAndRecord } from "../src/utils/routineMessage.ts";
+import { markdownToHtml } from "../src/utils/htmlFormat.ts";
 import { GROUPS, validateGroup } from "../src/config/groups.ts";
 
 const SUPABASE_URL = process.env.SUPABASE_URL || "";
@@ -358,25 +359,26 @@ async function main() {
 
   if (provider === null) {
     const failureMessage =
-      "⚠️ **Night summary unavailable**\n\n" +
+      "⚠️ <b>Night summary unavailable</b>\n\n" +
       "Both Claude and Ollama are offline right now.\n" +
       "- Claude: check that the Claude CLI is installed and authenticated\n" +
-      "- Ollama: start it with `ollama serve`\n\n" +
+      "- Ollama: start it with <code>ollama serve</code>\n\n" +
       "Your day was still great — pick this up tomorrow! 🌟";
 
     await sendAndRecord(GROUPS.GENERAL.chatId, failureMessage, {
       routineName: "night-summary",
       agentId: "general-assistant",
+      parseMode: "HTML",
       topicId: GROUPS.GENERAL.topicId,
     });
     console.error("Night summary failed — both providers unavailable");
     process.exit(1);
   }
 
-  await sendAndRecord(GROUPS.GENERAL.chatId, summary, {
+  await sendAndRecord(GROUPS.GENERAL.chatId, markdownToHtml(summary), {
     routineName: "night-summary",
     agentId: "general-assistant",
-    parseMode: "Markdown",
+    parseMode: "HTML",
     topicId: GROUPS.GENERAL.topicId,
   });
   console.log(`Night summary sent to General group (via ${provider})`);

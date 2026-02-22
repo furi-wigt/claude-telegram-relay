@@ -52,6 +52,41 @@ export function getClaudePath(override?: string): string {
   return override ?? process.env.CLAUDE_PATH ?? process.env.CLAUDE_BINARY ?? "claude";
 }
 
+// ── Tool Summary Formatter ───────────────────────────────────────────────────
+
+/**
+ * Format a tool_use block into a human-readable one-line progress summary.
+ * Exported for unit testing.
+ */
+export function formatToolSummary(toolName: string, input: Record<string, unknown>): string {
+  const trunc = (s: string, n: number) => s.length > n ? s.slice(0, n) + "…" : s;
+
+  if (toolName === "Bash" || toolName === "bash") {
+    return `bash: ${trunc((input.command as string) ?? "", 80)}`;
+  }
+  if (input.file_path) {
+    return `${toolName}: ${input.file_path as string}`;
+  }
+  if (toolName === "Glob") {
+    return `Glob: ${(input.pattern as string) ?? ""}`;
+  }
+  if (toolName === "Grep") {
+    return `Grep: "${trunc((input.pattern as string) ?? "", 60)}"`;
+  }
+  if (toolName === "WebFetch") {
+    return `WebFetch: ${trunc((input.url as string) ?? "", 80)}`;
+  }
+  if (toolName === "WebSearch") {
+    return `WebSearch: "${trunc((input.query as string) ?? "", 60)}"`;
+  }
+  if (toolName === "Task") {
+    const agent = (input.subagent_type as string) ?? "";
+    const desc  = trunc((input.description as string) ?? "", 60);
+    return agent ? `Task(${agent}): ${desc}` : `Task: ${desc}`;
+  }
+  return toolName;
+}
+
 // ── Text Mode ───────────────────────────────────────────────────────────────
 
 export interface ClaudeTextOptions {
@@ -277,26 +312,33 @@ export async function claudeStream(
           if (type === "system" && event.subtype === "init" && typeof event.session_id === "string") {
             options?.onSessionId?.(event.session_id as string);
           } else if (type === "assistant") {
-            const message = event.message as { content?: Array<{ type: string; text?: string }> } | undefined;
-            const text = message?.content
-              ?.filter((b) => b.type === "text" && b.text)
+            const message = event.message as {
+              content?: Array<{ type: string; text?: string; name?: string; input?: Record<string, unknown> }>
+            } | undefined;
+            const content = message?.content ?? [];
+            const text = content
+              .filter((b) => b.type === "text" && b.text)
               .map((b) => b.text)
-              .join("\n") ?? "";
+              .join("\n");
             if (text) {
               lastAssistantText = text;
               options?.onProgress?.(text.length > 120 ? text.slice(0, 120) + "..." : text);
             }
-          } else if (type === "tool_use") {
-            const toolName = event.name as string;
-            const input = (event.input as Record<string, unknown>) ?? {};
-            let summary = toolName;
-            if (toolName === "Bash" || toolName === "bash") {
-              const cmd = (input.command as string) ?? "";
-              summary = `bash: ${cmd.length > 80 ? cmd.slice(0, 80) + "..." : cmd}`;
-            } else if (input.file_path) {
-              summary = `${toolName}: ${input.file_path as string}`;
+            // Tool-use blocks are embedded inside assistant.message.content in
+            // one-shot stream-json mode (-p flag). Extract and report each one.
+            for (const block of content) {
+              if (block.type === "tool_use") {
+                resetIdleTimer();
+                options?.onProgress?.(formatToolSummary(block.name ?? "unknown", block.input ?? {}));
+              }
             }
-            options?.onProgress?.(summary);
+          } else if (type === "tool_use") {
+            // Top-level tool_use events (interactive/session mode — kept for compatibility)
+            resetIdleTimer();
+            options?.onProgress?.(formatToolSummary(
+              event.name as string,
+              (event.input as Record<string, unknown>) ?? {}
+            ));
           } else if (type === "result" && event.subtype === "success") {
             resultText = (event.result as string) ?? "";
           }

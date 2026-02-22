@@ -80,7 +80,7 @@ mock.module("./spawn", () => ({
 }));
 
 // Import AFTER mocking so the module picks up our mock
-const { claudeText, claudeStream, buildClaudeEnv, getClaudePath } = await import(
+const { claudeText, claudeStream, buildClaudeEnv, getClaudePath, formatToolSummary } = await import(
   "./claude-process.ts"
 );
 
@@ -137,6 +137,58 @@ describe("claudeText — simple text call", () => {
 });
 
 // ============================================================
+// 1b. formatToolSummary — tool progress label formatter
+// ============================================================
+
+describe("formatToolSummary", () => {
+  test("Bash", () => {
+    expect(formatToolSummary("Bash", { command: "echo hi" })).toBe("bash: echo hi");
+  });
+  test("bash (lowercase alias)", () => {
+    expect(formatToolSummary("bash", { command: "ls -la" })).toBe("bash: ls -la");
+  });
+  test("Bash truncates long commands", () => {
+    const long = "x".repeat(100);
+    expect(formatToolSummary("Bash", { command: long })).toMatch(/^bash: x+…$/);
+  });
+  test("file_path tools (Read, Edit, Write)", () => {
+    expect(formatToolSummary("Read",  { file_path: "src/relay.ts" })).toBe("Read: src/relay.ts");
+    expect(formatToolSummary("Edit",  { file_path: "src/foo.ts"   })).toBe("Edit: src/foo.ts");
+    expect(formatToolSummary("Write", { file_path: "out.txt"      })).toBe("Write: out.txt");
+  });
+  test("Glob", () => {
+    expect(formatToolSummary("Glob", { pattern: "**/*.ts" })).toBe("Glob: **/*.ts");
+  });
+  test("Grep", () => {
+    expect(formatToolSummary("Grep", { pattern: "onProgress" })).toBe('Grep: "onProgress"');
+  });
+  test("Grep truncates long patterns", () => {
+    const long = "a".repeat(80);
+    expect(formatToolSummary("Grep", { pattern: long })).toMatch(/^Grep: "a+…"$/);
+  });
+  test("WebFetch", () => {
+    expect(formatToolSummary("WebFetch", { url: "https://example.com/page" }))
+      .toBe("WebFetch: https://example.com/page");
+  });
+  test("WebSearch", () => {
+    expect(formatToolSummary("WebSearch", { query: "Claude API docs" }))
+      .toBe('WebSearch: "Claude API docs"');
+  });
+  test("Task with subagent_type", () => {
+    expect(formatToolSummary("Task", { subagent_type: "builder", description: "Build auth module" }))
+      .toBe("Task(builder): Build auth module");
+  });
+  test("Task without subagent_type", () => {
+    expect(formatToolSummary("Task", { description: "Explore codebase" }))
+      .toBe("Task: Explore codebase");
+  });
+  test("unknown tool falls back to bare name", () => {
+    expect(formatToolSummary("TodoWrite", {})).toBe("TodoWrite");
+    expect(formatToolSummary("SomeFutureTool", {})).toBe("SomeFutureTool");
+  });
+});
+
+// ============================================================
 // 2. Streaming call — claudeStream
 // ============================================================
 
@@ -188,6 +240,36 @@ describe("claudeStream — streaming NDJSON call", () => {
 
     expect(capturedSessionId).toBe("sess-abc");
     expect(progressUpdates).toContain("Step 1 done");
+    expect(progressUpdates.some((p) => p.startsWith("bash:"))).toBe(true);
+  });
+
+  test("reports tool_use blocks embedded inside assistant.message.content", async () => {
+    // In one-shot (-p) mode the CLI bundles tool_use blocks inside the
+    // assistant message rather than emitting standalone tool_use events.
+    const ndjson = [
+      JSON.stringify({ type: "system", subtype: "init", session_id: "sess-embed" }),
+      JSON.stringify({
+        type: "assistant",
+        message: {
+          content: [
+            { type: "text", text: "Reading the file..." },
+            { type: "tool_use", name: "Read", input: { file_path: "src/relay.ts" } },
+            { type: "tool_use", name: "Bash", input: { command: "grep foo src/relay.ts" } },
+          ],
+        },
+      }),
+      JSON.stringify({ type: "result", subtype: "success", result: "Done" }),
+    ].join("\n") + "\n";
+
+    spawnMock.mockImplementation(() =>
+      mockProc({ stdout: ndjson, exitCode: 0 })
+    );
+
+    const progressUpdates: string[] = [];
+    await claudeStream("task", { onProgress: (s) => progressUpdates.push(s) });
+
+    expect(progressUpdates).toContain("Reading the file...");
+    expect(progressUpdates).toContain("Read: src/relay.ts");
     expect(progressUpdates.some((p) => p.startsWith("bash:"))).toBe(true);
   });
 

@@ -304,7 +304,7 @@ export async function listCodeRoutines(): Promise<CodeRoutineEntry[]> {
   // 1. Scan routines/*.ts (exclude user/ subdir — only direct children)
   const allEntries = await readdir(CODE_ROUTINES_DIR, { withFileTypes: true });
   const tsFiles = allEntries
-    .filter((e) => e.isFile() && e.name.endsWith(".ts"))
+    .filter((e) => e.isFile() && e.name.endsWith(".ts") && !e.name.endsWith(".test.ts"))
     .map((e) => e.name);
 
   // 2. Parse ecosystem.config.cjs for code routine entries

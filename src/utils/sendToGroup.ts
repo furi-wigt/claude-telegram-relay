@@ -109,6 +109,10 @@ async function sendChunk(
 
   if (!response.ok) {
     const errorData = await response.text();
+    // If Telegram can't parse the Markdown/HTML, retry as plain text
+    if (response.status === 400 && errorData.includes("can't parse entities") && options?.parseMode) {
+      return sendChunk(chatId, text, { ...options, parseMode: undefined });
+    }
     throw new Error(`Telegram API error (${response.status}): ${errorData}`);
   }
 }
