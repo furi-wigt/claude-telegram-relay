@@ -2,6 +2,8 @@
 
 > Claude Code reads this file automatically. Walk the user through setup one phase at a time.
 > Ask for what you need, configure everything yourself, and confirm each step works before moving on.
+>
+> **When a user opens this project for the first time, greet them warmly and begin Phase 1 immediately. Do not wait for them to ask.**
 
 ## What This Is
 
