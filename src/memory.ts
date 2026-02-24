@@ -108,7 +108,7 @@ export async function processMemoryIntents(
       type: "goal",
       content: match[1],
       deadline: match[2] || null,
-      chat_id: chatId ?? null,
+      chat_id: null,   // goals are globally scoped — visible across all groups
       category: "goal",
     });
     clean = clean.replace(match[0], "");
@@ -169,8 +169,9 @@ export async function getMemoryContext(
       .limit(20);
 
     if (chatId) {
+      // Facts are chat-scoped: show own group's facts + global facts.
+      // Goals are globally scoped: always show all goals regardless of which group created them.
       factsQuery = factsQuery.or(`chat_id.eq.${chatId},chat_id.is.null`);
-      goalsQuery = goalsQuery.or(`chat_id.eq.${chatId},chat_id.is.null`);
     }
 
     const [factsResult, goalsResult] = await Promise.all([
@@ -263,8 +264,8 @@ export async function getMemoryContextRaw(
       .limit(20);
 
     if (chatId) {
+      // Facts are chat-scoped. Goals are globally scoped (no chatId filter).
       factsQuery = factsQuery.or(`chat_id.eq.${chatId},chat_id.is.null`);
-      goalsQuery = goalsQuery.or(`chat_id.eq.${chatId},chat_id.is.null`);
     }
 
     const [factsResult, goalsResult] = await Promise.all([
