@@ -19,6 +19,14 @@ mock.module("../vision/visionClient.ts", () => ({
   analyzeImage: mockAnalyzeImage,
 }));
 
+// ─── Mock tracer (spy on trace calls) ────────────────────────────────────────
+
+const mockTrace = mock((_event: Record<string, unknown>) => {});
+mock.module("../utils/tracer.ts", () => ({
+  trace: mockTrace,
+  generateTraceId: () => "test-trace-id",
+}));
+
 // ─── Mock Supabase ────────────────────────────────────────────────────────────
 
 type InsertRow = {
@@ -224,6 +232,85 @@ describe("listDocuments", () => {
     expect(docs[0].title).toBe("My Policy");
     expect(docs[0].chunks).toBe(2);
     expect(docs[0].sources).toContain("policy.pdf");
+  });
+});
+
+// ─── ingestDocument — observability ──────────────────────────────────────────
+
+describe("ingestDocument — trace events", () => {
+  beforeEach(() => {
+    mockTrace.mockClear();
+    mockInsert.mockClear();
+  });
+
+  test("emits doc_ingest_start before processing", async () => {
+    const file = join(TMP, `trace_start_${Date.now()}.txt`);
+    writeFileSync(file, "Content.\n\nMore content.");
+    await ingestDocument(mockSupabase, file, "Trace Doc", { source: "trace.txt", mimeType: "text/plain" });
+
+    const events = mockTrace.mock.calls.map((c) => (c[0] as any).event);
+    expect(events).toContain("doc_ingest_start");
+  });
+
+  test("doc_ingest_start includes title and source", async () => {
+    const file = join(TMP, `trace_title_${Date.now()}.txt`);
+    writeFileSync(file, "Content.\n\nMore.");
+    await ingestDocument(mockSupabase, file, "My Report", { source: "report.txt", mimeType: "text/plain" });
+
+    const startCall = mockTrace.mock.calls.find(
+      (c) => (c[0] as any).event === "doc_ingest_start"
+    );
+    expect(startCall).toBeDefined();
+    expect((startCall![0] as any).title).toBe("My Report");
+    expect((startCall![0] as any).source).toBe("report.txt");
+  });
+
+  test("emits doc_ingest_complete with chunksInserted after success", async () => {
+    const file = join(TMP, `trace_complete_${Date.now()}.txt`);
+    writeFileSync(file, ("Para ".repeat(50) + "\n\n").repeat(3));
+    const result = await ingestDocument(mockSupabase, file, "Complete Doc", { mimeType: "text/plain" });
+
+    const completeCall = mockTrace.mock.calls.find(
+      (c) => (c[0] as any).event === "doc_ingest_complete"
+    );
+    expect(completeCall).toBeDefined();
+    expect((completeCall![0] as any).chunksInserted).toBe(result.chunksInserted);
+    expect((completeCall![0] as any).title).toBe("Complete Doc");
+  });
+
+  test("emits doc_ingest_empty when file has no usable text", async () => {
+    const file = join(TMP, `trace_empty_${Date.now()}.txt`);
+    writeFileSync(file, "   \n   ");
+    await ingestDocument(mockSupabase, file, "Empty Doc", { mimeType: "text/plain" });
+
+    const events = mockTrace.mock.calls.map((c) => (c[0] as any).event);
+    expect(events).toContain("doc_ingest_empty");
+  });
+});
+
+// ─── deleteDocument — observability ──────────────────────────────────────────
+
+describe("deleteDocument — trace events", () => {
+  beforeEach(() => {
+    mockTrace.mockClear();
+  });
+
+  test("emits doc_delete trace event after deletion", async () => {
+    await deleteDocument(mockSupabase, "Insurance Policy 2024");
+
+    const events = mockTrace.mock.calls.map((c) => (c[0] as any).event);
+    expect(events).toContain("doc_delete");
+  });
+
+  test("doc_delete includes title and deleted count", async () => {
+    await deleteDocument(mockSupabase, "Budget Report Q1");
+
+    const deleteCall = mockTrace.mock.calls.find(
+      (c) => (c[0] as any).event === "doc_delete"
+    );
+    expect(deleteCall).toBeDefined();
+    expect((deleteCall![0] as any).title).toBe("Budget Report Q1");
+    expect(typeof (deleteCall![0] as any).deleted).toBe("number");
   });
 });
 

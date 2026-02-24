@@ -4,12 +4,15 @@
  * Reusable module for chunking, extracting, ingesting, deleting,
  * and listing documents in Supabase. Embeddings are auto-generated
  * by the `embed` Edge Function webhook on INSERT.
+ *
+ * Emits structured trace events for all operations when OBSERVABILITY_ENABLED=1.
  */
 
 import { readFileSync } from "fs";
 import { basename } from "path";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { analyzeImage } from "../vision/visionClient.ts";
+import { trace } from "../utils/tracer.ts";
 
 export interface DocSummary {
   title: string;
@@ -92,6 +95,7 @@ export async function extractTextFromFile(
       const data = await pdfParse(buffer);
       return data.text;
     } catch {
+      trace({ event: "doc_pdf_fallback", filePath });
       return "";
     }
   }
@@ -109,6 +113,8 @@ export async function extractTextFromFile(
  *
  * Returns { chunksInserted, title }.
  * Returns chunksInserted=0 when the file yields no usable text.
+ *
+ * Emits: doc_ingest_start, doc_ingest_complete, doc_ingest_empty.
  */
 export async function ingestDocument(
   supabase: SupabaseClient,
@@ -117,14 +123,19 @@ export async function ingestDocument(
   opts: { source?: string; mimeType?: string } = {}
 ): Promise<{ chunksInserted: number; title: string }> {
   const source = opts.source ?? basename(filePath);
+
+  trace({ event: "doc_ingest_start", title, source, mimeType: opts.mimeType ?? null });
+
   const text = await extractTextFromFile(filePath, opts.mimeType);
 
   if (!text.trim()) {
+    trace({ event: "doc_ingest_empty", title, source });
     return { chunksInserted: 0, title };
   }
 
   const chunks = chunkText(text);
   if (!chunks.length) {
+    trace({ event: "doc_ingest_empty", title, source });
     return { chunksInserted: 0, title };
   }
 
@@ -135,6 +146,7 @@ export async function ingestDocument(
     .eq("title", title)
     .eq("source", source);
 
+  const totalChars = chunks.reduce((sum, c) => sum + c.length, 0);
   const rows = chunks.map((content, chunk_index) => ({
     title,
     source,
@@ -148,6 +160,8 @@ export async function ingestDocument(
     throw new Error(`Failed to insert document chunks: ${error.message}`);
   }
 
+  trace({ event: "doc_ingest_complete", title, source, chunksInserted: chunks.length, totalChars });
+
   return { chunksInserted: chunks.length, title };
 }
 
@@ -156,6 +170,8 @@ export async function ingestDocument(
 /**
  * Delete all chunks for a document title.
  * Returns { deleted: number }.
+ *
+ * Emits: doc_delete.
  */
 export async function deleteDocument(
   supabase: SupabaseClient,
@@ -170,7 +186,10 @@ export async function deleteDocument(
     throw new Error(`Failed to delete document "${title}": ${error.message}`);
   }
 
-  return { deleted: count ?? 0 };
+  const deleted = count ?? 0;
+  trace({ event: "doc_delete", title, deleted });
+
+  return { deleted };
 }
 
 // ─── listDocuments ────────────────────────────────────────────────────────────

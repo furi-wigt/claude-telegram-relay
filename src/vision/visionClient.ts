@@ -17,6 +17,7 @@ import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, basename } from "node:path";
 import { claudeText } from "../claude-process.ts";
+import { trace } from "../utils/tracer.ts";
 
 export type SupportedMediaType =
   | "image/jpeg"
@@ -124,7 +125,11 @@ export async function analyzeImages(
   prompt: string = "Describe this image in detail."
 ): Promise<ImageAnalysisResult[]> {
   if (imageBuffers.length === 0) return [];
-  return Promise.all(
+
+  const batchStart = Date.now();
+  trace({ event: "vision_batch_start", imageCount: imageBuffers.length });
+
+  const results = await Promise.all(
     imageBuffers.map(async (buffer, index) => {
       try {
         const context = await analyzeImage(buffer, prompt);
@@ -138,6 +143,18 @@ export async function analyzeImages(
       }
     })
   );
+
+  const successCount = results.filter((r) => !r.error).length;
+  const failCount = results.filter((r) => !!r.error).length;
+  trace({
+    event: "vision_batch_complete",
+    imageCount: imageBuffers.length,
+    successCount,
+    failCount,
+    durationMs: Date.now() - batchStart,
+  });
+
+  return results;
 }
 
 /**
@@ -175,6 +192,8 @@ export function combineImageContexts(results: ImageAnalysisResult[]): string {
  * Returns a text description suitable for injection into agent prompts
  * via the `imageContext` field in PromptContext.
  *
+ * Emits trace events: vision_start, vision_complete (success), vision_error (failure).
+ *
  * @param imageBuffer  Raw image bytes downloaded from Telegram
  * @param userPrompt   Caption or question the user sent with the image
  * @returns            Vision analysis text
@@ -204,18 +223,47 @@ export async function analyzeImage(
 
   await Bun.write(tmpPath, imageBuffer);
 
+  const start = Date.now();
+  trace({
+    event: "vision_start",
+    imageSizeBytes: imageBuffer.length,
+    model: VISION_MODEL,
+    mediaType,
+    promptLength: sanitizedPrompt.length,
+  });
+
   try {
     // --dangerously-skip-permissions is required in -p (non-interactive) mode:
     // without it, Claude CLI hangs waiting for an interactive permission prompt.
     // cwd=/tmp lets the relative filename resolve without embedding /tmp in the prompt.
     const fileName = basename(tmpPath);
     const prompt = `${sanitizedPrompt}\n\nImage: ${fileName}`;
-    return await claudeText(prompt, {
+    const result = await claudeText(prompt, {
       model: VISION_MODEL,
       timeoutMs: VISION_TIMEOUT_MS,
       dangerouslySkipPermissions: true,
       cwd: tmpdir(),
     });
+
+    trace({
+      event: "vision_complete",
+      durationMs: Date.now() - start,
+      responseLength: result.length,
+      model: VISION_MODEL,
+      mediaType,
+    });
+
+    return result;
+  } catch (err) {
+    trace({
+      event: "vision_error",
+      durationMs: Date.now() - start,
+      error: err instanceof Error ? err.message : String(err),
+      model: VISION_MODEL,
+      mediaType,
+      imageSizeBytes: imageBuffer.length,
+    });
+    throw err;
   } finally {
     await rm(tmpPath, { force: true }).catch(() => {});
   }
