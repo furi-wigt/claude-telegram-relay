@@ -102,6 +102,12 @@ export interface ClaudeTextOptions {
    * project CLAUDE.md files, which would pollute the extraction context.
    */
   cwd?: string;
+  /**
+   * Pass --dangerously-skip-permissions to the Claude CLI.
+   * Required for vision tasks where the CLI needs to read image files from disk
+   * without interactive permission prompts.
+   */
+  dangerouslySkipPermissions?: boolean;
 }
 
 /**
@@ -122,10 +128,16 @@ export async function claudeText(
 
   const env = buildClaudeEnv();
 
+  const textArgs: string[] = [claudePath];
+  if (options?.dangerouslySkipPermissions) {
+    textArgs.push("--dangerously-skip-permissions");
+  }
+  textArgs.push("-p", prompt, "--output-format", "text", "--model", model);
+
   let proc: ReturnType<typeof spawn>;
   try {
     proc = spawn(
-      [claudePath, "-p", prompt, "--output-format", "text", "--model", model],
+      textArgs,
       { stdout: "pipe", stderr: "pipe", env, cwd: options?.cwd || undefined }
     );
   } catch (spawnErr) {
@@ -193,6 +205,12 @@ export interface ClaudeStreamOptions {
   onSoftCeiling?: (message: string) => void;
   /** Claude model to use (e.g. "claude-haiku-4-5-20251001"). Omit to use CLI default. */
   model?: string;
+  /**
+   * Pass --dangerously-skip-permissions to the Claude CLI.
+   * Required for vision tasks where the CLI needs to read image files from disk
+   * without interactive permission prompts in -p (non-interactive) mode.
+   */
+  dangerouslySkipPermissions?: boolean;
 }
 
 /**
@@ -212,7 +230,11 @@ export async function claudeStream(
 ): Promise<string> {
   const claudePath = getClaudePath(options?.claudePath);
 
-  const args = [claudePath, "-p", prompt];
+  const args = [claudePath];
+  if (options?.dangerouslySkipPermissions) {
+    args.push("--dangerously-skip-permissions");
+  }
+  args.push("-p", prompt);
   if (options?.sessionId) {
     args.push("--resume", options.sessionId);
   }
@@ -309,6 +331,8 @@ export async function claudeStream(
           try { event = JSON.parse(trimmed); } catch { continue; }
 
           const type = event.type as string;
+          console.debug(`[stream] event type=${type}${event.subtype ? ` subtype=${event.subtype}` : ""}`);
+
           if (type === "system" && event.subtype === "init" && typeof event.session_id === "string") {
             options?.onSessionId?.(event.session_id as string);
           } else if (type === "assistant") {
@@ -316,31 +340,45 @@ export async function claudeStream(
               content?: Array<{ type: string; text?: string; name?: string; input?: Record<string, unknown> }>
             } | undefined;
             const content = message?.content ?? [];
+            console.debug(`[stream] assistant content blocks: ${content.map((b) => b.type).join(", ") || "(none)"}`);
+            // Thinking blocks: emit a generic "Thinking..." update so the indicator
+            // shows activity during extended thinking instead of staying frozen.
+            const hasThinking = content.some((b) => b.type === "thinking");
+            if (hasThinking) {
+              options?.onProgress?.("Thinking...");
+            }
             const text = content
               .filter((b) => b.type === "text" && b.text)
               .map((b) => b.text)
               .join("\n");
             if (text) {
               lastAssistantText = text;
-              options?.onProgress?.(text.length > 120 ? text.slice(0, 120) + "..." : text);
+              const preview = text.length > 120 ? text.slice(0, 120) + "..." : text;
+              console.debug(`[stream] onProgress text: ${preview.slice(0, 80)}`);
+              options?.onProgress?.(preview);
             }
             // Tool-use blocks are embedded inside assistant.message.content in
             // one-shot stream-json mode (-p flag). Extract and report each one.
             for (const block of content) {
               if (block.type === "tool_use") {
                 resetIdleTimer();
-                options?.onProgress?.(formatToolSummary(block.name ?? "unknown", block.input ?? {}));
+                const summary = formatToolSummary(block.name ?? "unknown", block.input ?? {});
+                console.debug(`[stream] onProgress tool_use (in content): ${summary}`);
+                options?.onProgress?.(summary);
               }
             }
           } else if (type === "tool_use") {
             // Top-level tool_use events (interactive/session mode — kept for compatibility)
             resetIdleTimer();
-            options?.onProgress?.(formatToolSummary(
+            const summary = formatToolSummary(
               event.name as string,
               (event.input as Record<string, unknown>) ?? {}
-            ));
+            );
+            console.debug(`[stream] onProgress tool_use (top-level): ${summary}`);
+            options?.onProgress?.(summary);
           } else if (type === "result" && event.subtype === "success") {
             resultText = (event.result as string) ?? "";
+            console.debug(`[stream] result received, length=${resultText.length}`);
           }
         }
       }
