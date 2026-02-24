@@ -42,13 +42,14 @@ const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
 
 // ── Area targets for 2-hour forecast ─────────────────────────────────────────
 // Matched against NEA area names using case-insensitive substring search.
+// Configure via WEATHER_AREAS env var (comma-separated, e.g. "Ang Mo Kio,Bedok,Tampines").
+// If unset, falls back to Singapore-wide forecast summary only.
 
-const FORECAST_AREA_TARGETS = [
-  { label: "Toa Payoh",  match: "toa payoh" },
-  { label: "Novena",     match: "novena" },
-  { label: "Punggol",   match: "punggol" },
-  { label: "Clementi",  match: "clementi" },
-];
+const FORECAST_AREA_TARGETS = (process.env.WEATHER_AREAS || "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean)
+  .map((label) => ({ label, match: label.toLowerCase() }));
 
 // ============================================================
 // TYPES

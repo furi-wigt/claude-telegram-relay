@@ -351,7 +351,7 @@ Add an entry to the `apps` array before the closing `],`:
 {
   name: "aws-daily-cost",
   script: "routines/aws-daily-cost.ts",
-  interpreter: "/Users/furi/.bun/bin/bun",
+  interpreter: "~/.bun/bin/bun",
   exec_mode: "fork",
   cwd: "/path/to/project",
   instances: 1,
@@ -360,8 +360,8 @@ Add an entry to the `apps` array before the closing `],`:
   cron_restart: "0 9 * * *",
   env: {
     NODE_ENV: "production",
-    PATH: "/Users/furi/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
-    HOME: "/Users/furi",
+    PATH: "~/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
+    HOME: "~",
   },
   error_file: "/path/to/project/logs/aws-daily-cost-error.log",
   out_file: "/path/to/project/logs/aws-daily-cost.log",

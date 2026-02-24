@@ -128,7 +128,8 @@ async function askClaudeToDecide(): Promise<{
     ? (now.getTime() - new Date(state.lastCheckinTime).getTime()) / (1000 * 60 * 60)
     : 999;
 
-  const prompt = `You are a proactive AI assistant deciding whether to check in with Furi via a Telegram group chat.
+  const userName = process.env.USER_NAME || "the user";
+  const prompt = `You are a proactive AI assistant deciding whether to check in with ${userName} via a Telegram group chat.
 
 CONTEXT:
 - Current time: ${now.toLocaleTimeString("en-US", { timeZone: USER_TIMEZONE })} (${timeContext})

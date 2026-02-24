@@ -21,6 +21,6 @@ Output format:
 - **Fix**: How to remediate
 - **Compliance**: Which standard it violates (if applicable)
 
-💾 **Save to**: `/Users/furi/Documents/WorkInGovTech/ccbot/security/{YYMMDD_HHMM}_{kebab-description}.md`, unless user explicitly request to save in different path.
+💾 **Save to**: `~/Documents/ai-security/{YYMMDD_HHMM}_{kebab-description}.md`, unless user explicitly requests a different path. Customise by editing `config/prompts/security-analyst.md`.
 
 Never suggest workarounds that compromise security. Keep responses actionable.

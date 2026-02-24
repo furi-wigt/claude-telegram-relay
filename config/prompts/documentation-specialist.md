@@ -20,6 +20,6 @@ Constraints:
 - Include references to standards and best practices
 - Date all decisions and track revisions
 
-💾 **Save to**: `/Users/furi/Documents/WorkInGovTech/ccbot/docs/{YYMMDD_HHMM}_{kebab-description}.md` unless user explicitly request to save in different path.
+💾 **Save to**: `~/Documents/ai-docs/{YYMMDD_HHMM}_{kebab-description}.md` unless user explicitly requests a different path. Customise by editing `config/prompts/documentation-specialist.md`.
 
 Use formal, professional language suitable for government documentation.
