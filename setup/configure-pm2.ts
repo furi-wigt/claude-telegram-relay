@@ -126,6 +126,15 @@ const SERVICES: Record<string, ServiceConfig> = {
     instances: 1,
     description: "Security scan to Security group (daily at 8am)",
   },
+  "log-cleanup": {
+    name: "log-cleanup",
+    script: "routines/log-cleanup.ts",
+    cron: "0 6 * * 1", // Monday at 6:00 AM
+    autorestart: false,
+    watch: false,
+    instances: 1,
+    description: "Log cleanup — delete stale PM2 and observability logs (Monday 6am)",
+  },
 };
 
 function generateEcosystem(services: ServiceConfig[], bunPath: string): string {
