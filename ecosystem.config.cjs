@@ -11,6 +11,7 @@ const ENV = {
 
 module.exports = {
   apps: [
+    // ── Core: always-on ────────────────────────────────────────────────────
     {
       name: "telegram-relay",
       script: "relay-wrapper.js",
@@ -29,6 +30,8 @@ module.exports = {
       out_file: CWD + "/logs/telegram-relay.log",
       log_date_format: "YYYY-MM-DD HH:mm:ss Z",
     },
+
+    // ── Daily briefings ────────────────────────────────────────────────────
     {
       name: "enhanced-morning-summary",
       script: "routines/enhanced-morning-summary.ts",
@@ -42,21 +45,6 @@ module.exports = {
       env: ENV,
       error_file: CWD + "/logs/enhanced-morning-summary-error.log",
       out_file: CWD + "/logs/enhanced-morning-summary.log",
-      log_date_format: "YYYY-MM-DD HH:mm:ss Z",
-    },
-    {
-      name: "smart-checkin",
-      script: "routines/smart-checkin.ts",
-      interpreter: BUN,
-      exec_mode: "fork",
-      cwd: CWD,
-      instances: 1,
-      autorestart: false,
-      watch: false,
-      cron_restart: "*/30 * * * *",
-      env: ENV,
-      error_file: CWD + "/logs/smart-checkin-error.log",
-      out_file: CWD + "/logs/smart-checkin.log",
       log_date_format: "YYYY-MM-DD HH:mm:ss Z",
     },
     {
@@ -74,21 +62,25 @@ module.exports = {
       out_file: CWD + "/logs/night-summary.log",
       log_date_format: "YYYY-MM-DD HH:mm:ss Z",
     },
+
+    // ── Periodic check-ins ─────────────────────────────────────────────────
     {
-      name: "weekly-etf",
-      script: "routines/weekly-etf.ts",
+      name: "smart-checkin",
+      script: "routines/smart-checkin.ts",
       interpreter: BUN,
       exec_mode: "fork",
       cwd: CWD,
       instances: 1,
       autorestart: false,
       watch: false,
-      cron_restart: "0 17 * * 5",
+      cron_restart: "*/30 * * * *",
       env: ENV,
-      error_file: CWD + "/logs/weekly-etf-error.log",
-      out_file: CWD + "/logs/weekly-etf.log",
+      error_file: CWD + "/logs/smart-checkin-error.log",
+      out_file: CWD + "/logs/smart-checkin.log",
       log_date_format: "YYYY-MM-DD HH:mm:ss Z",
     },
+
+    // ── Health & maintenance ───────────────────────────────────────────────
     {
       name: "watchdog",
       script: "routines/watchdog.ts",
@@ -105,18 +97,33 @@ module.exports = {
       log_date_format: "YYYY-MM-DD HH:mm:ss Z",
     },
     {
-      name: "etf-52week-screener",
-      script: "routines/etf-52week-screener.ts",
+      name: "orphan-gc",
+      script: "routines/orphan-gc.ts",
       interpreter: BUN,
       exec_mode: "fork",
       cwd: CWD,
       instances: 1,
       autorestart: false,
       watch: false,
-      cron_restart: "0 8 * * *",
+      cron_restart: "0 * * * *",
       env: ENV,
-      error_file: CWD + "/logs/etf-52week-screener-error.log",
-      out_file: CWD + "/logs/etf-52week-screener.log",
+      error_file: CWD + "/logs/orphan-gc-error.log",
+      out_file: CWD + "/logs/orphan-gc.log",
+      log_date_format: "YYYY-MM-DD HH:mm:ss Z",
+    },
+    {
+      name: "log-cleanup",
+      script: "routines/log-cleanup.ts",
+      interpreter: BUN,
+      exec_mode: "fork",
+      cwd: CWD,
+      instances: 1,
+      autorestart: false,
+      watch: false,
+      cron_restart: "0 6 * * 1",
+      env: ENV,
+      error_file: CWD + "/logs/log-cleanup-error.log",
+      out_file: CWD + "/logs/log-cleanup.log",
       log_date_format: "YYYY-MM-DD HH:mm:ss Z",
     },
     {
@@ -132,6 +139,38 @@ module.exports = {
       env: ENV,
       error_file: CWD + "/logs/memory-cleanup-error.log",
       out_file: CWD + "/logs/memory-cleanup.log",
+      log_date_format: "YYYY-MM-DD HH:mm:ss Z",
+    },
+
+    // ── Weekly / investment ────────────────────────────────────────────────
+    {
+      name: "weekly-etf",
+      script: "routines/weekly-etf.ts",
+      interpreter: BUN,
+      exec_mode: "fork",
+      cwd: CWD,
+      instances: 1,
+      autorestart: false,
+      watch: false,
+      cron_restart: "0 17 * * 5",
+      env: ENV,
+      error_file: CWD + "/logs/weekly-etf-error.log",
+      out_file: CWD + "/logs/weekly-etf.log",
+      log_date_format: "YYYY-MM-DD HH:mm:ss Z",
+    },
+    {
+      name: "etf-52week-screener",
+      script: "routines/etf-52week-screener.ts",
+      interpreter: BUN,
+      exec_mode: "fork",
+      cwd: CWD,
+      instances: 1,
+      autorestart: false,
+      watch: false,
+      cron_restart: "0 8 * * *",
+      env: ENV,
+      error_file: CWD + "/logs/etf-52week-screener-error.log",
+      out_file: CWD + "/logs/etf-52week-screener.log",
       log_date_format: "YYYY-MM-DD HH:mm:ss Z",
     },
   ],

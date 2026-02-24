@@ -93,7 +93,7 @@ const ACTIVE_STATUSES = new Set([
 
 export function parseConfig(): OrphanGCConfig {
   const relayDir = process.env.RELAY_DIR || join(homedir(), ".claude-relay");
-  const minAgeMinutes = Number(process.env.ORPHAN_GC_MIN_AGE_MINUTES) || 30;
+  const minAgeMinutes = Number(process.env.ORPHAN_GC_MIN_AGE_MINUTES) || 120;
 
   return {
     minAgeMs: minAgeMinutes * 60 * 1000,
