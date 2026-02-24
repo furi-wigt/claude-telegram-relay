@@ -25,6 +25,8 @@ import { handleRoutinesCommand } from "../routines/routineHandler.ts";
 import { registerMemoryCommands } from "./memoryCommands.ts";
 import { registerDirectMemoryCommands } from "./directMemoryCommands.ts";
 import { saveCommandInteraction } from "../utils/saveMessage.ts";
+import { searchDocumentsByTitles, type DocumentSearchResult } from "../rag/documentSearch.ts";
+import { listDocuments, deleteDocument } from "../documents/documentProcessor.ts";
 
 const TELEGRAM_MAX_MESSAGE_LENGTH = 4096;
 
@@ -126,6 +128,113 @@ function buildMemoryOverview(mem: FullMemory): string {
 }
 
 /**
+ * Pure handler logic for the /doc command.
+ * Accepts injectable list/delete functions for testability.
+ * Returns the reply string; the caller is responsible for sending it.
+ */
+export async function handleDocCommand(
+  args: string,
+  supabase: SupabaseClient | null,
+  listFn: (sb: SupabaseClient) => ReturnType<typeof listDocuments> = listDocuments,
+  deleteFn: (sb: SupabaseClient, title: string) => ReturnType<typeof deleteDocument> = deleteDocument,
+  searchFn: (sb: SupabaseClient, question: string, titles: string[]) => Promise<DocumentSearchResult> = searchDocumentsByTitles
+): Promise<string> {
+  if (!supabase) {
+    return "Document management requires Supabase. Please configure your database first.";
+  }
+
+  const [subcmd, ...rest] = args.trim().split(/\s+/);
+
+  if (subcmd === "query") {
+    const remaining = rest.join(" ").trim();
+    if (!remaining) {
+      return (
+        "Usage: /doc query <question>\n\n" +
+        "Examples:\n" +
+        "  /doc query What is my deductible?\n" +
+        "  /doc query What is my deductible? | NTUC Income\n" +
+        "  /doc query What is my deductible? | NTUC Income | AIA Shield"
+      );
+    }
+    const parts = remaining.split("|").map((s) => s.trim());
+    const question = parts[0];
+    const titles = parts.slice(1).filter(Boolean);
+
+    const result = await searchFn(supabase, question, titles);
+
+    if (!result.hasResults) {
+      const scope = titles.length === 0
+        ? "across all documents"
+        : `in ${titles.map((t) => `"${t}"`).join(", ")}`;
+      return (
+        `No relevant content found for "${question}" ${scope}.\n\n` +
+        "Make sure your documents are indexed:\n" +
+        "  /doc list"
+      );
+    }
+
+    const scopeLabel = titles.length === 0 ? "all documents" : titles.join(", ");
+    const lines: string[] = [
+      `🔍 "${question}" — ${scopeLabel}`,
+      `Found ${result.chunks.length} relevant excerpt(s):`,
+      "",
+    ];
+    for (const chunk of result.chunks) {
+      const pct = (chunk.similarity * 100).toFixed(0);
+      lines.push(`📄 ${chunk.title} — ${chunk.source} (relevance ${pct}%)`);
+      lines.push(chunk.content.substring(0, 400) + (chunk.content.length > 400 ? "…" : ""));
+      lines.push("");
+    }
+    lines.push("💡 Ask me anything about these excerpts for a fuller answer.");
+    return lines.join("\n");
+  }
+
+  if (!subcmd || subcmd === "list") {
+    const docs = await listFn(supabase);
+    if (!docs.length) {
+      return (
+        "No documents indexed yet.\n\n" +
+        "Send any PDF, TXT, or MD file to index it automatically.\n" +
+        "Use the file caption as the document title."
+      );
+    }
+    const lines = ["📚 Indexed Documents\n"];
+    for (const doc of docs) {
+      lines.push(`📄 "${doc.title}"`);
+      lines.push(`   Sources : ${doc.sources.join(", ")}`);
+      lines.push(`   Chunks  : ${doc.chunks}`);
+      lines.push("");
+    }
+    lines.push(`Total: ${docs.length} document${docs.length === 1 ? "" : "s"}`);
+    return lines.join("\n");
+  }
+
+  if (subcmd === "delete" || subcmd === "forget") {
+    const title = rest.join(" ").trim();
+    if (!title) {
+      return `Usage: /doc ${subcmd} <document title>\n\nExample: /doc ${subcmd} "My Policy"`;
+    }
+    const result = await deleteFn(supabase, title);
+    if (result.deleted === 0) {
+      return `No document found with title "${title}".`;
+    }
+    return `🗑️ Deleted "${title}" (${result.deleted} chunk${result.deleted === 1 ? "" : "s"} removed).`;
+  }
+
+  return (
+    "Usage:\n" +
+    "  /doc list — list all indexed documents\n" +
+    "  /doc query <question> — search all documents\n" +
+    "  /doc query <question> | <title> — search specific document(s)\n" +
+    "  /doc delete <title> — remove a document\n" +
+    "  /doc forget <title> — remove a document (alias for delete)\n\n" +
+    "Use | to separate multiple document titles:\n" +
+    "  /doc query What is my premium? | NTUC Income | AIA Shield\n\n" +
+    "To index a document, send a PDF, TXT, or MD file. The caption becomes the title."
+  );
+}
+
+/**
  * Register all bot commands.
  * Call once at startup after the bot is created.
  */
@@ -137,7 +246,6 @@ export function registerCommands(bot: Bot, options: CommandOptions): void {
     const help = [
       "Available commands:",
       "",
-      "/status - Show current session status",
       "/new [prompt] - Start a fresh conversation (optionally with first message)",
       "/memory - Show all memory (goals, prefs, facts, dates)",
       "/memory goals - Active goals only",
@@ -166,6 +274,11 @@ export function registerCommands(bot: Bot, options: CommandOptions): void {
       "/code new <path> <task> - Start agentic coding session",
       "/code status - Show current coding session",
       "/plan <task> - Plan a coding task with guided Q&A before running Claude",
+      "/doc list - List all indexed documents",
+      "/doc query <question> - Search all indexed documents",
+      "/doc query <question> | <title> - Search specific document(s)",
+      "/doc delete <title> - Remove a document from the index",
+      "/doc forget <title> - Remove a document (alias for delete)",
       "/help - Show this help",
       "",
       "Create routines by describing them:",
@@ -180,17 +293,6 @@ export function registerCommands(bot: Bot, options: CommandOptions): void {
   bot.command("routines", async (ctx) => {
     const args = ctx.match || "";
     await handleRoutinesCommand(ctx, args, supabase);
-  });
-
-  // /status - show session status (included in short-term memory)
-  bot.command("status", async (ctx) => {
-    const chatId = ctx.chat?.id;
-    if (!chatId) return;
-
-    const summary = getSessionSummary(chatId);
-    const replyText = `Session Status\n\n${summary}`;
-    await ctx.reply(replyText);
-    await saveCommandInteraction(supabase, chatId, "/status", replyText);
   });
 
   // /new [prompt] - reset session; if prompt given, immediately process it
@@ -302,26 +404,16 @@ export function registerCommands(bot: Bot, options: CommandOptions): void {
 
   // Register direct memory mutation commands (/goals, /facts, /prefs, /reminders)
   registerDirectMemoryCommands(bot, { supabase });
-}
 
-/**
- * Build a session progress footer for long responses.
- * Appended to Claude responses when processing took longer than threshold.
- */
-export function buildProgressFooter(
-  chatId: number,
-  processingTimeMs: number,
-  thresholdMs = 30000
-): string | null {
-  if (processingTimeMs < thresholdMs) return null;
+  // /doc list|query|delete|forget - manage and search indexed RAG documents
+  bot.command("doc", async (ctx) => {
+    const chatId = ctx.chat?.id;
+    if (!chatId) return;
 
-  const session = getSession(chatId);
-  if (!session) return null;
-
-  const seconds = Math.round(processingTimeMs / 1000);
-  const msgCount = session.messageCount || 0;
-
-  return `_(${seconds}s · msg ${msgCount} · /status for session info)_`;
+    const args = (ctx.match ?? "").trim();
+    const result = await handleDocCommand(args, supabase);
+    await sendLongMessage(ctx, result);
+  });
 }
 
 /**

@@ -21,6 +21,7 @@ Deno.serve(async (req) => {
       match_count = 10,
       match_threshold = 0.7,
       chat_id,
+      filter_title,
     } = await req.json();
 
     if (!query) {
@@ -62,7 +63,14 @@ Deno.serve(async (req) => {
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
     );
 
-    const rpcName = table === "memory" ? "match_memory" : "match_messages";
+    let rpcName: string;
+    if (table === "memory") {
+      rpcName = "match_memory";
+    } else if (table === "documents") {
+      rpcName = "match_documents";
+    } else {
+      rpcName = "match_messages";
+    }
 
     const rpcParams: Record<string, any> = {
       query_embedding: embedding,
@@ -70,8 +78,12 @@ Deno.serve(async (req) => {
       match_count,
     };
 
-    // Add chat_id filter if provided (for group isolation)
-    if (chat_id !== undefined && chat_id !== null) {
+    // Add table-specific filters
+    if (table === "documents") {
+      if (filter_title !== undefined && filter_title !== null) {
+        rpcParams.filter_title = filter_title;
+      }
+    } else if (chat_id !== undefined && chat_id !== null) {
       rpcParams.filter_chat_id = chat_id;
     }
 

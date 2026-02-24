@@ -20,6 +20,12 @@ Deno.serve(async (req) => {
       return new Response("Missing record data", { status: 400 });
     }
 
+    // Only process known tables
+    const allowedTables = ["messages", "memory", "documents", "conversation_summaries"];
+    if (!allowedTables.includes(table)) {
+      return new Response(`Unknown table: ${table}`, { status: 400 });
+    }
+
     // Skip if embedding already exists
     if (record.embedding) {
       return new Response("Already embedded", { status: 200 });
