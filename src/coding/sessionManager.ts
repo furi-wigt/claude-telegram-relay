@@ -945,6 +945,7 @@ export class CodingSessionManager {
           inline_keyboard: [[
             { text: "\u{1F4CA} Status", callback_data: `code_dash:status:${session.id}` },
             { text: "\u{1F4C4} Logs", callback_data: `code_dash:logs:${session.id}` },
+            { text: "\u{26D4} Stop", callback_data: `code_dash:stop:${session.id}` },
           ]],
         },
       });
