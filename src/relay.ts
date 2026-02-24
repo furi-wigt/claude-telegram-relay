@@ -10,11 +10,12 @@
 import { Bot, Context } from "grammy";
 import { writeFile, mkdir, readFile, unlink } from "fs/promises";
 import { readFileSync } from "fs";
-import { join, dirname } from "path";
+import { join, dirname, basename, extname } from "path";
 import { supabase } from "./utils/supabase.ts";
 import {
   activeStreams,
   streamKey,
+  parseCancelKey,
   handleCancelCallback,
   handleCancelCommand,
 } from "./cancel.ts";
@@ -44,11 +45,11 @@ import {
 import { enqueueExtraction } from "./memory/extractionQueue.ts";
 import { callOllama, checkOllamaAvailable } from "./fallback.ts";
 import { getAgentForChat, autoDiscoverGroup, loadGroupMappings } from "./routing/groupRouter.ts";
-import { loadModelRouterConfig, resolveModel } from "./routing/modelRouter.ts";
+// Router removed: always use Sonnet for simplicity and predictable latency
 import { loadSession as loadGroupSession, updateSessionId, initSessions, saveSession } from "./session/groupSessions.ts";
 import { buildAgentPrompt } from "./agents/promptBuilder.ts";
 import { GroupQueueManager } from "./queue/groupQueueManager.ts";
-import { registerCommands, buildProgressFooter, registerContextSwitchCallbackHandler } from "./commands/botCommands.ts";
+import { registerCommands, registerContextSwitchCallbackHandler } from "./commands/botCommands.ts";
 import { detectAndHandle, registerCallbackHandler } from "./routines/routineHandler.ts";
 import { CodingSessionManager } from "./coding/sessionManager.ts";
 import { InputRouter } from "./coding/inputRouter.ts";
@@ -58,6 +59,9 @@ import { InteractiveStateMachine } from "./interactive/index.ts";
 import { claudeText, claudeStream } from "./claude-process.ts";
 import { ProgressIndicator } from "./utils/progressIndicator.ts";
 import { trace, generateTraceId } from "./utils/tracer.ts";
+import { searchDocuments } from "./rag/documentSearch.ts";
+import { ingestDocument } from "./documents/documentProcessor.ts";
+import { analyzeImages, combineImageContexts } from "./vision/visionClient.ts";
 
 const PROJECT_ROOT = dirname(dirname(import.meta.path));
 
@@ -108,8 +112,8 @@ const UPLOADS_DIR = join(RELAY_DIR, "uploads");
 
 // Session management is now per-group — see src/session/groupSessions.ts
 
-// Model routing config — loaded once at startup from config/models.json
-const modelRouterConfig = loadModelRouterConfig();
+// Model selection: always use Sonnet (predictable latency, no routing overhead)
+const SONNET_MODEL = "claude-sonnet-4-6";
 
 // ============================================================
 // SETUP
@@ -201,13 +205,14 @@ registerCommands(bot, {
   userId: allowedUserId,
   // Allow /new <prompt> to immediately process the follow-up text as a user message
   onMessage: async (chatId: number, text: string, ctx: Context) => {
-    if (!queueManager.hasCapacity(chatId, null)) {
+    const threadId = ctx.message?.message_thread_id ?? null;
+    if (!queueManager.hasCapacity(chatId, threadId)) {
       await ctx.reply("Queue is full. Please try again shortly.");
       return;
     }
-    queueManager.getOrCreate(chatId, null).enqueue({
+    queueManager.getOrCreate(chatId, threadId).enqueue({
       label: `[chat:${chatId}] /new: ${text.substring(0, 30)}`,
-      run: () => processTextMessage(chatId, null, text, ctx),
+      run: () => processTextMessage(chatId, threadId, text, ctx),
     });
   },
 });
@@ -222,13 +227,14 @@ registerMemoryConfirmHandler(bot, supabase);
 // context-switch prompts that were sent before topic detection was removed. Safe to
 // keep indefinitely — it no-ops when there are no pending context-switch messages.
 registerContextSwitchCallbackHandler(bot, async (chatId: number, text: string, ctx: Context) => {
-  if (!queueManager.hasCapacity(chatId, null)) {
+  const threadId = ctx.message?.message_thread_id ?? null;
+  if (!queueManager.hasCapacity(chatId, threadId)) {
     await ctx.reply("Queue is full. Please try again shortly.");
     return;
   }
-  queueManager.getOrCreate(chatId, null).enqueue({
+  queueManager.getOrCreate(chatId, threadId).enqueue({
     label: `[chat:${chatId}] ctxswitch: ${text.substring(0, 30)}`,
-    run: () => processTextMessage(chatId, null, text, ctx),
+    run: () => processTextMessage(chatId, threadId, text, ctx),
   });
 });
 
@@ -368,22 +374,16 @@ if (CODING_AUTO_SCAN_INTERVAL > 0 && ALLOWED_USER_ID) {
   }, CODING_AUTO_SCAN_INTERVAL);
 }
 
-// Handle coding session callback queries (answer, plan, dashboard only — NOT code_perm:)
-// code_perm: is handled exclusively in registerCodingCommands via handlePermCallback
+// Handle iq: and cancel: callback queries.
+// code_*: callbacks are fully consumed by registerCodingCommands middleware (no next()).
 bot.on("callback_query:data", async (ctx) => {
   const data = ctx.callbackQuery.data || "";
-  if (
-    data.startsWith("code_answer:") ||
-    data.startsWith("code_plan:") ||
-    data.startsWith("code_dash:")
-  ) {
-    await inputRouter.handleCallbackQuery(ctx, sessionManager);
-    await ctx.answerCallbackQuery().catch(() => {});
-  } else if (data.startsWith("iq:")) {
+  if (data.startsWith("iq:")) {
     await interactive.handleCallback(ctx, data);
   } else if (data.startsWith("cancel:")) {
-    const chatId = ctx.chat?.id ?? 0;
-    const threadId = ctx.message?.message_thread_id ?? null;
+    // Parse chatId/threadId directly from callback_data to avoid relying on
+    // ctx.chat?.id which can be undefined in certain Grammy edge cases.
+    const { chatId, threadId } = parseCancelKey(data);
     await ctx.answerCallbackQuery().catch(() => {});
     await handleCancelCallback(chatId, threadId, ctx, bot);
   }
@@ -421,11 +421,12 @@ async function processTextMessage(
     const session = await loadGroupSession(chatId, agent.id, threadId);
 
     const userId = ctx.from?.id ?? 0;
-    const [shortTermCtxRaw, userProfile, relevantContext, memoryContext] = await Promise.all([
+    const [shortTermCtxRaw, userProfile, relevantContext, memoryContext, docSearchResult] = await Promise.all([
       supabase ? getShortTermContext(supabase, chatId, threadId) : Promise.resolve({ verbatimMessages: [], summaries: [], totalMessages: 0 }),
       supabase ? getUserProfile(supabase, userId) : Promise.resolve(""),
       getRelevantContext(supabase, text, chatId),
       getMemoryContext(supabase, chatId),
+      supabase ? searchDocuments(supabase, text) : Promise.resolve({ chunks: [], context: "", hasResults: false }),
     ]);
     const shortTermContext = supabase ? formatShortTermContext(shortTermCtxRaw, USER_TIMEZONE) : "";
 
@@ -448,14 +449,12 @@ async function processTextMessage(
       profileContext,
       userName: USER_NAME,
       timeStr,
+      documentContext: docSearchResult.hasResults ? docSearchResult.context : undefined,
     });
 
-    // Resolve model via two-pass router (classifier runs in Pass 1, result used in Pass 2)
-    const routing = await resolveModel(text, modelRouterConfig);
-
+    // Start indicator before model routing so it's visible during the classifier call (3-8s)
     const cancelKey = streamKey(chatId, threadId);
     const indicator = new ProgressIndicator();
-    indicator.setModelLabel(routing.displayName);
     indicator.start(chatId, bot, threadId, {
       cancelKey,
       onMessageId: (msgId) => {
@@ -463,6 +462,8 @@ async function processTextMessage(
         if (entry) entry.progressMessageId = msgId;
       },
     }).catch(() => {}); // fire-and-forget
+    indicator.setModelLabel("Sonnet");
+    void indicator.update("Using Sonnet", { immediate: true });
 
     let rawResponse: string;
     const callStart = Date.now();
@@ -475,7 +476,7 @@ async function processTextMessage(
         onSessionId: (id) => void updateSessionId(chatId, id, threadId),
         chatId,
         threadId,
-        model: routing.model,
+        model: SONNET_MODEL,
       });
       await indicator.finish(true);
     } catch (claudeErr) {
@@ -534,12 +535,7 @@ async function processTextMessage(
       });
     }
 
-    // Append progress footer for slow Claude calls (>30s)
-    const footer = buildProgressFooter(chatId, callDurationMs);
-    const finalResponse = (response || rawResponse || "No response generated") +
-      (footer ? `\n\n${footer}` : "");
-
-    await sendResponse(ctx, finalResponse);
+    await sendResponse(ctx, response || rawResponse || "No response generated");
   } catch (error) {
     console.error("Text handler error:", error);
     try {
@@ -670,6 +666,7 @@ bot.on("message:voice", async (ctx) => {
             if (entry) entry.progressMessageId = msgId;
           },
         }).catch(() => {}); // fire-and-forget
+        voiceIndicator.setModelLabel("Sonnet");
 
         let rawResponse: string;
         const voiceCallStart = Date.now();
@@ -681,6 +678,7 @@ bot.on("message:voice", async (ctx) => {
             onSessionId: (id) => void updateSessionId(chatId, id, threadId),
             chatId,
             threadId,
+            model: SONNET_MODEL,
           });
           await voiceIndicator.finish(true);
         } catch (claudeErr) {
@@ -730,9 +728,7 @@ bot.on("message:voice", async (ctx) => {
           });
         }
 
-        const voiceFooter = buildProgressFooter(chatId, voiceCallDurationMs);
-        const finalVoiceResponse = claudeResponse + (voiceFooter ? `\n\n${voiceFooter}` : "");
-        await sendResponse(ctx, finalVoiceResponse);
+        await sendResponse(ctx, claudeResponse);
       } catch (error) {
         console.error("Voice handler error:", error);
         try {
@@ -748,48 +744,112 @@ bot.on("message:voice", async (ctx) => {
 });
 
 // Photos/Images
-bot.on("message:photo", async (ctx) => {
-  const chatId = ctx.chat?.id;
-  const threadId = ctx.message?.message_thread_id ?? null;
+// ── Media group (album) accumulator ──────────────────────────────────────────
+// Telegram sends each photo in an album as a separate message:photo event
+// sharing the same media_group_id. We buffer them over a short window and
+// process all images in one batch to give the user a single coherent reply.
 
-  if (!chatId) return;
+interface AlbumAccumulator {
+  caption: string;
+  chatId: number;
+  threadId: number | null;
+  ctx: Parameters<Parameters<typeof bot.on>[1]>[0]; // grammY Context
+  /** Telegram file_ids collected during the debounce window — NOT buffers.
+   * Downloads happen in processAlbum() only after the window closes, eliminating
+   * the race where a slow download on an early photo finishes after the timer fires. */
+  fileIds: string[];
+  timer: ReturnType<typeof setTimeout>;
+}
 
+const MEDIA_GROUP_DEBOUNCE_MS = 800;
+const albumAccumulators = new Map<string, AlbumAccumulator>();
+
+// ── Shared photo processing ────────────────────────────────────────────────────
+// Called either directly (single photo) or from the debounce timer (album).
+
+function enqueuePhotoJob(
+  ctx: Parameters<Parameters<typeof bot.on>[1]>[0],
+  chatId: number,
+  threadId: number | null,
+  imageBuffers: Buffer[],
+  caption: string
+): void {
   if (!queueManager.hasCapacity(chatId, threadId)) {
-    await ctx.reply("Too many pending messages. Please wait for the current ones to complete.");
+    ctx.reply("Too many pending messages. Please wait for the current ones to complete.").catch(() => {});
     return;
   }
 
+  const batchLabel = imageBuffers.length > 1 ? ` x${imageBuffers.length}` : "";
+
   queueManager.getOrCreate(chatId, threadId).enqueue({
-    label: `[chat:${chatId}] photo`,
+    label: `[chat:${chatId}] photo${batchLabel}`,
     run: async () => {
       const typingInterval = startTypingIndicator(ctx);
       try {
         const agent = getAgentForChat(chatId);
-        console.log(`[${agent.name}] Image received`);
+        const traceId = generateTraceId();
+        console.log(`[${agent.name}] Image(s) received x${imageBuffers.length} (caption: ${caption.substring(0, 40)})`);
         await ctx.replyWithChatAction("typing");
 
-        const photos = ctx.message.photo;
-        const photo = photos[photos.length - 1];
-        const file = await ctx.api.getFile(photo.file_id);
+        // Analyze all images in parallel — each in its own separate claudeText process
+        // (--dangerously-skip-permissions, cwd=/tmp). Partial failures are tolerated.
+        let imageContext: string;
+        try {
+          const results = await analyzeImages(imageBuffers, caption);
+          imageContext = combineImageContexts(results);
+          if (!imageContext) {
+            await ctx.reply("Could not analyze the image(s). Please try again.");
+            return;
+          }
+        } catch (visionErr) {
+          const errMsg = visionErr instanceof Error ? visionErr.message : String(visionErr);
+          console.error("[vision] Analysis failed:", errMsg);
+          await ctx.reply(`Could not analyze image: ${errMsg}`);
+          return;
+        }
 
-        const timestamp = Date.now();
-        const filePath = join(UPLOADS_DIR, `image_${timestamp}.jpg`);
-
-        const response = await fetch(
-          `https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`
-        );
-        const buffer = await response.arrayBuffer();
-        await writeFile(filePath, Buffer.from(buffer));
-
-        const caption = ctx.message.caption || "Analyze this image.";
-        const prompt = `[Image: ${filePath}]\n\n${caption}`;
-
+        const photoUserId = ctx.from?.id ?? 0;
         const session = await loadGroupSession(chatId, agent.id, threadId);
+
+        const [shortTermCtxRaw, userProfile, relevantContext, memoryContext] = await Promise.all([
+          supabase ? getShortTermContext(supabase, chatId, threadId) : Promise.resolve({ verbatimMessages: [], summaries: [], totalMessages: 0 }),
+          supabase ? getUserProfile(supabase, photoUserId) : Promise.resolve(""),
+          getRelevantContext(supabase, caption, chatId),
+          getMemoryContext(supabase, chatId),
+        ]);
+        const shortTermContext = supabase ? formatShortTermContext(shortTermCtxRaw, USER_TIMEZONE) : "";
+
+        const now = new Date();
+        const timeStr = now.toLocaleString("en-US", {
+          timeZone: USER_TIMEZONE,
+          weekday: "long",
+          year: "numeric",
+          month: "long",
+          day: "numeric",
+          hour: "2-digit",
+          minute: "2-digit",
+        });
+
+        // Build enriched prompt — vision analysis injected as ═══ IMAGE ANALYSIS ═══
+        const enrichedPrompt = buildAgentPrompt(agent, caption, {
+          shortTermContext,
+          userProfile,
+          relevantContext,
+          memoryContext,
+          profileContext,
+          userName: USER_NAME,
+          timeStr,
+          imageContext,
+        });
+
+        // Always Sonnet for images — vision analysis requires Sonnet+
+        const imageDisplayName = "Sonnet";
 
         await saveMessage("user", `[Image]: ${caption}`, undefined, chatId, agent.id, threadId);
 
         const photoCancelKey = streamKey(chatId, threadId);
         const photoIndicator = new ProgressIndicator();
+        photoIndicator.setModelLabel(`📸 ${imageDisplayName}`);
         photoIndicator.start(chatId, bot, threadId, {
           cancelKey: photoCancelKey,
           onMessageId: (msgId) => {
@@ -798,27 +858,66 @@ bot.on("message:photo", async (ctx) => {
           },
         }).catch(() => {}); // fire-and-forget
 
-        let claudeResponse: string;
+        let rawResponse: string;
+        const callStart = Date.now();
+        trace({ event: "claude_start", traceId, chatId, promptLength: enrichedPrompt.length, resume: !!session.sessionId, sessionId: session.sessionId });
         try {
-          claudeResponse = await callClaude(prompt, {
+          rawResponse = await callClaude(enrichedPrompt, {
             resume: !!session.sessionId,
             sessionId: session.sessionId,
             onProgress: (summary) => void photoIndicator.update(summary, { immediate: true }),
             onSessionId: (id) => void updateSessionId(chatId, id, threadId),
             chatId,
             threadId,
+            model: SONNET_MODEL,
           });
           await photoIndicator.finish(true);
         } catch (claudeErr) {
           await photoIndicator.finish(false);
           throw claudeErr;
         }
+        const callDurationMs = Date.now() - callStart;
+        trace({ event: "claude_complete", traceId, chatId, responseLength: rawResponse.length, durationMs: callDurationMs, fallback: false, error: null });
 
-        await unlink(filePath).catch(() => {});
+        const cleanResponse = await processMemoryIntents(supabase, rawResponse, chatId);
 
-        const cleanResponse = await processMemoryIntents(supabase, claudeResponse, chatId);
+        session.messageCount = (session.messageCount || 0) + 1;
+        session.lastActivity = new Date().toISOString();
+        await saveSession(session);
+
         await saveMessage("assistant", cleanResponse, undefined, chatId, agent.id, threadId);
-        await sendResponse(ctx, cleanResponse);
+
+        if (supabase) {
+          const db = supabase;
+          const msgCount = session.messageCount;
+          const photoLtmInjectedContext = [userProfile, memoryContext, relevantContext, profileContext]
+            .filter(Boolean)
+            .join("\n\n") || undefined;
+          enqueueExtraction({ chatId, userId: photoUserId, text: caption, assistantResponse: cleanResponse, threadId, injectedContext: photoLtmInjectedContext }, async (item) => {
+            const { uncertain, inserted } = await extractAndStore(db, item.chatId, item.userId, item.text, item.assistantResponse, traceId, item.injectedContext);
+            if (uncertain && hasMemoryItems(uncertain)) {
+              await sendMemoryConfirmation(bot, item.chatId, uncertain, item.threadId).catch(() => {});
+            }
+            if (msgCount % 5 === 0 && inserted > 0) {
+              await rebuildProfileSummary(db, item.userId);
+            }
+          });
+        }
+
+        if (supabase && session.messageCount % 5 === 0) {
+          const db = supabase;
+          setImmediate(async () => {
+            try {
+              if (await shouldSummarize(db, chatId, threadId)) {
+                await summarizeOldMessages(db, chatId, threadId);
+              }
+            } catch (err) {
+              console.error("STM summarization failed:", err);
+            }
+          });
+        }
+
+        await sendResponse(ctx, cleanResponse || "No response generated");
       } catch (error) {
         console.error("Photo handler error:", error);
         try {
@@ -831,9 +930,224 @@ bot.on("message:photo", async (ctx) => {
       }
     },
   });
+}
+
+// ── Album processor (Phase 2 of two-phase download) ──────────────────────────
+// Called once the debounce window closes. At this point we know exactly how
+// many photos are in the album and can download them all in parallel without
+// any race condition from interleaved event/download timing.
+
+async function processAlbum(acc: AlbumAccumulator): Promise<void> {
+  console.log(`[album] Window closed — downloading ${acc.fileIds.length} image(s) in parallel`);
+
+  const downloadResults = await Promise.allSettled(
+    acc.fileIds.map(async (fileId) => {
+      const file = await bot.api.getFile(fileId);
+      const resp = await fetch(`https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`);
+      return Buffer.from(await resp.arrayBuffer());
+    })
+  );
+
+  const buffers = downloadResults
+    .filter((r): r is PromiseFulfilledResult<Buffer> => r.status === "fulfilled")
+    .map((r) => r.value);
+
+  const failCount = downloadResults.filter((r) => r.status === "rejected").length;
+  if (failCount > 0) {
+    console.warn(`[album] ${failCount}/${acc.fileIds.length} download(s) failed — proceeding with ${buffers.length} successful`);
+  }
+
+  if (buffers.length === 0) {
+    await acc.ctx.reply("Could not download any images from the album. Please try again.").catch(() => {});
+    return;
+  }
+
+  const caption = acc.caption || "Describe these images in detail.";
+  enqueuePhotoJob(acc.ctx, acc.chatId, acc.threadId, buffers, caption);
+}
+
+// ── Photo event handler ────────────────────────────────────────────────────────
+
+bot.on("message:photo", async (ctx) => {
+  const chatId = ctx.chat?.id;
+  const threadId = ctx.message?.message_thread_id ?? null;
+  if (!chatId) return;
+
+  // Download the highest-resolution variant immediately.
+  // For media groups we need the buffer before the debounce timer fires.
+  const photos = ctx.message.photo;
+  const photo = photos[photos.length - 1]; // highest-resolution variant
+  const mediaGroupId = ctx.message.media_group_id;
+
+  if (mediaGroupId) {
+    // ── Album (two-phase) ──────────────────────────────────────────────────────
+    // Phase 1 (here): collect file_id — NO download yet.
+    // Downloads happen in processAlbum() once the debounce window closes and we
+    // know the full set of photos. This eliminates the race where a slow download
+    // on an early photo completes after the timer fires and gets silently dropped.
+    const existing = albumAccumulators.get(mediaGroupId);
+    if (existing) {
+      clearTimeout(existing.timer);
+      existing.fileIds.push(photo.file_id);
+      // Caption appears only on the first album message — preserve it
+      if (!existing.caption && ctx.message.caption) {
+        existing.caption = ctx.message.caption;
+      }
+    } else {
+      albumAccumulators.set(mediaGroupId, {
+        caption: ctx.message.caption || "",
+        chatId,
+        threadId,
+        ctx,
+        fileIds: [photo.file_id],
+        timer: undefined as unknown as ReturnType<typeof setTimeout>,
+      });
+    }
+    const acc = albumAccumulators.get(mediaGroupId)!;
+    acc.timer = setTimeout(async () => {
+      albumAccumulators.delete(mediaGroupId);
+      await processAlbum(acc); // Phase 2: download all → enqueue
+    }, MEDIA_GROUP_DEBOUNCE_MS);
+    return;
+  }
+
+  // ── Single photo ───────────────────────────────────────────────────────────
+  // No album window needed — download immediately and process.
+  let imageBuffer: Buffer;
+  try {
+    const file = await ctx.api.getFile(photo.file_id);
+    const photoResponse = await fetch(
+      `https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`
+    );
+    imageBuffer = Buffer.from(await photoResponse.arrayBuffer());
+  } catch (downloadErr) {
+    console.error("[photo] Download failed:", downloadErr);
+    await ctx.reply("Could not download image. Please try again.").catch(() => {});
+    return;
+  }
+
+  const caption = ctx.message.caption || "Describe this image in detail.";
+  enqueuePhotoJob(ctx, chatId, threadId, [imageBuffer], caption);
 });
 
-// Documents
+// Documents — index into RAG on upload
+// ── Document album (multi-file) accumulator ───────────────────────────────────
+// Telegram sends each file in a multi-document send as a separate message:document
+// event sharing the same media_group_id. Buffer them over a short window and
+// process all in one batch to give the user a single coherent reply.
+
+interface DocAlbumEntry {
+  fileId: string;
+  /** Canonical filename — used as the stable source key in Supabase (no timestamp).
+   * Re-uploading the same file always replaces its old chunks (Issue 3 fix). */
+  fileName: string;
+  mimeType: string | undefined;
+}
+
+interface DocAlbumAccumulator {
+  caption: string;
+  chatId: number;
+  threadId: number | null;
+  ctx: Parameters<Parameters<typeof bot.on>[1]>[0];
+  /** File IDs collected during the debounce window — downloads happen in
+   * processDocumentAlbum() only after the window closes (same two-phase pattern
+   * as the image album accumulator, eliminating any download/timer race). */
+  entries: DocAlbumEntry[];
+  timer: ReturnType<typeof setTimeout>;
+}
+
+const DOCUMENT_GROUP_DEBOUNCE_MS = 800;
+const docAlbumAccumulators = new Map<string, DocAlbumAccumulator>();
+
+// ── Document album processor (Phase 2 of two-phase approach) ─────────────────
+
+async function processDocumentAlbum(acc: DocAlbumAccumulator): Promise<void> {
+  console.log(`[doc-album] Window closed — downloading ${acc.entries.length} file(s) in parallel`);
+  const typingInterval = startTypingIndicator(acc.ctx);
+  try {
+    if (!supabase) {
+      await acc.ctx.reply("Document indexing requires Supabase. Please configure your database first.").catch(() => {});
+      return;
+    }
+
+    // Phase 1: parallel downloads
+    const downloadResults = await Promise.allSettled(
+      acc.entries.map(async (entry) => {
+        const file = await bot.api.getFile(entry.fileId);
+        const resp = await fetch(`https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`);
+        return { buffer: Buffer.from(await resp.arrayBuffer()), entry };
+      })
+    );
+
+    const failedDownloads = downloadResults.filter((r) => r.status === "rejected").length;
+    if (failedDownloads > 0) {
+      console.warn(`[doc-album] ${failedDownloads}/${acc.entries.length} download(s) failed`);
+    }
+
+    const downloaded = downloadResults
+      .filter((r): r is PromiseFulfilledResult<{ buffer: Buffer; entry: DocAlbumEntry }> => r.status === "fulfilled")
+      .map((r) => r.value);
+
+    if (downloaded.length === 0) {
+      await acc.ctx.reply("Could not download any documents from the album. Please try again.").catch(() => {});
+      return;
+    }
+
+    // Phase 2: parallel ingestion — each file uses its canonical fileName as source
+    // (Issue 3 fix: re-uploading the same file replaces its old chunks, not accumulates)
+    const ingestResults = await Promise.allSettled(
+      downloaded.map(async ({ buffer, entry }) => {
+        const timestamp = Date.now() + Math.random(); // avoid collisions for parallel writes
+        const tempPath = join(UPLOADS_DIR, `${timestamp}_${entry.fileName}`);
+        try {
+          await writeFile(tempPath, buffer);
+          const title = acc.caption || basename(entry.fileName, extname(entry.fileName));
+          // Issue 3: pass canonical fileName as source (not the timestamped tempPath)
+          const result = await ingestDocument(supabase!, tempPath, title, {
+            mimeType: entry.mimeType,
+            source: entry.fileName,
+          });
+          return { fileName: entry.fileName, title: result.title, chunksInserted: result.chunksInserted };
+        } finally {
+          // Issue 1: always clean up temp file even if ingestDocument throws
+          await unlink(tempPath).catch(() => {});
+        }
+      })
+    );
+
+    // Build single summary reply
+    type IngestOk = { fileName: string; title: string; chunksInserted: number };
+    const indexed = ingestResults.filter((r): r is PromiseFulfilledResult<IngestOk> => r.status === "fulfilled" && r.value.chunksInserted > 0);
+    const empty   = ingestResults.filter((r): r is PromiseFulfilledResult<IngestOk> => r.status === "fulfilled" && r.value.chunksInserted === 0);
+    const failed  = ingestResults.filter((r) => r.status === "rejected");
+
+    const lines: string[] = [];
+    if (indexed.length > 0) {
+      lines.push(`✅ Indexed ${indexed.length} document${indexed.length === 1 ? "" : "s"}:`);
+      for (const r of indexed) {
+        lines.push(`  • "${r.value.title}" — ${r.value.chunksInserted} chunk${r.value.chunksInserted === 1 ? "" : "s"}`);
+      }
+      lines.push("\nYou can now ask me anything about these documents.");
+    }
+    if (empty.length > 0) {
+      lines.push(`⚠️ No text extracted from: ${empty.map((r) => `"${r.value.fileName}"`).join(", ")}`);
+    }
+    if (failed.length > 0) {
+      lines.push(`❌ Failed to index ${failed.length} file${failed.length === 1 ? "" : "s"}.`);
+    }
+    if (lines.length === 0) {
+      lines.push("Could not process any documents. Please try again.");
+    }
+
+    await acc.ctx.reply(lines.join("\n")).catch(() => {});
+  } catch (error) {
+    console.error("[doc-album] Handler error:", error);
+    await acc.ctx.reply("Could not index documents. Please try again.").catch(() => {});
+  } finally {
+    clearInterval(typingInterval);
+  }
+}
+
 bot.on("message:document", async (ctx) => {
   const doc = ctx.message.document;
   const chatId = ctx.chat?.id;
@@ -841,6 +1155,43 @@ bot.on("message:document", async (ctx) => {
 
   if (!chatId) return;
 
+  const mediaGroupId = ctx.message.media_group_id;
+
+  if (mediaGroupId) {
+    // ── Multi-document album (two-phase) ─────────────────────────────────────
+    // Phase 1: collect file_id + metadata — NO download yet.
+    // Downloads happen in processDocumentAlbum() once the debounce window closes.
+    const entry: DocAlbumEntry = {
+      fileId: doc.file_id,
+      fileName: doc.file_name || `file_${Date.now()}`,
+      mimeType: doc.mime_type,
+    };
+    const existing = docAlbumAccumulators.get(mediaGroupId);
+    if (existing) {
+      clearTimeout(existing.timer);
+      existing.entries.push(entry);
+      if (!existing.caption && ctx.message.caption) {
+        existing.caption = ctx.message.caption.trim();
+      }
+    } else {
+      docAlbumAccumulators.set(mediaGroupId, {
+        caption: ctx.message.caption?.trim() || "",
+        chatId,
+        threadId,
+        ctx,
+        entries: [entry],
+        timer: undefined as unknown as ReturnType<typeof setTimeout>,
+      });
+    }
+    const acc = docAlbumAccumulators.get(mediaGroupId)!;
+    acc.timer = setTimeout(async () => {
+      docAlbumAccumulators.delete(mediaGroupId);
+      await processDocumentAlbum(acc); // Phase 2: download all → ingest → reply
+    }, DOCUMENT_GROUP_DEBOUNCE_MS);
+    return;
+  }
+
+  // ── Single document ───────────────────────────────────────────────────────
   if (!queueManager.hasCapacity(chatId, threadId)) {
     await ctx.reply("Too many pending messages. Please wait for the current ones to complete.");
     return;
@@ -850,15 +1201,22 @@ bot.on("message:document", async (ctx) => {
     label: `[chat:${chatId}] doc: ${doc.file_name}`,
     run: async () => {
       const typingInterval = startTypingIndicator(ctx);
+      // Issue 1: declare filePath before try so finally can always clean it up
+      let filePath: string | undefined;
       try {
-        const agent = getAgentForChat(chatId);
-        console.log(`[${agent.name}] Document: ${doc.file_name}`);
+        console.log(`[RAG] Document upload: ${doc.file_name}`);
         await ctx.replyWithChatAction("typing");
+
+        if (!supabase) {
+          await ctx.reply("Document indexing requires Supabase. Please configure your database first.");
+          return;
+        }
 
         const file = await ctx.getFile();
         const timestamp = Date.now();
+        // Issue 3: canonical fileName (no timestamp) used as Supabase source key
         const fileName = doc.file_name || `file_${timestamp}`;
-        const filePath = join(UPLOADS_DIR, `${timestamp}_${fileName}`);
+        filePath = join(UPLOADS_DIR, `${timestamp}_${fileName}`);
 
         const response = await fetch(
           `https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`
@@ -866,53 +1224,40 @@ bot.on("message:document", async (ctx) => {
         const buffer = await response.arrayBuffer();
         await writeFile(filePath, Buffer.from(buffer));
 
-        const caption = ctx.message.caption || `Analyze: ${doc.file_name}`;
-        const prompt = `[File: ${filePath}]\n\n${caption}`;
+        // Use caption as title if provided, otherwise derive from filename
+        const caption = (ctx.message.caption ?? "").trim();
+        const title = caption || basename(fileName, extname(fileName));
 
-        const session = await loadGroupSession(chatId, agent.id, threadId);
+        const result = await ingestDocument(supabase, filePath, title, {
+          mimeType: doc.mime_type,
+          // Issue 3: pass canonical fileName as source — re-uploading the same file
+          // replaces its old chunks rather than creating a second source entry
+          source: fileName,
+        });
 
-        await saveMessage("user", `[Document: ${doc.file_name}]: ${caption}`, undefined, chatId, agent.id, threadId);
-
-        const docCancelKey = streamKey(chatId, threadId);
-        const docIndicator = new ProgressIndicator();
-        docIndicator.start(chatId, bot, threadId, {
-          cancelKey: docCancelKey,
-          onMessageId: (msgId) => {
-            const entry = activeStreams.get(docCancelKey);
-            if (entry) entry.progressMessageId = msgId;
-          },
-        }).catch(() => {}); // fire-and-forget
-
-        let claudeResponse: string;
-        try {
-          claudeResponse = await callClaude(prompt, {
-            resume: !!session.sessionId,
-            sessionId: session.sessionId,
-            onProgress: (summary) => void docIndicator.update(summary, { immediate: true }),
-            onSessionId: (id) => void updateSessionId(chatId, id, threadId),
-            chatId,
-            threadId,
-          });
-          await docIndicator.finish(true);
-        } catch (claudeErr) {
-          await docIndicator.finish(false);
-          throw claudeErr;
+        if (result.chunksInserted === 0) {
+          await ctx.reply(
+            `⚠️ No text extracted from "${fileName}".\n` +
+            "If this is a scanned image, try sending it as a photo instead."
+          );
+        } else {
+          await ctx.reply(
+            `✅ Indexed: "${result.title}"\n` +
+            `📦 ${result.chunksInserted} chunk${result.chunksInserted === 1 ? "" : "s"} stored — embeddings generating.\n\n` +
+            "You can now ask me anything about this document."
+          );
         }
-
-        await unlink(filePath).catch(() => {});
-
-        const cleanResponse = await processMemoryIntents(supabase, claudeResponse, chatId);
-        await saveMessage("assistant", cleanResponse, undefined, chatId, agent.id, threadId);
-        await sendResponse(ctx, cleanResponse);
       } catch (error) {
         console.error("Document handler error:", error);
         try {
-          await ctx.reply("Could not process document. Please try again.");
+          await ctx.reply("Could not index document. Please try again.");
         } catch (replyError) {
           console.error("Failed to send error reply:", replyError);
         }
       } finally {
         clearInterval(typingInterval);
+        // Issue 1: always delete temp file — even when ingestDocument throws
+        if (filePath) await unlink(filePath).catch(() => {});
       }
     },
   });

@@ -121,6 +121,7 @@ export class ProgressIndicator {
    */
   async update(summary: string, options?: { immediate?: boolean }): Promise<void> {
     this.pushEvent(summary);
+    console.debug(`[indicator] update summary="${summary.slice(0, 60)}" messageId=${this.messageId} finished=${this.finished}`);
 
     if (options?.immediate && this.messageId !== null && !this.finished) {
       const now = Date.now();
@@ -210,6 +211,7 @@ export class ProgressIndicator {
   private async sendInitialMessage(): Promise<void> {
     if (this.finished || !this.chatId || !this.bot) return;
 
+    console.debug(`[indicator] sendInitialMessage chatId=${this.chatId} threadId=${this.threadId}`);
     const text = this.buildText();
     try {
       const msg = await this.bot.api.sendMessage(this.chatId, text, {
@@ -223,9 +225,11 @@ export class ProgressIndicator {
         }),
       });
       this.messageId = msg.message_id;
+      console.debug(`[indicator] messageId set: ${this.messageId}`);
       this.onMessageId?.(msg.message_id);
-    } catch {
+    } catch (err) {
       // Failed to send — maybe chat is unavailable. Give up silently.
+      console.debug(`[indicator] sendInitialMessage failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
