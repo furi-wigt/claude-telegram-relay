@@ -8,7 +8,8 @@
     "topicId": null,
     "codingTopicId": null,
     "claudeAgent": "architect.md",
-    "capabilities": ["infrastructure-design", "cost-optimization", "aws-services"]
+    "capabilities": ["infrastructure-design", "cost-optimization", "aws-services"],
+    "diagnostics": { "enabled": true }
   },
   {
     "id": "security-analyst",
@@ -19,7 +20,8 @@
     "topicId": null,
     "codingTopicId": null,
     "claudeAgent": "security.md",
-    "capabilities": ["security-audit", "compliance-check", "threat-modeling"]
+    "capabilities": ["security-audit", "compliance-check", "threat-modeling"],
+    "diagnostics": { "enabled": true }
   },
   {
     "id": "documentation-specialist",
@@ -41,7 +43,8 @@
     "topicId": null,
     "codingTopicId": null,
     "claudeAgent": "reviewer.md",
-    "capabilities": ["code-review", "test-generation", "refactoring"]
+    "capabilities": ["code-review", "test-generation", "refactoring"],
+    "diagnostics": { "enabled": true }
   },
   {
     "id": "research-analyst",

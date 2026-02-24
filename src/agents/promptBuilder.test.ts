@@ -138,4 +138,26 @@ describe("promptBuilder — XML section tags", () => {
     const result = buildAgentPrompt(agent, "hello", ctx);
     expect(result).toContain("You are speaking with Furi.");
   });
+
+  test("uses <diagnostic_image> XML tag for diagnosticContext", () => {
+    const ctx: PromptContext = {
+      ...baseContext,
+      diagnosticContext: "• CPU: 94% ALARM\n• Memory: 67% OK",
+    };
+    const result = buildAgentPrompt(agent, "what should I do?", ctx);
+    expect(result).toContain("<diagnostic_image>");
+    expect(result).toContain("CPU: 94% ALARM");
+    expect(result).toContain("</diagnostic_image>");
+  });
+
+  test("omits <diagnostic_image> when diagnosticContext is absent", () => {
+    const result = buildAgentPrompt(agent, "hello", baseContext);
+    expect(result).not.toContain("<diagnostic_image>");
+  });
+
+  test("omits section entirely when context field is absent (includes diagnosticContext)", () => {
+    const result = buildAgentPrompt(agent, "hello", baseContext);
+    expect(result).not.toContain("<diagnostic_image>");
+    expect(result).not.toContain("<image_analysis>");
+  });
 });

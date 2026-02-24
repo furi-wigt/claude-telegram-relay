@@ -62,6 +62,7 @@ import { trace, generateTraceId } from "./utils/tracer.ts";
 import { searchDocuments } from "./rag/documentSearch.ts";
 import { ingestDocument } from "./documents/documentProcessor.ts";
 import { analyzeImages, combineImageContexts } from "./vision/visionClient.ts";
+import { analyzeDiagnosticImages } from "./documents/diagnosticAnalyzer.ts";
 
 const PROJECT_ROOT = dirname(dirname(import.meta.path));
 
@@ -793,13 +794,26 @@ function enqueuePhotoJob(
 
         // Analyze all images in parallel — each in its own separate claudeText process
         // (--dangerously-skip-permissions, cwd=/tmp). Partial failures are tolerated.
-        let imageContext: string;
+        //
+        // Diagnostic agents (aws-architect, security-analyst, code-quality-coach) use
+        // structured domain-specific extraction prompts → result injected as <diagnostic_image>.
+        // All other agents use the user's caption → result injected as <image_analysis>.
+        let imageContext: string | undefined;
+        let diagnosticContext: string | undefined;
         try {
-          const results = await analyzeImages(imageBuffers, caption);
-          imageContext = combineImageContexts(results);
-          if (!imageContext) {
-            await ctx.reply("Could not analyze the image(s). Please try again.");
-            return;
+          if (agent.diagnostics?.enabled) {
+            diagnosticContext = await analyzeDiagnosticImages(imageBuffers, agent.id, PROJECT_ROOT);
+            if (!diagnosticContext) {
+              await ctx.reply("Could not extract diagnostic information from the image(s). Please try again.");
+              return;
+            }
+          } else {
+            const results = await analyzeImages(imageBuffers, caption);
+            imageContext = combineImageContexts(results);
+            if (!imageContext) {
+              await ctx.reply("Could not analyze the image(s). Please try again.");
+              return;
+            }
           }
         } catch (visionErr) {
           const errMsg = visionErr instanceof Error ? visionErr.message : String(visionErr);
@@ -830,7 +844,7 @@ function enqueuePhotoJob(
           minute: "2-digit",
         });
 
-        // Build enriched prompt — vision analysis injected as ═══ IMAGE ANALYSIS ═══
+        // Build enriched prompt — vision analysis injected as <image_analysis> or <diagnostic_image>
         const enrichedPrompt = buildAgentPrompt(agent, caption, {
           shortTermContext,
           userProfile,
@@ -840,6 +854,7 @@ function enqueuePhotoJob(
           userName: USER_NAME,
           timeStr,
           imageContext,
+          diagnosticContext,
         });
 
         // Always Sonnet for images — vision analysis requires Sonnet+

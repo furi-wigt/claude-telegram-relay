@@ -19,6 +19,8 @@ export interface PromptContext {
   documentContext?: string;
   /** Vision analysis from Anthropic SDK for images sent in Telegram */
   imageContext?: string;
+  /** Structured domain-specific extraction for diagnostic agents (aws-architect, security-analyst, code-quality-coach) */
+  diagnosticContext?: string;
 }
 
 /**
@@ -70,9 +72,14 @@ export function buildAgentPrompt(
     parts.push(`\n<document_context>\n${context.documentContext}\n</document_context>`);
   }
 
-  // Vision analysis — injected when user sends a photo
+  // Vision analysis — injected when user sends a photo (generic vision)
   if (context.imageContext) {
     parts.push(`\n<image_analysis>\n${context.imageContext}\n</image_analysis>`);
+  }
+
+  // Diagnostic image extraction — structured domain-specific data for specialist agents
+  if (context.diagnosticContext) {
+    parts.push(`\n<diagnostic_image>\n${context.diagnosticContext}\n</diagnostic_image>`);
   }
 
   // Memory management instructions

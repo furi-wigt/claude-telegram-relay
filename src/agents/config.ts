@@ -30,6 +30,7 @@ interface AgentDefinition {
   claudeAgent?: string;         // optional Claude agent file reference
   capabilities: string[];
   isDefault?: boolean;          // exactly one agent should be marked as the DM/fallback default
+  diagnostics?: { enabled: boolean }; // opt-in: use structured extraction prompts for images
 }
 
 /** Runtime agent config (prompt resolved, ready to use) */
@@ -44,6 +45,7 @@ export interface AgentConfig {
   chatId?: number;
   topicId?: number | null;
   codingTopicId?: number;
+  diagnostics?: { enabled: boolean };
 }
 
 // ─── Loaders ─────────────────────────────────────────────────────────────────
@@ -79,6 +81,7 @@ for (const def of agentDefs) {
     topicId: def.topicId,
     codingTopicId: def.codingTopicId,
     systemPrompt: loadPrompt(def.id),
+    diagnostics: def.diagnostics,
   };
 }
 
