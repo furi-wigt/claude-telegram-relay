@@ -298,7 +298,7 @@ async function main() {
   if (!validateGroup("GENERAL")) {
     console.error("Cannot run — GENERAL group not configured in .env");
     console.error("Set GROUP_GENERAL_CHAT_ID in your .env file");
-    process.exit(1);
+    process.exit(0); // graceful skip — PM2 will retry on next cron cycle
   }
 
   const processes = await getPM2Processes();
@@ -331,5 +331,5 @@ async function main() {
 
 main().catch((error) => {
   console.error("Error running watchdog:", error);
-  process.exit(1);
+  process.exit(0); // exit 0 so PM2 does not immediately restart — next run at scheduled cron time
 });

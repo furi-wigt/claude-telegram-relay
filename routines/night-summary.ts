@@ -347,12 +347,12 @@ async function main() {
   if (!validateGroup("GENERAL")) {
     console.error("Cannot run — GENERAL group not configured in .env");
     console.error("Set GROUP_GENERAL_CHAT_ID in your .env file");
-    process.exit(1);
+    process.exit(0); // graceful skip — PM2 will retry on next cron cycle
   }
 
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
     console.error("Missing SUPABASE_URL or SUPABASE_ANON_KEY in .env");
-    process.exit(1);
+    process.exit(0); // graceful skip — retrying immediately won't fix missing config
   }
 
   const { summary, provider } = await buildSummary();
@@ -372,7 +372,7 @@ async function main() {
       topicId: GROUPS.GENERAL.topicId,
     });
     console.error("Night summary failed — both providers unavailable");
-    process.exit(1);
+    process.exit(0); // failure message already sent to Telegram; exit 0 prevents PM2 restart loop
   }
 
   await sendAndRecord(GROUPS.GENERAL.chatId, markdownToHtml(summary), {
@@ -386,5 +386,5 @@ async function main() {
 
 main().catch((error) => {
   console.error("Error running night summary:", error);
-  process.exit(1);
+  process.exit(0); // exit 0 so PM2 does not immediately restart — next run at scheduled cron time
 });

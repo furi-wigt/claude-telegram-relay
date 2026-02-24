@@ -12,6 +12,7 @@ import {
   searchSimilar,
   clusterDuplicates,
   deleteItems,
+  archiveCompletedGoals,
   runCleanup,
   type MemoryItem,
   type CleanupResult,
@@ -66,7 +67,47 @@ function makeResult(overrides: Partial<CleanupResult> = {}): CleanupResult {
         chatId: null,
       },
     ],
+    demotionCandidates: 0,
+    demotionArchived: 0,
+    completedGoalsArchived: 0,
     ...overrides,
+  };
+}
+
+/**
+ * Mock for archiveCompletedGoals: supabase.from().select().eq().eq() + .update().in()
+ */
+function mockSupabaseForArchive(
+  items: Array<{ id: string }>,
+  opts?: { updateError?: any }
+) {
+  const { updateError = null } = opts ?? {};
+
+  // Select chain: from().select("id").eq("type",...).eq("status",...) -> { data, error }
+  const selectEqStatus = mock(async (_col: string, _val: string) => ({
+    data: items,
+    error: null,
+  }));
+  const selectEqType = mock((_col: string, _val: string) => ({ eq: selectEqStatus }));
+  const selectFn = mock((_cols: string) => ({ eq: selectEqType }));
+
+  // Update chain: from().update({...}).in("id", [...]) -> { error }
+  const updateInFn = mock(async (_col: string, _ids: string[]) => ({
+    error: updateError,
+  }));
+  const updateFn = mock((_patch: any) => ({ in: updateInFn }));
+
+  const fromFn = mock((_table: string) => ({
+    select: selectFn,
+    update: updateFn,
+  }));
+
+  return {
+    supabase: { from: fromFn } as any,
+    fromFn,
+    selectFn,
+    updateFn,
+    updateInFn,
   };
 }
 
@@ -785,5 +826,101 @@ describe("buildTelegramMessage includes demotion when items archived", () => {
     // Once the coder adds demotion to buildTelegramMessage, these should pass
     expect(msg.toLowerCase()).toContain("5");
     expect(msg.toLowerCase()).toContain("archive");
+  });
+});
+
+// ============================================================
+// 9. archiveCompletedGoals() — auto-archive completed_goal items
+// ============================================================
+
+describe("archiveCompletedGoals()", () => {
+  it("archives all active completed_goal items in non-dry-run mode", async () => {
+    const items = [{ id: "cg-1" }, { id: "cg-2" }, { id: "cg-3" }];
+    const { supabase, updateInFn } = mockSupabaseForArchive(items);
+
+    const count = await archiveCompletedGoals(supabase, false);
+
+    expect(count).toBe(3);
+    expect(updateInFn).toHaveBeenCalledTimes(1);
+    const callArgs = updateInFn.mock.calls[0];
+    expect(callArgs[0]).toBe("id");
+    expect(callArgs[1]).toEqual(["cg-1", "cg-2", "cg-3"]);
+  });
+
+  it("dry run: returns count but does NOT call update", async () => {
+    const items = [{ id: "cg-1" }, { id: "cg-2" }];
+    const { supabase, updateFn } = mockSupabaseForArchive(items);
+
+    const count = await archiveCompletedGoals(supabase, true);
+
+    expect(count).toBe(2);
+    expect(updateFn).not.toHaveBeenCalled();
+  });
+
+  it("returns 0 when there are no active completed_goal items", async () => {
+    const { supabase, updateFn } = mockSupabaseForArchive([]);
+
+    const count = await archiveCompletedGoals(supabase, false);
+
+    expect(count).toBe(0);
+    expect(updateFn).not.toHaveBeenCalled();
+  });
+
+  it("returns 0 gracefully when select returns an error", async () => {
+    const eqStatus = mock(async () => ({ data: null, error: { message: "db error" } }));
+    const eqType = mock(() => ({ eq: eqStatus }));
+    const selectFn = mock(() => ({ eq: eqType }));
+    const fromFn = mock(() => ({ select: selectFn }));
+    const supabase = { from: fromFn } as any;
+
+    const count = await archiveCompletedGoals(supabase, false);
+
+    expect(count).toBe(0);
+  });
+});
+
+// ============================================================
+// 10. MemoryItem type accepts "completed_goal"
+// ============================================================
+
+describe("MemoryItem type", () => {
+  it("accepts completed_goal as a valid type", () => {
+    const item: MemoryItem = makeItem({ id: "cg-1", type: "completed_goal" });
+    expect(item.type).toBe("completed_goal");
+  });
+});
+
+// ============================================================
+// 11. buildReport and buildTelegramMessage include completedGoalsArchived
+// ============================================================
+
+describe("buildReport includes completedGoalsArchived", () => {
+  it("shows completed goals archived count when > 0", () => {
+    const result = makeResult({ scanned: 30, completedGoalsArchived: 5 });
+    const report = buildReport(result);
+    expect(report).toContain("Completed goals archived");
+    expect(report).toContain("5");
+  });
+
+  it("shows 0 when no completed goals were archived", () => {
+    const result = makeResult({ completedGoalsArchived: 0 });
+    const report = buildReport(result);
+    expect(report).toContain("Completed goals archived");
+    expect(report).toContain("0");
+  });
+});
+
+describe("buildTelegramMessage includes completedGoalsArchived when > 0", () => {
+  it("shows completed goals line when completedGoalsArchived > 0", () => {
+    const result = makeResult({ completedGoalsArchived: 3 });
+    const msg = buildTelegramMessage(result);
+    expect(msg.toLowerCase()).toContain("completed goal");
+    expect(msg).toContain("3");
+  });
+
+  it("omits completed goals line when completedGoalsArchived is 0", () => {
+    const result = makeResult({ completedGoalsArchived: 0 });
+    const msg = buildTelegramMessage(result);
+    expect(msg.toLowerCase()).not.toContain("completed goal");
   });
 });
