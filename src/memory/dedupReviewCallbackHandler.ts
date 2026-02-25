@@ -17,7 +17,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import {
   loadPendingCandidates,
   clearPendingCandidates,
-} from "../../routines/memory-dedup-review.ts";
+} from "./pendingDedup.ts";
 
 /**
  * Register the mdr_yes / mdr_no callback query handlers on the bot.

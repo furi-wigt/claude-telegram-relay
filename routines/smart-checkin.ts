@@ -210,7 +210,9 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error("Error running smart check-in:", error);
-  process.exit(0); // exit 0 so PM2 does not immediately restart — next run at scheduled cron time
-});
+if (import.meta.main) {
+  main().catch((error) => {
+    console.error("Error running smart check-in:", error);
+    process.exit(0); // exit 0 so PM2 does not immediately restart — next run at scheduled cron time
+  });
+}

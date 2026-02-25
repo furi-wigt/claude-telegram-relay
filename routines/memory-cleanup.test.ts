@@ -997,6 +997,18 @@ describe("groupItems() — provenance model: type-only clustering key (G1)", () 
   });
 });
 
+// ============================================================
+// Import safety — module must NOT trigger main() on import
+// ============================================================
+
+describe("import safety", () => {
+  it("importing the module does NOT trigger main()", async () => {
+    const mod = await import("./memory-cleanup.ts");
+    expect(typeof mod.fetchActiveItems).toBe("function");
+    expect(typeof mod.clusterDuplicates).toBe("function");
+  });
+});
+
 describe("searchSimilar() — provenance model: no chat_id in search body (S3)", () => {
   it("does not pass chat_id to the search Edge Function", async () => {
     // RED: fails until S3 is implemented (currently passes item.chat_id when non-null).

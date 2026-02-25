@@ -106,7 +106,9 @@ async function main() {
   console.log("Security scan summary sent to Security group");
 }
 
-main().catch((error) => {
-  console.error("Error running security routine:", error);
-  process.exit(1);
-});
+if (import.meta.main) {
+  main().catch((error) => {
+    console.error("Error running security routine:", error);
+    process.exit(1);
+  });
+}

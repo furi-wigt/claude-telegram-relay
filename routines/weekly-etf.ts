@@ -542,7 +542,9 @@ async function main() {
   console.log("Weekly UCITS ETF analysis sent to General group");
 }
 
-main().catch((error) => {
-  console.error("Error running weekly ETF analysis:", error);
-  process.exit(1);
-});
+if (import.meta.main) {
+  main().catch((error) => {
+    console.error("Error running weekly ETF analysis:", error);
+    process.exit(1);
+  });
+}

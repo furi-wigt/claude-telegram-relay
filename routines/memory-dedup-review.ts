@@ -26,7 +26,6 @@
  * Dry run:      DRY_RUN=true bun run routines/memory-dedup-review.ts
  */
 
-import { writeFile, mkdir, readFile, unlink } from "fs/promises";
 import { join, dirname } from "path";
 import { readFileSync } from "fs";
 import { createClient } from "@supabase/supabase-js";
@@ -40,7 +39,15 @@ import {
 } from "./memory-cleanup.ts";
 
 const PROJECT_ROOT = join(dirname(import.meta.path), "..");
-const DEFAULT_PENDING_FILE = join(PROJECT_ROOT, "data", "pending-dedup.json");
+
+// Re-export from the extracted module so existing consumers aren't broken
+export {
+  savePendingCandidates,
+  loadPendingCandidates,
+  clearPendingCandidates,
+  DEFAULT_PENDING_FILE,
+  type PendingDedup,
+} from "../src/memory/pendingDedup.ts";
 
 // ============================================================
 // CONFIG
@@ -49,18 +56,6 @@ const DEFAULT_PENDING_FILE = join(PROJECT_ROOT, "data", "pending-dedup.json");
 /** Lower threshold than nightly 0.92 — we confirm with user before deleting */
 const SIMILARITY_THRESHOLD = 0.85;
 const MIN_CONTENT_LENGTH = 10;
-const PENDING_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
-
-// ============================================================
-// TYPES
-// ============================================================
-
-export interface PendingDedup {
-  ids: string[];
-  count: number;
-  expiresAt: string; // ISO
-  summary: string;
-}
 
 // ============================================================
 // JUNK DETECTION
@@ -202,50 +197,6 @@ export function buildConfirmationMessage(
   );
 
   return lines.join("\n");
-}
-
-// ============================================================
-// PENDING STATE (cross-process file)
-// ============================================================
-
-export async function savePendingCandidates(
-  ids: string[],
-  summary: string,
-  filePath = DEFAULT_PENDING_FILE
-): Promise<void> {
-  const data: PendingDedup = {
-    ids,
-    count: ids.length,
-    expiresAt: new Date(Date.now() + PENDING_TTL_MS).toISOString(),
-    summary,
-  };
-  await mkdir(dirname(filePath), { recursive: true });
-  await writeFile(filePath, JSON.stringify(data, null, 2), "utf-8");
-}
-
-export async function loadPendingCandidates(
-  filePath = DEFAULT_PENDING_FILE
-): Promise<PendingDedup | null> {
-  try {
-    const raw = await readFile(filePath, "utf-8");
-    const data = JSON.parse(raw) as PendingDedup;
-    if (new Date(data.expiresAt) < new Date()) {
-      return null; // expired
-    }
-    return data;
-  } catch {
-    return null;
-  }
-}
-
-export async function clearPendingCandidates(
-  filePath = DEFAULT_PENDING_FILE
-): Promise<void> {
-  try {
-    await unlink(filePath);
-  } catch {
-    // file doesn't exist — that's fine
-  }
 }
 
 // ============================================================
@@ -429,7 +380,9 @@ async function main(): Promise<void> {
   process.exit(0);
 }
 
-main().catch((error) => {
-  console.error("Error running memory dedup review:", error);
-  process.exit(0); // exit 0 so PM2 does not immediately restart
-});
+if (import.meta.main) {
+  main().catch((error) => {
+    console.error("Error running memory dedup review:", error);
+    process.exit(0); // exit 0 so PM2 does not immediately restart
+  });
+}

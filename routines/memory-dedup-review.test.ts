@@ -271,6 +271,18 @@ describe("buildConfirmationMessage", () => {
 // Pending state: savePendingCandidates / loadPendingCandidates / clearPendingCandidates
 // ============================================================
 
+// ============================================================
+// Import safety — module must NOT trigger main() on import
+// ============================================================
+
+describe("import safety", () => {
+  it("importing the module does NOT trigger main()", async () => {
+    const mod = await import("./memory-dedup-review.ts");
+    expect(typeof mod.loadPendingCandidates).toBe("function");
+    expect(typeof mod.clearPendingCandidates).toBe("function");
+  });
+});
+
 describe("pendingCandidates (file I/O)", () => {
   afterEach(async () => {
     await clearPendingCandidates(TEST_FILE);
