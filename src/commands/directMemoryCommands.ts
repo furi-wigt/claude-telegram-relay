@@ -2,12 +2,12 @@
  * Direct Memory Mutation Commands
  *
  * Adds four commands for explicit memory management with +/- syntax:
- *   /goals  +goal1, +goal2, -old goal text
- *   /goals  *goal1, *2  — mark goal as done (index or fuzzy match)
+ *   /goals  +goal1 | +goal2 | -old goal text
+ *   /goals  *goal1 | *2  — mark goal as done (index or fuzzy match)
  *   /goals  *           — list completed/archived goals
- *   /facts  +fact1, -old fact
- *   /prefs  +prefer X, -old preference
- *   /reminders +Meeting Friday 3pm, -old reminder
+ *   /facts  +fact1 | -old fact
+ *   /prefs  +prefer X | -old preference
+ *   /reminders +Meeting Friday 3pm | -old reminder
  *
  * - `+item` adds a new entry
  * - `-item` removes matching entry using Ollama fuzzy match (fallback: ilike)
@@ -97,10 +97,10 @@ setInterval(() => {
 /**
  * Parse a command argument string with +/- items.
  *
- * Input:  "+goal1, +goal2, -old goal text, +goal3"
+ * Input:  "+goal1 | +goal2 | -old goal text | +goal3"
  * Output: { adds: ["goal1", "goal2", "goal3"], removes: ["old goal text"] }
  *
- * Items are comma-separated. Leading +/- determines action.
+ * Items are pipe-separated. Leading +/- determines action.
  * Items without a prefix are ignored.
  */
 export function parseAddRemoveArgs(input: string): {
@@ -112,10 +112,8 @@ export function parseAddRemoveArgs(input: string): {
   const removes: string[] = [];
   const toggleDone: string[] = [];
 
-  // Split on commas, but be careful not to split within items
-  // Strategy: split on ", +" or ", -" boundaries
-  // First normalize: split on comma + optional whitespace
-  const parts = input.split(/,\s*/);
+  // Split on pipe separator with optional surrounding whitespace
+  const parts = input.split(/\s*\|\s*/);
 
   for (const raw of parts) {
     const trimmed = raw.trim();
@@ -290,8 +288,8 @@ async function listItems(
   // goals: no category filter — includes items stored via [GOAL:] intent tags
 
   const usageHint = config.name === "goals"
-    ? `\nUse /${config.name} +item to add, -N or -text to remove, *N or *text to mark done.`
-    : `\nUse /${config.name} +item to add, -N or -text to remove.`;
+    ? `\nUse /${config.name} +item | -N | *N  (pipe-separate multiple ops)`
+    : `\nUse /${config.name} +item | -N or -text  (pipe-separate multiple ops)`;
 
   const { data, error } = await query
     .order("created_at", { ascending: true })
@@ -567,7 +565,7 @@ async function handleDirectMemoryCommand(
   if (adds.length === 0 && removes.length === 0) {
     await ctx.reply(
       `No valid items found. Use + to add and - to remove.\n` +
-        `Example: /${config.name} +Item to add, -Item to remove`
+        `Example: /${config.name} +Item to add | -Item to remove`
     );
     return;
   }

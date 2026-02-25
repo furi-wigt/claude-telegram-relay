@@ -48,28 +48,28 @@ describe("parseAddRemoveArgs", () => {
   });
 
   test("parses mixed adds and removes", () => {
-    const result = parseAddRemoveArgs("+Goal A, +Goal B, -Old thing, +Goal C");
+    const result = parseAddRemoveArgs("+Goal A | +Goal B | -Old thing | +Goal C");
     expect(result.adds).toEqual(["Goal A", "Goal B", "Goal C"]);
     expect(result.removes).toEqual(["Old thing"]);
     expect(result.toggleDone).toEqual([]);
   });
 
   test("ignores items without +/-/* prefix", () => {
-    const result = parseAddRemoveArgs("no prefix, +valid add, bare text");
+    const result = parseAddRemoveArgs("no prefix | +valid add | bare text");
     expect(result.adds).toEqual(["valid add"]);
     expect(result.removes).toEqual([]);
     expect(result.toggleDone).toEqual([]);
   });
 
   test("trims whitespace from items", () => {
-    const result = parseAddRemoveArgs("  +  trimmed goal  ,  -  trimmed remove  ");
+    const result = parseAddRemoveArgs("  +  trimmed goal  |  -  trimmed remove  ");
     expect(result.adds).toEqual(["trimmed goal"]);
     expect(result.removes).toEqual(["trimmed remove"]);
     expect(result.toggleDone).toEqual([]);
   });
 
   test("ignores empty items after stripping prefix", () => {
-    const result = parseAddRemoveArgs("+, -, +valid");
+    const result = parseAddRemoveArgs("+ | - | +valid");
     expect(result.adds).toEqual(["valid"]);
     expect(result.removes).toEqual([]);
     expect(result.toggleDone).toEqual([]);
@@ -97,21 +97,21 @@ describe("parseAddRemoveArgs", () => {
   });
 
   test("mixed +add, *done, -remove populates all three fields", () => {
-    const result = parseAddRemoveArgs("+add me, *done goal, -remove me");
+    const result = parseAddRemoveArgs("+add me | *done goal | -remove me");
     expect(result.adds).toEqual(["add me"]);
     expect(result.removes).toEqual(["remove me"]);
     expect(result.toggleDone).toEqual(["done goal"]);
   });
 
   test("mixed *3, +new goal, -old stuff routes correctly", () => {
-    const result = parseAddRemoveArgs("*3, +new goal, -old stuff");
+    const result = parseAddRemoveArgs("*3 | +new goal | -old stuff");
     expect(result.adds).toEqual(["new goal"]);
     expect(result.removes).toEqual(["old stuff"]);
     expect(result.toggleDone).toEqual(["3"]);
   });
 
   test("multiple * items in one command", () => {
-    const result = parseAddRemoveArgs("*first goal, *second goal");
+    const result = parseAddRemoveArgs("*first goal | *second goal");
     expect(result.toggleDone).toEqual(["first goal", "second goal"]);
     expect(result.adds).toEqual([]);
     expect(result.removes).toEqual([]);
@@ -357,7 +357,7 @@ describe("/goals command — add path", () => {
     } as any;
     registerDirectMemoryCommands(bot as any, { supabase });
 
-    const ctx = mockCtx({ match: "+Goal One, +Goal Two" });
+    const ctx = mockCtx({ match: "+Goal One | +Goal Two" });
     await bot._triggerCommand("goals", ctx);
 
     expect(memInsert).toHaveBeenCalledTimes(2);
