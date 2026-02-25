@@ -73,6 +73,50 @@ const COMMAND_CONFIG: Record<string, CommandConfig> = {
   },
 };
 
+// ── List cache ─────────────────────────────────────────────────────────────
+//
+// Anchors numeric indices (*N, -N) to the list the user last viewed.
+// Populated by listItems(); consumed (read-only) by findGoalsByIndexOrQuery()
+// and findMatchingItems() for the numeric path.
+//
+// A single invalidation happens at the END of handleDirectMemoryCommand after
+// all operations complete — preventing mid-command index shifts caused by
+// mutations (e.g. toggleGoalDone changing type to completed_goal shifts the
+// type="goal" query result for subsequent ops in the same command).
+
+interface CachedList {
+  items: MemoryItem[];
+  expiresAt: number;
+}
+
+const listCache = new Map<string, CachedList>();
+const LIST_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+function listCacheKey(chatId: number, commandName: string): string {
+  return `${chatId}:${commandName}`;
+}
+
+function setListCache(chatId: number, commandName: string, items: MemoryItem[]): void {
+  listCache.set(listCacheKey(chatId, commandName), {
+    items,
+    expiresAt: Date.now() + LIST_CACHE_TTL_MS,
+  });
+}
+
+function getListCache(chatId: number, commandName: string): MemoryItem[] | null {
+  const key = listCacheKey(chatId, commandName);
+  const entry = listCache.get(key);
+  if (!entry || Date.now() >= entry.expiresAt) {
+    listCache.delete(key);
+    return null;
+  }
+  return entry.items;
+}
+
+function invalidateListCache(chatId: number, commandName: string): void {
+  listCache.delete(listCacheKey(chatId, commandName));
+}
+
 // ── Pending duplicate confirmations ───────────────────────────────────────
 
 interface PendingAdd {
@@ -188,10 +232,14 @@ async function findMatchingItems(
 
   const candidates = data as MemoryItem[];
 
-  // Index-based: purely numeric query like "1", "2"
+  // Index-based: purely numeric query like "1", "2".
+  // Prefer the cached list (populated by the preceding no-args list command)
+  // so numeric indices remain stable even when earlier ops in the same command
+  // have mutated DB rows (e.g. deleting index 2 would shift all subsequent items).
   if (/^\d+$/.test(query)) {
     const idx = parseInt(query, 10) - 1;
-    if (idx >= 0 && idx < candidates.length) return [candidates[idx]];
+    const source = getListCache(chatId, config.name) ?? candidates;
+    if (idx >= 0 && idx < source.length) return [source[idx]];
     return []; // out of range
   }
 
@@ -300,6 +348,10 @@ async function listItems(
     return `No ${config.label}s stored yet.${usageHint}`;
   }
 
+  // Cache the list so numeric ops (*N, -N) within the same command
+  // resolve against what was shown to the user, not a potentially shifted DB state.
+  setListCache(chatId, config.name, data as MemoryItem[]);
+
   // Number all items for index-based addressing (-1, -2, etc.)
   const lines = (data as MemoryItem[]).map((item, i) => `  ${i + 1}. ${item.content}`).join("\n");
   return `${config.emoji} ${config.label.charAt(0).toUpperCase() + config.label.slice(1)}s\n${"─".repeat(24)}\n${lines}${usageHint}`;
@@ -330,10 +382,13 @@ async function findGoalsByIndexOrQuery(
 
   const goals = data as MemoryItem[];
 
-  // Index-based: purely numeric query like "1", "2"
+  // Index-based: purely numeric query like "1", "2".
+  // Prefer the cached list so that multiple *N ops in the same command
+  // all resolve against the same stable list the user was shown.
   if (/^\d+$/.test(query)) {
     const idx = parseInt(query, 10) - 1;
-    if (idx >= 0 && idx < goals.length) return [goals[idx]];
+    const source = getListCache(chatId, "goals") ?? goals;
+    if (idx >= 0 && idx < source.length) return [source[idx]];
     return [];
   }
 
@@ -498,6 +553,11 @@ async function handleDirectMemoryCommand(
 
   const { adds, removes, toggleDone } = parseAddRemoveArgs(input);
 
+  // Track whether any mutation occurred so we can do a single cache invalidation
+  // at the END of the command rather than mid-command. Mid-command invalidation
+  // causes subsequent numeric ops to re-query the DB and get a shifted list.
+  let mutationOccurred = false;
+
   // ── Handle * syntax (goals only) ────────────────────────────────────────
   if (config.name === "goals" && toggleDone.length > 0) {
     // "/goals *" alone → list completed goals
@@ -522,6 +582,7 @@ async function handleDirectMemoryCommand(
 
         if (matches.length === 1) {
           const { wasActive } = await toggleGoalDone(supabase, matches[0].id);
+          mutationOccurred = true;
           if (wasActive) {
             results.push(`✅ Marked as done: ${matches[0].content}`);
           } else {
@@ -642,6 +703,7 @@ async function handleDirectMemoryCommand(
       if (error) {
         results.push(`❌ Failed to add: ${content}`);
       } else {
+        mutationOccurred = true;
         results.push(`${config.emoji} Added: ${content}`);
       }
     } catch {
@@ -663,6 +725,7 @@ async function handleDirectMemoryCommand(
         // Single match — delete immediately
         const ok = await deleteItem(supabase, matches[0].id);
         if (ok) {
+          mutationOccurred = true;
           results.push(`🗑️ Removed: ${matches[0].content}`);
         } else {
           results.push(`❌ Failed to remove: ${matches[0].content}`);
@@ -704,6 +767,13 @@ async function handleDirectMemoryCommand(
       `/${config.name} ${input}`,
       replyText
     );
+  }
+
+  // Single cache invalidation after ALL operations complete.
+  // This keeps the cache stable for every op within the command while ensuring
+  // the next list command (or next *N command) gets a fresh DB result.
+  if (mutationOccurred) {
+    invalidateListCache(chatId, config.name);
   }
 }
 

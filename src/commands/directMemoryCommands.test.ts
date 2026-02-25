@@ -1325,7 +1325,8 @@ describe("index-based delete (-N syntax)", () => {
     ]);
     registerDirectMemoryCommands(bot as any, { supabase });
 
-    const ctx = mockCtx({ match: "-2" });
+    // Unique chatId: avoids picking up stale cache from earlier no-args list tests
+    const ctx = mockCtx({ chatId: 66601, match: "-2" });
     await bot._triggerCommand("goals", ctx);
 
     // Index 2 (1-based) maps to candidates[1] → id "g2"
@@ -1343,7 +1344,8 @@ describe("index-based delete (-N syntax)", () => {
     ]);
     registerDirectMemoryCommands(bot as any, { supabase });
 
-    const ctx = mockCtx({ match: "-1" });
+    // Unique chatId: avoids stale cache from earlier facts no-args tests
+    const ctx = mockCtx({ chatId: 66602, match: "-1" });
     await bot._triggerCommand("facts", ctx);
 
     expect(eqDeleteFn).toHaveBeenCalledWith("id", "f1");
@@ -1378,7 +1380,8 @@ describe("index-based delete (-N syntax)", () => {
     ]);
     registerDirectMemoryCommands(bot as any, { supabase });
 
-    const ctx = mockCtx({ match: "-2" });
+    // Unique chatId: avoids stale cache from earlier reminders no-args tests
+    const ctx = mockCtx({ chatId: 66603, match: "-2" });
     await bot._triggerCommand("reminders", ctx);
 
     expect(eqDeleteFn).toHaveBeenCalledWith("id", "r2");
@@ -1804,6 +1807,156 @@ describe("/facts no-args — chunked reply for long lists", () => {
     for (let i = 0; i < 50; i++) {
       expect(combined).toContain(`unique-marker-${i}`);
     }
+  });
+});
+
+// ============================================================
+// Cache — multi-op index stability (Phase 1 + 2 fix)
+//
+// Bug: /goals *10 | -12 | *15 marked goal #16 as done instead of #15.
+// Root cause: toggleGoalDone changes item type to completed_goal, so a
+// subsequent fresh DB query (type="goal") shifts all indices after the
+// toggled item by 1.  The second *N op then targets the wrong item.
+//
+// Fix: list cache anchors numeric indices to the list shown to the user;
+// deferred invalidation ensures cache is stable for the full command.
+// ============================================================
+
+describe("cache — multi-op index stability", () => {
+  /**
+   * Build a supabase mock for cache-based tests.
+   * Once firstToggledId is recorded in updatedIds (via updateEqFn),
+   * subsequent list queries exclude it — simulating the DB state where
+   * that goal's type has been changed to completed_goal.
+   */
+  function mockSupabaseMultiOp(
+    goals: Array<{ id: string; content: string }>,
+    firstToggledId: string
+  ) {
+    const goalsAfterToggle = goals.filter((g) => g.id !== firstToggledId);
+    const updatedIds: string[] = [];
+
+    const updateEqFn = mock((field: string, val: string) => {
+      if (field === "id") updatedIds.push(val);
+      return Promise.resolve({ error: null });
+    });
+
+    const singleFn = mock(() =>
+      Promise.resolve({ data: { type: "goal" }, error: null })
+    );
+
+    // list chain: returns shifted results once firstToggledId has been updated
+    const listChain: any = {};
+    listChain.eq = mock(() => listChain);
+    listChain.or = mock(() => listChain);
+    listChain.order = mock(() => listChain);
+    listChain.limit = () => {
+      const data = updatedIds.includes(firstToggledId) ? goalsAfterToggle : goals;
+      return Promise.resolve({ data, error: null });
+    };
+
+    // single chain: for toggleGoalDone's select("type").eq(...).single()
+    const singleChain: any = {};
+    singleChain.eq = mock(() => singleChain);
+    singleChain.single = singleFn;
+
+    const msgInsert = mock(() => Promise.resolve({ data: null, error: null }));
+
+    const supabase = {
+      from: mock((table: string) => {
+        if (table === "messages") return { insert: msgInsert };
+        return {
+          select: (cols: string) =>
+            cols === "type" ? singleChain : listChain,
+          update: mock(() => ({ eq: updateEqFn })),
+        };
+      }),
+    } as any;
+
+    return { supabase, updatedIds };
+  }
+
+  test("/goals *1 | *3 — first toggle does not shift second toggle", async () => {
+    // chatId unique to avoid cross-test cache contamination
+    const chatId = 70001;
+
+    const goals = [
+      { id: "g1", content: "Learn Rust" },
+      { id: "g2", content: "Ship API v2" },
+      { id: "g3", content: "Read 12 books" },
+      { id: "g4", content: "Improve test coverage" },
+      { id: "g5", content: "Write documentation" },
+    ];
+
+    const { supabase, updatedIds } = mockSupabaseMultiOp(goals, "g1");
+    const bot = mockBot();
+    registerDirectMemoryCommands(bot as any, { supabase });
+
+    // Step 1: populate cache via no-args /goals (simulates user viewing the list)
+    await bot._triggerCommand("goals", mockCtx({ chatId, match: "" }));
+
+    // Step 2: multi-op — *1 and *3
+    await bot._triggerCommand("goals", mockCtx({ chatId, match: "*1 | *3" }));
+
+    // g1 (index 1) and g3 (index 3) should be toggled
+    expect(updatedIds).toContain("g1");
+    expect(updatedIds).toContain("g3");
+    // Without fix: *3 uses shifted DB list [g2,g3,g4,g5] → index 3 = g4 (wrong)
+    expect(updatedIds).not.toContain("g4");
+  });
+
+  test("cache is invalidated after command — next /goals list hits DB fresh", async () => {
+    const chatId = 70002;
+
+    const goals = [
+      { id: "g1", content: "Goal One" },
+      { id: "g2", content: "Goal Two" },
+      { id: "g3", content: "Goal Three" },
+    ];
+
+    const { supabase } = mockSupabaseMultiOp(goals, "g1");
+    const bot = mockBot();
+    registerDirectMemoryCommands(bot as any, { supabase });
+
+    // Step 1: populate cache
+    await bot._triggerCommand("goals", mockCtx({ chatId, match: "" }));
+
+    // Step 2: toggle *1 — cache should be invalidated at end of command
+    await bot._triggerCommand("goals", mockCtx({ chatId, match: "*1" }));
+
+    // Step 3: list again — must query DB fresh (g1 toggled → excluded by mock)
+    const freshCtx = mockCtx({ chatId, match: "" });
+    await bot._triggerCommand("goals", freshCtx);
+
+    const text = freshCtx.reply.mock.calls[0][0] as string;
+    // Fresh DB excludes "Goal One" (g1 toggled)
+    expect(text).toContain("Goal Two");
+    expect(text).toContain("Goal Three");
+    expect(text).not.toContain("Goal One");
+  });
+
+  test("single-op /goals *2 still works after cache fix (regression)", async () => {
+    const chatId = 70003;
+
+    const goals = [
+      { id: "g1", content: "Learn Rust" },
+      { id: "g2", content: "Ship API v2" },
+      { id: "g3", content: "Read 12 books" },
+    ];
+
+    const { supabase, updatedIds } = mockSupabaseMultiOp(goals, "g2");
+    const bot = mockBot();
+    registerDirectMemoryCommands(bot as any, { supabase });
+
+    // populate cache
+    await bot._triggerCommand("goals", mockCtx({ chatId, match: "" }));
+
+    // single toggle *2
+    await bot._triggerCommand("goals", mockCtx({ chatId, match: "*2" }));
+
+    expect(updatedIds).toContain("g2");
+    expect(updatedIds).not.toContain("g1");
+    expect(updatedIds).not.toContain("g3");
   });
 });
 
