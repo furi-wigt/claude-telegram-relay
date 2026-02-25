@@ -32,10 +32,6 @@ mock.module("../ollama.ts", () => ({
   callOllamaGenerate: callOllamaGenerateMock,
 }));
 
-// Stub tracer to avoid file-system / telemetry side effects
-mock.module("../utils/tracer.ts", () => ({
-  trace: () => {},
-}));
 
 // Import AFTER mocking so the cached module picks up our mocks.
 // memoryConfirm.ts only imports storeExtractedMemories from longTermExtractor.ts,

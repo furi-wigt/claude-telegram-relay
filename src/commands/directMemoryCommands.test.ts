@@ -1747,6 +1747,66 @@ describe("/reminders command — stays chat-scoped (provenance model unchanged)"
   });
 });
 
+// ============================================================
+// Chunked reply — /facts (and other list commands) must not
+// exceed Telegram's 4096-character limit.
+//
+// Root cause: after the provenance model, /facts returns ALL global
+// facts from ALL groups — 50 items at ~100 chars each can exceed 4096.
+// Fix: use chunkMessage() from sendToGroup to split the reply.
+// ============================================================
+
+describe("/facts no-args — chunked reply for long lists", () => {
+  function makeItems(count: number) {
+    return Array.from({ length: count }, (_, i) => ({
+      id: `f${i + 1}`,
+      content: `Fact ${i + 1}: unique-marker-${i} ${"x".repeat(90)}`,
+    }));
+  }
+
+  test("sends multiple reply calls when facts list exceeds 4096 chars", async () => {
+    const bot = mockBot();
+    const { supabase } = mockSupabaseForList(makeItems(50));
+    registerDirectMemoryCommands(bot as any, { supabase });
+
+    const ctx = mockCtx({ match: "" });
+    await bot._triggerCommand("facts", ctx);
+
+    // 50 items × ~105 chars + header/footer ≈ 5300 chars → must chunk
+    expect(ctx.reply.mock.calls.length).toBeGreaterThan(1);
+  });
+
+  test("each chunk sent to ctx.reply is within Telegram's 4096 char limit", async () => {
+    const bot = mockBot();
+    const { supabase } = mockSupabaseForList(makeItems(50));
+    registerDirectMemoryCommands(bot as any, { supabase });
+
+    const ctx = mockCtx({ match: "" });
+    await bot._triggerCommand("facts", ctx);
+
+    for (const call of ctx.reply.mock.calls) {
+      const text = call[0] as string;
+      expect(text.length).toBeLessThanOrEqual(4096);
+    }
+  });
+
+  test("full facts list content is preserved across all chunked replies (no data loss)", async () => {
+    const bot = mockBot();
+    const { supabase } = mockSupabaseForList(makeItems(50));
+    registerDirectMemoryCommands(bot as any, { supabase });
+
+    const ctx = mockCtx({ match: "" });
+    await bot._triggerCommand("facts", ctx);
+
+    const combined = (ctx.reply.mock.calls as any[]).map((c) => c[0] as string).join("");
+
+    // Every item's unique marker must appear in the combined output
+    for (let i = 0; i < 50; i++) {
+      expect(combined).toContain(`unique-marker-${i}`);
+    }
+  });
+});
+
 describe("listItems — provenance model read path (R5)", () => {
   test("personal facts list does NOT apply chat_id OR-scope filter", async () => {
     // RED: fails until R5 is implemented (currently applies .or(chat_id.eq.X,chat_id.is.null)

@@ -21,6 +21,7 @@ import { InlineKeyboard } from "grammy";
 import { claudeText } from "../claude-process.ts";
 import { saveCommandInteraction } from "../utils/saveMessage.ts";
 import { findPotentialDuplicates, parseModelIndices } from "../utils/duplicateDetector.ts";
+import { chunkMessage } from "../utils/sendToGroup.ts";
 
 export interface DirectMemoryOptions {
   supabase: SupabaseClient | null;
@@ -461,6 +462,19 @@ async function listCompletedGoals(
   return parts.join("\n\n");
 }
 
+// ── Reply helpers ──────────────────────────────────────────────────────────
+
+/**
+ * Send a reply, splitting into multiple messages if the text exceeds
+ * Telegram's 4096-character limit. Uses the same chunking strategy as
+ * sendToGroup (paragraph → line → hard-split).
+ */
+async function replyChunked(ctx: Context, text: string): Promise<void> {
+  for (const chunk of chunkMessage(text)) {
+    await ctx.reply(chunk);
+  }
+}
+
 // ── Command handler ────────────────────────────────────────────────────────
 
 /**
@@ -479,7 +493,7 @@ async function handleDirectMemoryCommand(
 
   if (!input) {
     const replyText = await listItems(supabase, chatId, config);
-    await ctx.reply(replyText);
+    await replyChunked(ctx, replyText);
     await saveCommandInteraction(supabase, chatId, `/${config.name}`, replyText);
     return;
   }
@@ -491,7 +505,7 @@ async function handleDirectMemoryCommand(
     // "/goals *" alone → list completed goals
     if (toggleDone.length === 1 && toggleDone[0] === "") {
       const replyText = await listCompletedGoals(supabase, chatId);
-      await ctx.reply(replyText);
+      await replyChunked(ctx, replyText);
       await saveCommandInteraction(supabase, chatId, `/${config.name} *`, replyText);
       return;
     }
@@ -542,7 +556,7 @@ async function handleDirectMemoryCommand(
 
     if (results.length > 0) {
       const replyText = results.join("\n");
-      await ctx.reply(replyText);
+      await replyChunked(ctx, replyText);
       await saveCommandInteraction(supabase, chatId, `/${config.name} ${input}`, replyText);
     }
 
@@ -683,7 +697,7 @@ async function handleDirectMemoryCommand(
 
   if (results.length > 0) {
     const replyText = results.join("\n");
-    await ctx.reply(replyText);
+    await replyChunked(ctx, replyText);
 
     // Save to short-term memory
     await saveCommandInteraction(
