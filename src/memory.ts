@@ -88,7 +88,7 @@ export async function processMemoryIntents(
     await supabase.from("memory").insert({
       type: "fact",
       content: match[1],
-      chat_id: null,  // null = global, visible to all groups
+      chat_id: chatId ?? null,  // provenance: store originating chat (null = CLI/DM)
       category: detectMemoryCategory(match[1]),
     });
     clean = clean.replace(match[0], "");
@@ -108,7 +108,7 @@ export async function processMemoryIntents(
       type: "goal",
       content: match[1],
       deadline: match[2] || null,
-      chat_id: null,   // goals are globally scoped — visible across all groups
+      chat_id: chatId ?? null,  // provenance: store originating chat; reads are globally scoped
       category: "goal",
     });
     clean = clean.replace(match[0], "");
@@ -169,9 +169,12 @@ export async function getMemoryContext(
       .limit(20);
 
     if (chatId) {
-      // Facts are chat-scoped: show own group's facts + global facts.
-      // Goals are globally scoped: always show all goals regardless of which group created them.
-      factsQuery = factsQuery.or(`chat_id.eq.${chatId},chat_id.is.null`);
+      // Provenance model: facts are globally visible (chat_id is audit-only).
+      // Exception: date/reminder facts are chat-scoped to avoid cross-group noise in AI context.
+      // Goals are globally scoped: no chat_id filter (unchanged).
+      factsQuery = (factsQuery as any).or(
+        `category.neq.date,category.is.null,and(category.eq.date,chat_id.eq.${chatId})`
+      );
     }
 
     const [factsResult, goalsResult] = await Promise.all([
@@ -264,8 +267,10 @@ export async function getMemoryContextRaw(
       .limit(20);
 
     if (chatId) {
-      // Facts are chat-scoped. Goals are globally scoped (no chatId filter).
-      factsQuery = factsQuery.or(`chat_id.eq.${chatId},chat_id.is.null`);
+      // Provenance model: non-date facts globally visible; date facts chat-scoped.
+      factsQuery = (factsQuery as any).or(
+        `category.neq.date,category.is.null,and(category.eq.date,chat_id.eq.${chatId})`
+      );
     }
 
     const [factsResult, goalsResult] = await Promise.all([
@@ -329,10 +334,8 @@ export async function getMemoryFull(
       content.trim().length < 4 ||
       /^[\[\]`\/|,\s\-\.]+$/.test(content.trim());
 
-    const scope = chatId
-      ? `chat_id.eq.${chatId},chat_id.is.null`
-      : undefined;
-
+    // Provenance model: all memory types are globally visible via /memory command.
+    // chat_id is audit trail only — no scope filter applied here.
     const makeQuery = (type: string, filterActive = true) => {
       let q = supabase
         .from("memory")
@@ -340,7 +343,6 @@ export async function getMemoryFull(
         .eq("type", type)
         .order("created_at", { ascending: false });
       if (filterActive) q = q.eq("status", "active");
-      if (scope) q = q.or(scope);
       return q;
     };
 
@@ -430,7 +432,7 @@ export async function getRelevantContext(
           match_count: 3,
           match_threshold: 0.7,
           table: "memory",
-          chat_id: chatId ?? null,
+          // Provenance model: memory search is globally scoped — no chat_id filter.
         },
       }),
     ]);

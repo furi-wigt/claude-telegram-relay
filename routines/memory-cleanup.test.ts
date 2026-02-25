@@ -157,14 +157,14 @@ describe("groupItems()", () => {
     const groups = groupItems(items);
 
     expect(groups.size).toBe(1);
-    const group = groups.get("fact::100");
+    const group = groups.get("fact"); // provenance model: key is bare type
     expect(group).toBeDefined();
     expect(group!.length).toBe(2);
     expect(group!.map((i) => i.id)).toContain("a");
     expect(group!.map((i) => i.id)).toContain("b");
   });
 
-  it("places items with same type but different chat_id in separate groups", () => {
+  it("places items with same type and different chat_id in the same cluster (provenance model)", () => {
     const items: MemoryItem[] = [
       makeItem({ id: "a", type: "fact", chat_id: 100 }),
       makeItem({ id: "b", type: "fact", chat_id: 200 }),
@@ -172,12 +172,14 @@ describe("groupItems()", () => {
 
     const groups = groupItems(items);
 
-    expect(groups.size).toBe(2);
-    expect(groups.get("fact::100")).toBeDefined();
-    expect(groups.get("fact::200")).toBeDefined();
+    // Provenance model: chat_id is audit-only — same type → same cluster
+    expect(groups.size).toBe(1);
+    expect(groups.get("fact")).toBeDefined();
+    expect(groups.get("fact::100")).toBeUndefined();
+    expect(groups.get("fact::200")).toBeUndefined();
   });
 
-  it("groups items with same type and null chat_id into a 'null' group", () => {
+  it("groups items with same type and null chat_id into the type cluster", () => {
     const items: MemoryItem[] = [
       makeItem({ id: "a", type: "goal", chat_id: null }),
       makeItem({ id: "b", type: "goal", chat_id: null }),
@@ -186,29 +188,32 @@ describe("groupItems()", () => {
     const groups = groupItems(items);
 
     expect(groups.size).toBe(1);
-    const group = groups.get("goal::null");
+    const group = groups.get("goal"); // provenance model: key is bare type
     expect(group).toBeDefined();
     expect(group!.length).toBe(2);
   });
 
-  it("produces group key in format '${type}::${chat_id}'", () => {
+  it("produces bare type string as key (no chat_id suffix)", () => {
     const items: MemoryItem[] = [
       makeItem({ id: "a", type: "preference", chat_id: 42 }),
     ];
 
     const groups = groupItems(items);
 
-    expect(groups.has("preference::42")).toBe(true);
+    // Provenance model: key is bare type only
+    expect(groups.has("preference")).toBe(true);
+    expect(groups.has("preference::42")).toBe(false);
   });
 
-  it("produces group key '${type}::null' when chat_id is null", () => {
+  it("produces bare type string as key even when chat_id is null", () => {
     const items: MemoryItem[] = [
       makeItem({ id: "a", type: "fact", chat_id: null }),
     ];
 
     const groups = groupItems(items);
 
-    expect(groups.has("fact::null")).toBe(true);
+    expect(groups.has("fact")).toBe(true);
+    expect(groups.has("fact::null")).toBe(false);
   });
 });
 
@@ -390,7 +395,7 @@ describe("searchSimilar()", () => {
     expect(matches).toEqual([]);
   });
 
-  it("passes chat_id in body when item.chat_id is set", async () => {
+  it("does not pass chat_id in body even when item.chat_id is set (provenance model)", async () => {
     const item = makeItem({ id: "item-1", type: "fact", chat_id: 12345 });
     const supabase = mockSupabaseSearch([], null);
 
@@ -399,7 +404,8 @@ describe("searchSimilar()", () => {
     expect(supabase.functions.invoke).toHaveBeenCalledTimes(1);
     const callArgs = supabase.functions.invoke.mock.calls[0];
     const body = callArgs[1]?.body;
-    expect(body.chat_id).toBe(12345);
+    // Provenance model: search is globally scoped — no chat_id filter
+    expect(body).not.toHaveProperty("chat_id");
   });
 
   it("omits chat_id from body when item.chat_id is null", async () => {
@@ -922,5 +928,105 @@ describe("buildTelegramMessage includes completedGoalsArchived when > 0", () => 
     const result = makeResult({ completedGoalsArchived: 0 });
     const msg = buildTelegramMessage(result);
     expect(msg.toLowerCase()).not.toContain("completed goal");
+  });
+});
+
+// ============================================================
+// Provenance model — groupItems clustering key (RED)
+//
+// G1: Under the provenance model, chat_id is audit-only (provenance).
+// Dedup clustering must group by type alone, ignoring chat_id, so
+// identical facts from different groups land in the same cluster.
+// ============================================================
+
+describe("groupItems() — provenance model: type-only clustering key (G1)", () => {
+  it("groups items with same type but different chat_ids into one cluster", () => {
+    // RED: fails until G1 is implemented (currently keys by type::chatId → separate clusters).
+    const items: MemoryItem[] = [
+      makeItem({ id: "a", type: "fact", chat_id: 100 }),
+      makeItem({ id: "b", type: "fact", chat_id: 200 }),
+    ];
+
+    const groups = groupItems(items);
+
+    // Under provenance model: both should land in the same "fact" cluster
+    expect(groups.size).toBe(1);
+    expect(groups.get("fact")).toBeDefined();
+    expect(groups.get("fact")!.map((i) => i.id)).toContain("a");
+    expect(groups.get("fact")!.map((i) => i.id)).toContain("b");
+  });
+
+  it("groups items with same type regardless of null or real chat_id", () => {
+    // RED: fails until G1 is implemented (null → 'fact::null', 100 → 'fact::100').
+    const items: MemoryItem[] = [
+      makeItem({ id: "old", type: "fact", chat_id: null }),   // pre-migration row
+      makeItem({ id: "new", type: "fact", chat_id: 12345 }),  // post-provenance row
+    ];
+
+    const groups = groupItems(items);
+
+    expect(groups.size).toBe(1);
+    expect(groups.get("fact")).toBeDefined();
+    expect(groups.get("fact")!.length).toBe(2);
+  });
+
+  it("uses bare type string as key (no '::chatId' suffix)", () => {
+    // RED: fails until G1 is implemented (currently appends '::chatId').
+    const items: MemoryItem[] = [
+      makeItem({ id: "a", type: "preference", chat_id: 42 }),
+    ];
+
+    const groups = groupItems(items);
+
+    expect(groups.has("preference")).toBe(true);
+    expect(groups.has("preference::42")).toBe(false); // old key format must be gone
+  });
+
+  it("keeps different types in separate clusters", () => {
+    // Sanity check: type discrimination must still work after G1.
+    const items: MemoryItem[] = [
+      makeItem({ id: "f", type: "fact", chat_id: 100 }),
+      makeItem({ id: "g", type: "goal", chat_id: 100 }),
+    ];
+
+    const groups = groupItems(items);
+
+    expect(groups.size).toBe(2);
+    expect(groups.get("fact")).toBeDefined();
+    expect(groups.get("goal")).toBeDefined();
+  });
+});
+
+describe("searchSimilar() — provenance model: no chat_id in search body (S3)", () => {
+  it("does not pass chat_id to the search Edge Function", async () => {
+    // RED: fails until S3 is implemented (currently passes item.chat_id when non-null).
+    const invokeFn = mock(async () => ({ data: [], error: null }));
+    const supabase = {
+      functions: { invoke: invokeFn },
+    } as any;
+    const config: CleanupConfig = { ...BASE_CONFIG };
+    const item = makeItem({ id: "x", type: "fact", chat_id: 12345 });
+
+    await searchSimilar(supabase, item, config);
+
+    expect(invokeFn).toHaveBeenCalledTimes(1);
+    const body = invokeFn.mock.calls[0][1]?.body as Record<string, unknown>;
+    // chat_id must NOT appear in the search body (global search)
+    expect(body).not.toHaveProperty("chat_id");
+  });
+
+  it("does not pass chat_id even when item has null chat_id", async () => {
+    // No change in behavior for null items, but validates the contract.
+    const invokeFn = mock(async () => ({ data: [], error: null }));
+    const supabase = {
+      functions: { invoke: invokeFn },
+    } as any;
+    const config: CleanupConfig = { ...BASE_CONFIG };
+    const item = makeItem({ id: "y", type: "goal", chat_id: null });
+
+    await searchSimilar(supabase, item, config);
+
+    const body = invokeFn.mock.calls[0][1]?.body as Record<string, unknown>;
+    expect(body).not.toHaveProperty("chat_id");
   });
 });

@@ -256,16 +256,16 @@ describe("processMemoryIntents", () => {
     expect(inserted.category).toBe("goal");
   });
 
-  test("[GOAL:] stores with chat_id=null even when chatId is provided (globally scoped)", async () => {
-    // Bug: goals stored via [GOAL:] tag use chat_id=chatId, making them invisible
-    // in other groups. Fix: goals must always be stored with chat_id=null.
+  test("[GOAL:] stores chat_id=chatId for provenance (reads are globally scoped)", async () => {
+    // Provenance model: goals store the originating chatId for audit trail.
+    // Global visibility is achieved by removing chat_id filter from read queries.
     const insertFn = mock(() => Promise.resolve({ data: null, error: null }));
     const sb = mockSupabase({ insertFn });
     const response = "Noted! [GOAL: Global goal visible everywhere]";
-    await processMemoryIntents(sb, response, 12345); // chatId = 12345 (a group)
+    await processMemoryIntents(sb, response, 12345);
     const inserted = insertFn.mock.calls[0][0];
     expect(inserted.type).toBe("goal");
-    expect(inserted.chat_id).toBeNull(); // FAIL: currently stores chat_id=12345
+    expect(inserted.chat_id).toBe(12345); // provenance: records where goal was created
   });
 
   test("[GOAL: ... | DEADLINE: ...] inserts with category 'goal'", async () => {
@@ -280,16 +280,68 @@ describe("processMemoryIntents", () => {
     expect(inserted.deadline).toBe("2026-03-01");
   });
 
-  test("strips [REMEMBER_GLOBAL: ...] tags with null chat_id and detected category", async () => {
+  test("strips [REMEMBER_GLOBAL: ...] tags and stores with null chat_id when no chatId provided", async () => {
+    // Provenance model: without chatId (CLI/DM context), stores null (no provenance).
     const insertFn = mock(() => Promise.resolve({ data: null, error: null }));
     const sb = mockSupabase({ insertFn });
     const response = "OK [REMEMBER_GLOBAL: Shared fact across groups]";
-    const result = await processMemoryIntents(sb, response);
+    const result = await processMemoryIntents(sb, response); // no chatId
     expect(result).not.toContain("[REMEMBER_GLOBAL:");
     expect(insertFn).toHaveBeenCalled();
     const inserted = insertFn.mock.calls[0][0];
-    expect(inserted.chat_id).toBeNull();
+    expect(inserted.chat_id).toBeNull(); // no chatId → null is correct provenance
     expect(inserted.category).toBe("personal");
+  });
+});
+
+// ============================================================
+// Provenance model — processMemoryIntents write paths (RED)
+//
+// Under the provenance model, chat_id stores WHERE a memory was created
+// (audit trail), not its scope.  Scope is always global.
+// [REMEMBER_GLOBAL:] and [GOAL:] should store the real chatId instead of
+// hardcoded null.  Reads ignore chat_id (except date facts in AI context).
+// ============================================================
+
+describe("processMemoryIntents — provenance model write paths", () => {
+  test("[REMEMBER_GLOBAL:] stores chat_id=chatId for provenance (not hardcoded null)", async () => {
+    // RED: fails until W2 is implemented (currently hardcodes chat_id: null).
+    const insertFn = mock(() => Promise.resolve({ data: null, error: null }));
+    const sb = mockSupabase({ insertFn });
+    const response = "OK [REMEMBER_GLOBAL: Shared fact across groups]";
+    await processMemoryIntents(sb, response, 99999);
+    const inserted = insertFn.mock.calls[0][0];
+    expect(inserted.chat_id).toBe(99999);
+  });
+
+  test("[REMEMBER_GLOBAL:] without chatId stores chat_id=null (CLI/DM provenance)", async () => {
+    const insertFn = mock(() => Promise.resolve({ data: null, error: null }));
+    const sb = mockSupabase({ insertFn });
+    const response = "OK [REMEMBER_GLOBAL: CLI-origin fact]";
+    await processMemoryIntents(sb, response); // no chatId
+    const inserted = insertFn.mock.calls[0][0];
+    expect(inserted.chat_id).toBeNull();
+  });
+
+  test("[GOAL:] stores chat_id=chatId for provenance (not hardcoded null)", async () => {
+    // Provenance model: goals record which group created them for audit.
+    // Read queries have no chat_id filter so they remain globally visible.
+    // RED: fails until W3 is implemented (currently hardcodes chat_id: null).
+    const insertFn = mock(() => Promise.resolve({ data: null, error: null }));
+    const sb = mockSupabase({ insertFn });
+    const response = "Noted! [GOAL: Ship the provenance model]";
+    await processMemoryIntents(sb, response, 12345);
+    const inserted = insertFn.mock.calls[0][0];
+    expect(inserted.chat_id).toBe(12345);
+  });
+
+  test("[GOAL:] without chatId stores chat_id=null (CLI/DM provenance)", async () => {
+    const insertFn = mock(() => Promise.resolve({ data: null, error: null }));
+    const sb = mockSupabase({ insertFn });
+    const response = "Noted! [GOAL: CLI goal]";
+    await processMemoryIntents(sb, response); // no chatId
+    const inserted = insertFn.mock.calls[0][0];
+    expect(inserted.chat_id).toBeNull();
   });
 });
 

@@ -151,7 +151,8 @@ describe("checkSemanticDuplicate", () => {
     expect(result.match!.similarity).toBe(0.88);
   });
 
-  it("respects chatId scoping — passes chat_id to search body", async () => {
+  it("does not pass chat_id to search body (provenance model: globally scoped)", async () => {
+    // S2: Provenance model — duplicate detection is globally scoped, no chat_id filter.
     const sb = mockSupabaseSearch([], null);
 
     await checkSemanticDuplicate(sb, "test", "fact", 12345);
@@ -160,7 +161,7 @@ describe("checkSemanticDuplicate", () => {
     const callArgs = sb.functions.invoke.mock.calls[0];
     expect(callArgs[0]).toBe("search");
     const body = callArgs[1]?.body;
-    expect(body.chat_id).toBe(12345);
+    expect(body).not.toHaveProperty("chat_id");
   });
 
   it("omits chat_id from search body when chatId is null/undefined", async () => {

@@ -314,9 +314,9 @@ describe("/goals command — add path", () => {
     expect(text).toContain("Finish the API by March");
   });
 
-  test("inserts goal with chat_id=null regardless of group chatId (globally scoped)", async () => {
-    // Bug: /goals +text stored goals with chat_id=chatId, making them invisible
-    // in other groups. Fix: goals must be stored with chat_id=null.
+  test("inserts goal with chat_id=chatId for provenance (reads are globally scoped)", async () => {
+    // Provenance model: goals store the originating chatId for audit trail.
+    // Global visibility is achieved via read queries that ignore chat_id for goals.
     const bot = mockBot();
     const memInsert = mock(() => Promise.resolve({ data: null, error: null }));
     const msgInsert = mock(() => Promise.resolve({ data: null, error: null }));
@@ -338,7 +338,7 @@ describe("/goals command — add path", () => {
     expect(memInsert).toHaveBeenCalledTimes(1);
     const inserted = memInsert.mock.calls[0][0];
     expect(inserted.type).toBe("goal");
-    expect(inserted.chat_id).toBeNull(); // FAIL: currently stores chat_id=88888
+    expect(inserted.chat_id).toBe(88888); // provenance: records where goal was created
   });
 
   test("inserts multiple goals from one command", async () => {
@@ -468,10 +468,10 @@ describe("/reminders command — add path", () => {
 // /reminders (date category) must stay chat-scoped.
 // ============================================================
 
-describe("/facts command — global scoping (personal category)", () => {
-  test("inserts personal fact with chat_id=null regardless of group chatId", async () => {
-    // Bug: personal facts stored with chat_id=chatId, invisible across groups.
-    // Fix: personal category must store with chat_id=null.
+describe("/facts command — provenance write path (personal category)", () => {
+  test("inserts personal fact with chat_id=chatId for provenance (reads are globally scoped)", async () => {
+    // Provenance model: personal facts store real chatId for audit trail.
+    // Global visibility is achieved by removing chat_id filter from read queries.
     const bot = mockBot();
     const memInsert = mock(() => Promise.resolve({ data: null, error: null }));
     const msgInsert = mock(() => Promise.resolve({ data: null, error: null }));
@@ -493,14 +493,14 @@ describe("/facts command — global scoping (personal category)", () => {
     expect(memInsert).toHaveBeenCalledTimes(1);
     const inserted = memInsert.mock.calls[0][0];
     expect(inserted.category).toBe("personal");
-    expect(inserted.chat_id).toBeNull(); // FAIL until fixed: currently stores chat_id=99999
+    expect(inserted.chat_id).toBe(99999); // provenance: records where fact was created
   });
 });
 
-describe("/prefs command — global scoping (preference category)", () => {
-  test("inserts preference with chat_id=null regardless of group chatId", async () => {
-    // Bug: preferences stored with chat_id=chatId, invisible across groups.
-    // Fix: preference category must store with chat_id=null.
+describe("/prefs command — provenance write path (preference category)", () => {
+  test("inserts preference with chat_id=chatId for provenance (reads are globally scoped)", async () => {
+    // Provenance model: preferences store real chatId for audit trail.
+    // Global visibility is achieved by removing chat_id filter from read queries.
     const bot = mockBot();
     const memInsert = mock(() => Promise.resolve({ data: null, error: null }));
     const msgInsert = mock(() => Promise.resolve({ data: null, error: null }));
@@ -522,7 +522,7 @@ describe("/prefs command — global scoping (preference category)", () => {
     expect(memInsert).toHaveBeenCalledTimes(1);
     const inserted = memInsert.mock.calls[0][0];
     expect(inserted.category).toBe("preference");
-    expect(inserted.chat_id).toBeNull(); // FAIL until fixed: currently stores chat_id=77777
+    expect(inserted.chat_id).toBe(77777); // provenance: records where pref was created
   });
 });
 
@@ -825,7 +825,9 @@ describe("/facts no-args — lists all facts", () => {
 // ============================================================
 
 describe("E2E — findMatchingItems uses same scope as listItems", () => {
-  test("findMatchingItems query calls .or() for chat_id scope (not strict .eq)", async () => {
+  test("findMatchingItems for /facts does NOT apply chat_id scope (provenance model: globally visible)", async () => {
+    // Provenance model: facts are globally visible — no chat_id filter applied.
+    // Only reminders (/reminders command) apply the chat_id scope filter.
     const bot = mockBot();
     const { supabase, chain } = mockSupabaseWithCandidates([
       { id: "f1", content: "pm2 cron implementation" },
@@ -835,13 +837,12 @@ describe("E2E — findMatchingItems uses same scope as listItems", () => {
     const ctx = mockCtx({ chatId: 12345, match: "-pm2 cron" });
     await bot._triggerCommand("facts", ctx);
 
-    // The chain's .or() must have been called with the scope for findMatchingItems
-    expect(chain.or).toHaveBeenCalled();
-    const orArgs = chain.or.mock.calls.map((c: any) => c[0] as string);
-    const scopeCall = orArgs.find(
+    // .or() must NOT be called with chat_id scope for facts
+    const orArgs = (chain.or?.mock?.calls ?? []).map((c: any) => c[0] as string);
+    const chatIdScopeCall = orArgs.find(
       (arg: string) => arg.includes("chat_id.eq.12345") && arg.includes("chat_id.is.null")
     );
-    expect(scopeCall).toBeDefined();
+    expect(chatIdScopeCall).toBeUndefined();
   });
 
   test("findMatchingItems for /facts calls .or() for category (includes null-category items)", async () => {
@@ -1623,5 +1624,187 @@ describe("duplicate detection on add", () => {
     const text = ctx.reply.mock.calls[0][0] as string;
     expect(text).toContain("Added");
     expect(text).toContain("Brand new goal");
+  });
+});
+
+// ============================================================
+// Provenance model — write paths (RED)
+//
+// Under the provenance model, ALL memory types store the real chatId for
+// audit trail.  The old ternary (goal/personal/preference → null) is removed.
+// Scope is determined by the read path (no chat_id filter), not the write path.
+// ============================================================
+
+describe("/facts command — provenance write path", () => {
+  test("inserts personal fact with chat_id=chatId (provenance) not null", async () => {
+    // RED: fails until W4 is implemented (currently stores null for personal category).
+    const bot = mockBot();
+    const memInsert = mock(() => Promise.resolve({ data: null, error: null }));
+    const msgInsert = mock(() => Promise.resolve({ data: null, error: null }));
+    const dupChain: any = {};
+    dupChain.eq = mock(() => dupChain);
+    dupChain.or = mock(() => dupChain);
+    dupChain.order = mock(() => dupChain);
+    dupChain.limit = mock(() => Promise.resolve({ data: [], error: null }));
+    const supabase = {
+      from: mock((table: string) =>
+        table === "messages" ? { insert: msgInsert } : { insert: memInsert, select: mock(() => dupChain) }
+      ),
+    } as any;
+    registerDirectMemoryCommands(bot as any, { supabase });
+
+    const ctx = mockCtx({ chatId: 11111, match: "+I am a Solution Architect at GovTech" });
+    await bot._triggerCommand("facts", ctx);
+
+    expect(memInsert).toHaveBeenCalledTimes(1);
+    const inserted = memInsert.mock.calls[0][0];
+    expect(inserted.category).toBe("personal");
+    expect(inserted.chat_id).toBe(11111); // provenance: store real chatId
+  });
+});
+
+describe("/prefs command — provenance write path", () => {
+  test("inserts preference with chat_id=chatId (provenance) not null", async () => {
+    // RED: fails until W4 is implemented (currently stores null for preference category).
+    const bot = mockBot();
+    const memInsert = mock(() => Promise.resolve({ data: null, error: null }));
+    const msgInsert = mock(() => Promise.resolve({ data: null, error: null }));
+    const dupChain: any = {};
+    dupChain.eq = mock(() => dupChain);
+    dupChain.or = mock(() => dupChain);
+    dupChain.order = mock(() => dupChain);
+    dupChain.limit = mock(() => Promise.resolve({ data: [], error: null }));
+    const supabase = {
+      from: mock((table: string) =>
+        table === "messages" ? { insert: msgInsert } : { insert: memInsert, select: mock(() => dupChain) }
+      ),
+    } as any;
+    registerDirectMemoryCommands(bot as any, { supabase });
+
+    const ctx = mockCtx({ chatId: 22222, match: "+Always use bullet points in responses" });
+    await bot._triggerCommand("prefs", ctx);
+
+    expect(memInsert).toHaveBeenCalledTimes(1);
+    const inserted = memInsert.mock.calls[0][0];
+    expect(inserted.category).toBe("preference");
+    expect(inserted.chat_id).toBe(22222); // provenance: store real chatId
+  });
+});
+
+describe("/goals command — provenance write path", () => {
+  test("inserts goal with chat_id=chatId (provenance) not null", async () => {
+    // RED: fails until W4 is implemented (currently stores null for goals).
+    const bot = mockBot();
+    const memInsert = mock(() => Promise.resolve({ data: null, error: null }));
+    const msgInsert = mock(() => Promise.resolve({ data: null, error: null }));
+    const dupChain: any = {};
+    dupChain.eq = mock(() => dupChain);
+    dupChain.or = mock(() => dupChain);
+    dupChain.order = mock(() => dupChain);
+    dupChain.limit = mock(() => Promise.resolve({ data: [], error: null }));
+    const supabase = {
+      from: mock((table: string) =>
+        table === "messages" ? { insert: msgInsert } : { insert: memInsert, select: mock(() => dupChain) }
+      ),
+    } as any;
+    registerDirectMemoryCommands(bot as any, { supabase });
+
+    const ctx = mockCtx({ chatId: 33333, match: "+Deploy new memory architecture" });
+    await bot._triggerCommand("goals", ctx);
+
+    expect(memInsert).toHaveBeenCalledTimes(1);
+    const inserted = memInsert.mock.calls[0][0];
+    expect(inserted.type).toBe("goal");
+    expect(inserted.chat_id).toBe(33333); // provenance: store real chatId
+  });
+});
+
+describe("/reminders command — stays chat-scoped (provenance model unchanged)", () => {
+  test("inserts reminder with chat_id=chatId (date facts always chat-scoped)", async () => {
+    // Reminders are transient — provenance = scope for dates. No change in behavior.
+    const bot = mockBot();
+    const memInsert = mock(() => Promise.resolve({ data: null, error: null }));
+    const msgInsert = mock(() => Promise.resolve({ data: null, error: null }));
+    const dupChain: any = {};
+    dupChain.eq = mock(() => dupChain);
+    dupChain.or = mock(() => dupChain);
+    dupChain.order = mock(() => dupChain);
+    dupChain.limit = mock(() => Promise.resolve({ data: [], error: null }));
+    const supabase = {
+      from: mock((table: string) =>
+        table === "messages" ? { insert: msgInsert } : { insert: memInsert, select: mock(() => dupChain) }
+      ),
+    } as any;
+    registerDirectMemoryCommands(bot as any, { supabase });
+
+    const ctx = mockCtx({ chatId: 44444, match: "+AWS review Friday 2pm" });
+    await bot._triggerCommand("reminders", ctx);
+
+    expect(memInsert).toHaveBeenCalledTimes(1);
+    const inserted = memInsert.mock.calls[0][0];
+    expect(inserted.category).toBe("date");
+    expect(inserted.chat_id).toBe(44444);
+  });
+});
+
+describe("listItems — provenance model read path (R5)", () => {
+  test("personal facts list does NOT apply chat_id OR-scope filter", async () => {
+    // RED: fails until R5 is implemented (currently applies .or(chat_id.eq.X,chat_id.is.null)
+    // for all non-goal types including facts).
+    // Under provenance model: no chat_id filter for facts (globally visible).
+    const bot = mockBot();
+    const memInsert = mock(() => Promise.resolve({ data: null, error: null }));
+    const msgInsert = mock(() => Promise.resolve({ data: null, error: null }));
+    const orFn = mock((arg: string) => dupChain);
+    const dupChain: any = {};
+    dupChain.eq = mock(() => dupChain);
+    dupChain.or = orFn;
+    dupChain.order = mock(() => dupChain);
+    dupChain.limit = mock(() => Promise.resolve({
+      data: [{ id: "f1", content: "User is a Solution Architect" }],
+      error: null,
+    }));
+    const supabase = {
+      from: mock((table: string) =>
+        table === "messages" ? { insert: msgInsert } : { insert: memInsert, select: mock(() => dupChain) }
+      ),
+    } as any;
+    registerDirectMemoryCommands(bot as any, { supabase });
+
+    const ctx = mockCtx({ chatId: 55555, match: "" });
+    await bot._triggerCommand("facts", ctx);
+
+    // .or() should NOT be called with a chat_id scope for facts
+    const orCallsWithChatIdScope = orFn.mock.calls.filter((args: string[]) =>
+      args[0]?.includes("chat_id.eq.55555")
+    );
+    expect(orCallsWithChatIdScope.length).toBe(0);
+  });
+
+  test("reminders list DOES apply chat_id OR-scope filter (dates stay chat-scoped)", async () => {
+    // Reminders are chat-scoped — .or(chat_id.eq.X, ...) must still be applied.
+    const bot = mockBot();
+    const memInsert = mock(() => Promise.resolve({ data: null, error: null }));
+    const msgInsert = mock(() => Promise.resolve({ data: null, error: null }));
+    const orFn = mock((arg: string) => reminderChain);
+    const reminderChain: any = {};
+    reminderChain.eq = mock(() => reminderChain);
+    reminderChain.or = orFn;
+    reminderChain.order = mock(() => reminderChain);
+    reminderChain.limit = mock(() => Promise.resolve({ data: [], error: null }));
+    const supabase = {
+      from: mock((table: string) =>
+        table === "messages" ? { insert: msgInsert } : { insert: memInsert, select: mock(() => reminderChain) }
+      ),
+    } as any;
+    registerDirectMemoryCommands(bot as any, { supabase });
+
+    const ctx = mockCtx({ chatId: 66666, match: "" });
+    await bot._triggerCommand("reminders", ctx);
+
+    const orCallsWithChatIdScope = orFn.mock.calls.filter((args: string[]) =>
+      args[0]?.includes("chat_id.eq.66666")
+    );
+    expect(orCallsWithChatIdScope.length).toBeGreaterThan(0);
   });
 });
