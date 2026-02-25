@@ -619,8 +619,11 @@ async function handleDirectMemoryCommand(
       const { error } = await supabase.from("memory").insert({
         type: config.type,
         content,
-        // Goals are globally scoped — visible across all groups regardless of where they were created.
-        chat_id: config.type === "goal" ? null : chatId,
+        // Goals, personal facts, and preferences are globally scoped — visible across all groups.
+        // Date reminders stay chat-scoped (transient, group-specific context).
+        chat_id: (config.type === "goal" || config.category === "personal" || config.category === "preference")
+          ? null
+          : chatId,
         category: config.category,
         extracted_from_exchange: false,
         confidence: 1.0,
@@ -779,7 +782,9 @@ export function registerDirectMemoryCommands(
       const { error } = await supabase.from("memory").insert({
         type: pending.config.type,
         content: pending.content,
-        chat_id: pending.config.type === "goal" ? null : pending.chatId,
+        chat_id: (pending.config.type === "goal" || pending.config.category === "personal" || pending.config.category === "preference")
+          ? null
+          : pending.chatId,
         category: pending.config.category,
         extracted_from_exchange: false,
         confidence: 1.0,
