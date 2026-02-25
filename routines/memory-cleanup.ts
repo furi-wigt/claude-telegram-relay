@@ -150,7 +150,10 @@ export function groupItems(
   const groups = new Map<string, MemoryItem[]>();
 
   for (const item of items) {
-    const key = `${item.type}::${item.chat_id ?? "null"}`;
+    // Provenance model: cluster by type only — chat_id is audit trail, not scope.
+    // Items from different groups with the same type land in the same cluster,
+    // enabling cross-group duplicate detection.
+    const key = item.type;
     const existing = groups.get(key);
     if (existing) {
       existing.push(item);
@@ -172,12 +175,13 @@ export async function searchSimilar(
   config: CleanupConfig
 ): Promise<SearchMatch[]> {
   try {
+    // Provenance model: semantic similarity search is globally scoped.
+    // chat_id is audit trail only — omit from search body to find cross-group duplicates.
     const body: Record<string, unknown> = {
       query: item.content,
       table: "memory",
       match_count: 10,
       match_threshold: config.similarityThreshold,
-      ...(item.chat_id != null && { chat_id: item.chat_id }),
     };
 
     const result = await Promise.race([

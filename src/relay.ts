@@ -51,6 +51,7 @@ import { buildAgentPrompt } from "./agents/promptBuilder.ts";
 import { GroupQueueManager } from "./queue/groupQueueManager.ts";
 import { registerCommands, registerContextSwitchCallbackHandler } from "./commands/botCommands.ts";
 import { detectAndHandle, registerCallbackHandler } from "./routines/routineHandler.ts";
+import { registerDedupReviewCallbackHandler } from "./memory/dedupReviewCallbackHandler.ts";
 import { CodingSessionManager } from "./coding/sessionManager.ts";
 import { InputRouter } from "./coding/inputRouter.ts";
 import { ReminderManager } from "./coding/reminderManager.ts";
@@ -223,6 +224,9 @@ registerCallbackHandler(bot);
 
 // Register memory confirmation callback handler (inline keyboard for uncertain memory items)
 registerMemoryConfirmHandler(bot, supabase);
+
+// Register weekly dedup review callback handler (mdr_yes / mdr_no from memory-dedup-review routine)
+registerDedupReviewCallbackHandler(bot, supabase);
 
 // Kept for backward compat: handles "New topic / Continue" button clicks from any
 // context-switch prompts that were sent before topic detection was removed. Safe to

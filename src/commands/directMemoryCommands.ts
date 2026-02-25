@@ -160,16 +160,15 @@ async function findMatchingItems(
   config: CommandConfig,
   query: string
 ): Promise<MemoryItem[]> {
-  // Build query with the same scope as listItems.
-  // Goals are globally scoped (no chatId filter); other types are chat-scoped.
-  const scope = `chat_id.eq.${chatId},chat_id.is.null`;
+  // Provenance model: all types globally visible except reminders (date category).
+  // Goals, facts, prefs: no chat_id filter. Reminders: chat-scoped.
   let baseQuery = supabase
     .from("memory")
     .select("id, content")
     .eq("type", config.type);
 
-  if (config.type !== "goal") {
-    baseQuery = (baseQuery as any).or(scope);
+  if (config.name === "reminders") {
+    baseQuery = (baseQuery as any).or(`chat_id.eq.${chatId},chat_id.is.null`);
   }
 
   if (config.name === "prefs" || config.name === "reminders") {
@@ -269,17 +268,15 @@ async function listItems(
   chatId: number,
   config: CommandConfig
 ): Promise<string> {
-  // Goals are globally scoped — never filter by chatId.
-  // Facts, prefs, and reminders are chat-scoped.
-  const scope = `chat_id.eq.${chatId},chat_id.is.null`;
-
+  // Provenance model: goals, facts, and prefs are globally visible — no chat_id filter.
+  // Reminders (date category) remain chat-scoped (transient, group-specific).
   let query = supabase
     .from("memory")
     .select("id, content")
     .eq("type", config.type);
 
-  if (config.type !== "goal") {
-    query = (query as any).or(scope);
+  if (config.name === "reminders") {
+    query = (query as any).or(`chat_id.eq.${chatId},chat_id.is.null`);
   }
 
   if (config.name === "prefs" || config.name === "reminders") {
@@ -566,13 +563,16 @@ async function handleDirectMemoryCommand(
   // ── Process additions (with duplicate detection) ────────────────────────
   for (const content of adds) {
     try {
-      // Check for semantic duplicates before inserting
-      const scope = `chat_id.eq.${chatId},chat_id.is.null`;
+      // Check for semantic duplicates before inserting.
+      // Provenance model: search globally for non-date types; reminders scoped to current chat.
       let existingQuery = supabase
         .from("memory")
         .select("id, content")
-        .or(scope)
         .eq("type", config.type);
+
+      if (config.name === "reminders") {
+        existingQuery = (existingQuery as any).or(`chat_id.eq.${chatId},chat_id.is.null`);
+      }
 
       if (config.name === "prefs" || config.name === "reminders") {
         existingQuery = existingQuery.eq("category", config.category);
@@ -619,11 +619,9 @@ async function handleDirectMemoryCommand(
       const { error } = await supabase.from("memory").insert({
         type: config.type,
         content,
-        // Goals, personal facts, and preferences are globally scoped — visible across all groups.
-        // Date reminders stay chat-scoped (transient, group-specific context).
-        chat_id: (config.type === "goal" || config.category === "personal" || config.category === "preference")
-          ? null
-          : chatId,
+        // Provenance model: chat_id records which group created this item (audit trail).
+        // Scope is always global — read queries ignore chat_id for non-date types.
+        chat_id: chatId,
         category: config.category,
         extracted_from_exchange: false,
         confidence: 1.0,
@@ -782,9 +780,7 @@ export function registerDirectMemoryCommands(
       const { error } = await supabase.from("memory").insert({
         type: pending.config.type,
         content: pending.content,
-        chat_id: (pending.config.type === "goal" || pending.config.category === "personal" || pending.config.category === "preference")
-          ? null
-          : pending.chatId,
+        chat_id: pending.chatId,  // provenance: record originating chat
         category: pending.config.category,
         extracted_from_exchange: false,
         confidence: 1.0,
