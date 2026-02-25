@@ -96,7 +96,7 @@ async function main() {
   if (!validateGroup("SECURITY")) {
     console.error("Cannot run — SECURITY group not configured");
     console.error("Set chatId for the 'SECURITY' agent in config/agents.json");
-    process.exit(1);
+    process.exit(0); // graceful skip — PM2 will retry on next cron cycle
   }
 
   const findings = await getSecurityFindings();
@@ -109,6 +109,6 @@ async function main() {
 if (import.meta.main) {
   main().catch((error) => {
     console.error("Error running security routine:", error);
-    process.exit(1);
+    process.exit(0); // exit 0 so PM2 does not immediately restart — next run at scheduled cron time
   });
 }

@@ -534,7 +534,7 @@ async function main() {
   if (!validateGroup("GENERAL")) {
     console.error("Cannot run — GENERAL group not configured");
     console.error("Set chatId for the 'GENERAL' agent in config/agents.json");
-    process.exit(1);
+    process.exit(0); // graceful skip — PM2 will retry on next cron cycle
   }
 
   const report = await buildReport();
@@ -545,6 +545,6 @@ async function main() {
 if (import.meta.main) {
   main().catch((error) => {
     console.error("Error running weekly ETF analysis:", error);
-    process.exit(1);
+    process.exit(0); // exit 0 so PM2 does not immediately restart — next run at scheduled cron time
   });
 }
