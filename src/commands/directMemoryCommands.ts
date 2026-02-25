@@ -223,6 +223,28 @@ async function findMatchingItems(
   }
   // goals: no category filter — same as listItems
 
+  // Index-based: check cache first to avoid an unnecessary DB round-trip.
+  // On a cache miss, fetch from DB and SET the cache so that all subsequent
+  // numeric ops in the same multi-op command resolve against the same stable
+  // snapshot — even when the user jumped straight to -N without a prior
+  // no-args list call (cold-start case).
+  if (/^\d+$/.test(query)) {
+    let source = getListCache(chatId, config.name);
+    if (source === null) {
+      const { data, error } = await baseQuery
+        .order("created_at", { ascending: true })
+        .order("id", { ascending: true })
+        .limit(50);
+      if (error || !data || data.length === 0) return [];
+      source = data as MemoryItem[];
+      setListCache(chatId, config.name, source);
+    }
+    const idx = parseInt(query, 10) - 1;
+    if (idx >= 0 && idx < source.length) return [source[idx]];
+    return [];
+  }
+
+  // Non-numeric: always a fresh DB query for substring/semantic matching.
   const { data, error } = await baseQuery
     .order("created_at", { ascending: true })
     .order("id", { ascending: true })
@@ -231,17 +253,6 @@ async function findMatchingItems(
   if (error || !data || data.length === 0) return [];
 
   const candidates = data as MemoryItem[];
-
-  // Index-based: purely numeric query like "1", "2".
-  // Prefer the cached list (populated by the preceding no-args list command)
-  // so numeric indices remain stable even when earlier ops in the same command
-  // have mutated DB rows (e.g. deleting index 2 would shift all subsequent items).
-  if (/^\d+$/.test(query)) {
-    const idx = parseInt(query, 10) - 1;
-    const source = getListCache(chatId, config.name) ?? candidates;
-    if (idx >= 0 && idx < source.length) return [source[idx]];
-    return []; // out of range
-  }
 
   // Strategy: substring match first (fast, reliable).
   // Ollama is used only as a semantic fallback when substring yields nothing,
@@ -369,7 +380,32 @@ async function findGoalsByIndexOrQuery(
 ): Promise<MemoryItem[]> {
   if (query === "") return []; // caller handles "list completed" path
 
-  // Goals are globally scoped — fetch all goals regardless of which group created them.
+  // Index-based: check cache first to avoid an unnecessary DB round-trip.
+  // On a cache miss, fetch from DB and SET the cache so that all subsequent
+  // numeric ops in the same multi-op command resolve against the same stable
+  // snapshot — even when the user jumped straight to *N without a prior
+  // no-args /goals list (cold-start case).
+  if (/^\d+$/.test(query)) {
+    let source = getListCache(chatId, "goals");
+    if (source === null) {
+      const { data, error } = await supabase
+        .from("memory")
+        .select("id, content")
+        .eq("type", "goal")
+        .order("created_at", { ascending: true })
+        .order("id", { ascending: true })
+        .limit(50);
+      if (error || !data || data.length === 0) return [];
+      source = data as MemoryItem[];
+      setListCache(chatId, "goals", source);
+    }
+    const idx = parseInt(query, 10) - 1;
+    if (idx >= 0 && idx < source.length) return [source[idx]];
+    return [];
+  }
+
+  // Non-numeric: always a fresh DB query for substring/semantic matching.
+  // Goals are globally scoped — fetch all regardless of which group created them.
   const { data, error } = await supabase
     .from("memory")
     .select("id, content")
@@ -381,16 +417,6 @@ async function findGoalsByIndexOrQuery(
   if (error || !data || data.length === 0) return [];
 
   const goals = data as MemoryItem[];
-
-  // Index-based: purely numeric query like "1", "2".
-  // Prefer the cached list so that multiple *N ops in the same command
-  // all resolve against the same stable list the user was shown.
-  if (/^\d+$/.test(query)) {
-    const idx = parseInt(query, 10) - 1;
-    const source = getListCache(chatId, "goals") ?? goals;
-    if (idx >= 0 && idx < source.length) return [source[idx]];
-    return [];
-  }
 
   // Substring match
   const queryLower = query.toLowerCase();
