@@ -1958,6 +1958,87 @@ describe("cache — multi-op index stability", () => {
     expect(updatedIds).not.toContain("g1");
     expect(updatedIds).not.toContain("g3");
   });
+
+  test("/goals *1 | *3 cold-start seeds cache on first op (no prior list call)", async () => {
+    // Bug: without a preceding no-args /goals call, cache is empty.
+    // Old code: getListCache ?? freshDB — never sets cache on miss.
+    // Each op got a fresh (shifted) DB result, so *3 resolved against [g2,g3,g4,g5] → g4 (wrong).
+    // Fix: on cache miss in numeric path, fetch DB AND setListCache.
+    const chatId = 80001;
+
+    const goals = [
+      { id: "g1", content: "Learn Rust" },
+      { id: "g2", content: "Ship API v2" },
+      { id: "g3", content: "Read 12 books" },
+      { id: "g4", content: "Improve test coverage" },
+      { id: "g5", content: "Write documentation" },
+    ];
+
+    const { supabase, updatedIds } = mockSupabaseMultiOp(goals, "g1");
+    const bot = mockBot();
+    registerDirectMemoryCommands(bot as any, { supabase });
+
+    // NO prior no-args /goals — jump straight to multi-op
+    await bot._triggerCommand("goals", mockCtx({ chatId, match: "*1 | *3" }));
+
+    expect(updatedIds).toContain("g1");
+    expect(updatedIds).toContain("g3");
+    // Without fix: *3 resolves against shifted list [g2,g3,g4,g5] → index 3 = g4 (wrong)
+    expect(updatedIds).not.toContain("g4");
+  });
+
+  test("/facts -1 | -3 cold-start seeds cache on first op (no prior list call)", async () => {
+    // Same cold-start bug for findMatchingItems (facts/prefs/reminders -N path).
+    const chatId = 80002;
+
+    const facts = [
+      { id: "f1", content: "User is a Solution Architect" },
+      { id: "f2", content: "User works at GovTech" },
+      { id: "f3", content: "User prefers concise responses" },
+      { id: "f4", content: "User uses Singapore timezone" },
+      { id: "f5", content: "User has a MacBook Pro" },
+    ];
+
+    const deletedIds: string[] = [];
+
+    const deleteEqFn = mock((field: string, val: string) => {
+      if (field === "id") deletedIds.push(val);
+      return Promise.resolve({ error: null });
+    });
+
+    // Simulate shifted list once first item deleted
+    const listChain: any = {};
+    listChain.eq = mock(() => listChain);
+    listChain.or = mock(() => listChain);
+    listChain.order = mock(() => listChain);
+    listChain.limit = () => {
+      const data = facts.filter((f) => !deletedIds.includes(f.id));
+      return Promise.resolve({ data, error: null });
+    };
+
+    const msgInsert = mock(() => Promise.resolve({ data: null, error: null }));
+
+    const supabase = {
+      from: mock((table: string) => {
+        if (table === "messages") return { insert: msgInsert };
+        return {
+          select: mock(() => listChain),
+          delete: mock(() => ({ eq: deleteEqFn })),
+        };
+      }),
+    } as any;
+
+    const bot = mockBot();
+    registerDirectMemoryCommands(bot as any, { supabase });
+
+    // NO prior no-args /facts — jump straight to multi-op delete
+    await bot._triggerCommand("facts", mockCtx({ chatId, match: "-1 | -3" }));
+
+    expect(deletedIds).toContain("f1");
+    expect(deletedIds).toContain("f3");
+    // Without fix: -3 resolves against shifted [f2,f3,f4,f5] → index 3 = f4 (wrong)
+    expect(deletedIds).not.toContain("f4");
+  });
 });
 
 describe("listItems — provenance model read path (R5)", () => {
