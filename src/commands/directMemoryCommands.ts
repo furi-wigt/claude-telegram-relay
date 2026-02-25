@@ -160,13 +160,17 @@ async function findMatchingItems(
   config: CommandConfig,
   query: string
 ): Promise<MemoryItem[]> {
-  // Build query with the same scope as listItems
+  // Build query with the same scope as listItems.
+  // Goals are globally scoped (no chatId filter); other types are chat-scoped.
   const scope = `chat_id.eq.${chatId},chat_id.is.null`;
   let baseQuery = supabase
     .from("memory")
     .select("id, content")
-    .or(scope)
     .eq("type", config.type);
+
+  if (config.type !== "goal") {
+    baseQuery = (baseQuery as any).or(scope);
+  }
 
   if (config.name === "prefs" || config.name === "reminders") {
     // Strict category filter — these buckets are well-defined
@@ -265,13 +269,18 @@ async function listItems(
   chatId: number,
   config: CommandConfig
 ): Promise<string> {
+  // Goals are globally scoped — never filter by chatId.
+  // Facts, prefs, and reminders are chat-scoped.
   const scope = `chat_id.eq.${chatId},chat_id.is.null`;
 
   let query = supabase
     .from("memory")
     .select("id, content")
-    .or(scope)
     .eq("type", config.type);
+
+  if (config.type !== "goal") {
+    query = (query as any).or(scope);
+  }
 
   if (config.name === "prefs" || config.name === "reminders") {
     // Strict category filter for prefs and reminders
@@ -312,11 +321,10 @@ async function findGoalsByIndexOrQuery(
 ): Promise<MemoryItem[]> {
   if (query === "") return []; // caller handles "list completed" path
 
-  const scope = `chat_id.eq.${chatId},chat_id.is.null`;
+  // Goals are globally scoped — fetch all goals regardless of which group created them.
   const { data, error } = await supabase
     .from("memory")
     .select("id, content")
-    .or(scope)
     .eq("type", "goal")
     .order("created_at", { ascending: true })
     .order("id", { ascending: true })
@@ -401,11 +409,10 @@ async function listCompletedGoals(
   supabase: SupabaseClient,
   chatId: number
 ): Promise<string> {
-  const scope = `chat_id.eq.${chatId},chat_id.is.null`;
+  // Goals are globally scoped — list completed goals from all groups.
   const { data, error } = await supabase
     .from("memory")
     .select("id, content, completed_at")
-    .or(scope)
     .eq("type", "completed_goal")
     .order("completed_at", { ascending: false })
     .limit(50);
@@ -612,7 +619,11 @@ async function handleDirectMemoryCommand(
       const { error } = await supabase.from("memory").insert({
         type: config.type,
         content,
-        chat_id: chatId,
+        // Goals, personal facts, and preferences are globally scoped — visible across all groups.
+        // Date reminders stay chat-scoped (transient, group-specific context).
+        chat_id: (config.type === "goal" || config.category === "personal" || config.category === "preference")
+          ? null
+          : chatId,
         category: config.category,
         extracted_from_exchange: false,
         confidence: 1.0,
@@ -771,7 +782,9 @@ export function registerDirectMemoryCommands(
       const { error } = await supabase.from("memory").insert({
         type: pending.config.type,
         content: pending.content,
-        chat_id: pending.chatId,
+        chat_id: (pending.config.type === "goal" || pending.config.category === "personal" || pending.config.category === "preference")
+          ? null
+          : pending.chatId,
         category: pending.config.category,
         extracted_from_exchange: false,
         confidence: 1.0,

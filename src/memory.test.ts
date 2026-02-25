@@ -122,6 +122,63 @@ describe("getMemoryContext", () => {
     expect(result).toContain("Ship v2 launch");
   });
 
+  test("goals query does not filter by chatId (goals are globally scoped)", async () => {
+    // Bug: getMemoryContext called .or("chat_id.eq.X,chat_id.is.null") on the goals query,
+    // hiding goals from other groups. Fix: goals must be unfiltered (globally visible).
+    const goalData = [{ id: "g1", content: "Global goal", deadline: null, priority: 1 }];
+
+    // Build a mock where .limit() returns the chain (chainable + thenable), so
+    // the current code's .or() call on the result of .limit() is trackable.
+    const goalsOrFn = mock((_arg: string) => goalsChain);
+    const goalsChain: any = {
+      select: mock(() => goalsChain),
+      eq: mock(() => goalsChain),
+      or: goalsOrFn,
+      order: mock(() => goalsChain),
+      limit: mock(() => goalsChain), // returns chain (not Promise) so .or() is chainable
+      then: (resolve: any) => resolve({ data: goalData, error: null }),
+    };
+
+    const factsChain: any = {
+      select: mock(() => factsChain),
+      eq: mock(() => factsChain),
+      or: mock(() => factsChain),
+      order: mock(() => factsChain),
+      limit: mock(() => factsChain),
+      then: (resolve: any) => resolve({ data: [], error: null }),
+    };
+
+    let callCount = 0;
+    const sb = {
+      from: mock((_table: string) => {
+        callCount++;
+        const chain = callCount % 2 === 1 ? factsChain : goalsChain;
+        return {
+          select: chain.select,
+          eq: chain.eq,
+          or: chain.or,
+          order: chain.order,
+          limit: chain.limit,
+          insert: mock(() => Promise.resolve({ data: null, error: null })),
+          update: mock(() => ({ eq: mock(() => Promise.resolve({ data: null, error: null })) })),
+        };
+      }),
+    } as any;
+
+    const result = await getMemoryContext(sb, 12345);
+
+    // Goals must still appear (globally scoped, not filtered away)
+    expect(result).toContain("🎯 GOALS");
+    expect(result).toContain("Global goal");
+
+    // FAIL currently: .or("chat_id.eq.12345,...") IS called on the goals chain
+    const goalOrCallArgs = goalsOrFn.mock.calls.map((c: any[]) => c[0] as string);
+    const chatIdFilterFound = goalOrCallArgs.some((arg: string) =>
+      arg.includes("chat_id.eq.12345")
+    );
+    expect(chatIdFilterFound).toBe(false);
+  });
+
   test("handles Supabase query error gracefully", async () => {
     const errorSb = {
       from: mock(() => ({
@@ -197,6 +254,18 @@ describe("processMemoryIntents", () => {
     const inserted = insertFn.mock.calls[0][0];
     expect(inserted.type).toBe("goal");
     expect(inserted.category).toBe("goal");
+  });
+
+  test("[GOAL:] stores with chat_id=null even when chatId is provided (globally scoped)", async () => {
+    // Bug: goals stored via [GOAL:] tag use chat_id=chatId, making them invisible
+    // in other groups. Fix: goals must always be stored with chat_id=null.
+    const insertFn = mock(() => Promise.resolve({ data: null, error: null }));
+    const sb = mockSupabase({ insertFn });
+    const response = "Noted! [GOAL: Global goal visible everywhere]";
+    await processMemoryIntents(sb, response, 12345); // chatId = 12345 (a group)
+    const inserted = insertFn.mock.calls[0][0];
+    expect(inserted.type).toBe("goal");
+    expect(inserted.chat_id).toBeNull(); // FAIL: currently stores chat_id=12345
   });
 
   test("[GOAL: ... | DEADLINE: ...] inserts with category 'goal'", async () => {

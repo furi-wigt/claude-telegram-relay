@@ -314,6 +314,33 @@ describe("/goals command — add path", () => {
     expect(text).toContain("Finish the API by March");
   });
 
+  test("inserts goal with chat_id=null regardless of group chatId (globally scoped)", async () => {
+    // Bug: /goals +text stored goals with chat_id=chatId, making them invisible
+    // in other groups. Fix: goals must be stored with chat_id=null.
+    const bot = mockBot();
+    const memInsert = mock(() => Promise.resolve({ data: null, error: null }));
+    const msgInsert = mock(() => Promise.resolve({ data: null, error: null }));
+    const dupChain: any = {};
+    dupChain.eq = mock(() => dupChain);
+    dupChain.or = mock(() => dupChain);
+    dupChain.order = mock(() => dupChain);
+    dupChain.limit = mock(() => Promise.resolve({ data: [], error: null }));
+    const supabase = {
+      from: mock((table: string) =>
+        table === "messages" ? { insert: msgInsert } : { insert: memInsert, select: mock(() => dupChain) }
+      ),
+    } as any;
+    registerDirectMemoryCommands(bot as any, { supabase });
+
+    const ctx = mockCtx({ chatId: 88888, match: "+Ship the v3 release" });
+    await bot._triggerCommand("goals", ctx);
+
+    expect(memInsert).toHaveBeenCalledTimes(1);
+    const inserted = memInsert.mock.calls[0][0];
+    expect(inserted.type).toBe("goal");
+    expect(inserted.chat_id).toBeNull(); // FAIL: currently stores chat_id=88888
+  });
+
   test("inserts multiple goals from one command", async () => {
     const bot = mockBot();
     const memInsert = mock(() => Promise.resolve({ data: null, error: null }));
@@ -429,6 +456,101 @@ describe("/reminders command — add path", () => {
     const inserted = memInsert.mock.calls[0][0];
     expect(inserted.type).toBe("fact");
     expect(inserted.category).toBe("date");
+  });
+});
+
+// ============================================================
+// Global scoping — /facts and /prefs insert with chat_id=null
+//
+// Bug: /facts +text and /prefs +text stored with chat_id=chatId,
+// making them invisible in other groups. Fix: personal and preference
+// categories must be stored with chat_id=null (globally visible).
+// /reminders (date category) must stay chat-scoped.
+// ============================================================
+
+describe("/facts command — global scoping (personal category)", () => {
+  test("inserts personal fact with chat_id=null regardless of group chatId", async () => {
+    // Bug: personal facts stored with chat_id=chatId, invisible across groups.
+    // Fix: personal category must store with chat_id=null.
+    const bot = mockBot();
+    const memInsert = mock(() => Promise.resolve({ data: null, error: null }));
+    const msgInsert = mock(() => Promise.resolve({ data: null, error: null }));
+    const dupChain: any = {};
+    dupChain.eq = mock(() => dupChain);
+    dupChain.or = mock(() => dupChain);
+    dupChain.order = mock(() => dupChain);
+    dupChain.limit = mock(() => Promise.resolve({ data: [], error: null }));
+    const supabase = {
+      from: mock((table: string) =>
+        table === "messages" ? { insert: msgInsert } : { insert: memInsert, select: mock(() => dupChain) }
+      ),
+    } as any;
+    registerDirectMemoryCommands(bot as any, { supabase });
+
+    const ctx = mockCtx({ chatId: 99999, match: "+I am a Solution Architect at GovTech" });
+    await bot._triggerCommand("facts", ctx);
+
+    expect(memInsert).toHaveBeenCalledTimes(1);
+    const inserted = memInsert.mock.calls[0][0];
+    expect(inserted.category).toBe("personal");
+    expect(inserted.chat_id).toBeNull(); // FAIL until fixed: currently stores chat_id=99999
+  });
+});
+
+describe("/prefs command — global scoping (preference category)", () => {
+  test("inserts preference with chat_id=null regardless of group chatId", async () => {
+    // Bug: preferences stored with chat_id=chatId, invisible across groups.
+    // Fix: preference category must store with chat_id=null.
+    const bot = mockBot();
+    const memInsert = mock(() => Promise.resolve({ data: null, error: null }));
+    const msgInsert = mock(() => Promise.resolve({ data: null, error: null }));
+    const dupChain: any = {};
+    dupChain.eq = mock(() => dupChain);
+    dupChain.or = mock(() => dupChain);
+    dupChain.order = mock(() => dupChain);
+    dupChain.limit = mock(() => Promise.resolve({ data: [], error: null }));
+    const supabase = {
+      from: mock((table: string) =>
+        table === "messages" ? { insert: msgInsert } : { insert: memInsert, select: mock(() => dupChain) }
+      ),
+    } as any;
+    registerDirectMemoryCommands(bot as any, { supabase });
+
+    const ctx = mockCtx({ chatId: 77777, match: "+Always use bullet points in responses" });
+    await bot._triggerCommand("prefs", ctx);
+
+    expect(memInsert).toHaveBeenCalledTimes(1);
+    const inserted = memInsert.mock.calls[0][0];
+    expect(inserted.category).toBe("preference");
+    expect(inserted.chat_id).toBeNull(); // FAIL until fixed: currently stores chat_id=77777
+  });
+});
+
+describe("/reminders command — stays chat-scoped (date category)", () => {
+  test("inserts reminder with chat_id=chatId (date facts are group-specific)", async () => {
+    // Reminders are transient and group-specific — they must stay chat-scoped.
+    const bot = mockBot();
+    const memInsert = mock(() => Promise.resolve({ data: null, error: null }));
+    const msgInsert = mock(() => Promise.resolve({ data: null, error: null }));
+    const dupChain: any = {};
+    dupChain.eq = mock(() => dupChain);
+    dupChain.or = mock(() => dupChain);
+    dupChain.order = mock(() => dupChain);
+    dupChain.limit = mock(() => Promise.resolve({ data: [], error: null }));
+    const supabase = {
+      from: mock((table: string) =>
+        table === "messages" ? { insert: msgInsert } : { insert: memInsert, select: mock(() => dupChain) }
+      ),
+    } as any;
+    registerDirectMemoryCommands(bot as any, { supabase });
+
+    const ctx = mockCtx({ chatId: 55555, match: "+AWS review Friday 2pm" });
+    await bot._triggerCommand("reminders", ctx);
+
+    expect(memInsert).toHaveBeenCalledTimes(1);
+    const inserted = memInsert.mock.calls[0][0];
+    expect(inserted.category).toBe("date");
+    expect(inserted.chat_id).toBe(55555); // date facts stay chat-scoped
   });
 });
 
@@ -1105,7 +1227,8 @@ describe("E2E — /goals shows items regardless of category (fix for [GOAL:] tag
    * Verify that /goals calls .or() for chat_id scope (not strict .eq).
    * Items stored via [GOAL:] tag have category=null — they must be visible.
    */
-  test("listItems uses .or() for chat_id scope, not strict .eq()", async () => {
+  test("listItems for goals does NOT filter by chatId (goals are globally scoped)", async () => {
+    // Goals must be visible across all groups — listItems must not apply chatId scope for goals.
     const bot = mockBot();
     const { supabase, listChain } = mockSupabaseForList([
       { id: "g1", content: "Check with HR for internship job posting" },
@@ -1116,13 +1239,12 @@ describe("E2E — /goals shows items regardless of category (fix for [GOAL:] tag
     const ctx = mockCtx({ chatId: 12345, match: "" });
     await bot._triggerCommand("goals", ctx);
 
-    // .or() must have been called with the scope (includes chat_id IS NULL)
-    expect(listChain.or).toHaveBeenCalled();
-    const orArg = listChain.or.mock.calls[0][0] as string;
-    expect(orArg).toContain("chat_id.eq.12345");
-    expect(orArg).toContain("chat_id.is.null");
+    // .or() must NOT have been called with a chatId scope — goals are globally visible
+    const orCalls = (listChain.or.mock.calls as any[]).map((c) => c[0] as string);
+    const chatIdScopeFound = orCalls.some((arg) => arg.includes("chat_id.eq.12345"));
+    expect(chatIdScopeFound).toBe(false);
 
-    // Goals are displayed
+    // Goals are displayed (globally scoped — items from any group visible)
     const text = ctx.reply.mock.calls[0][0] as string;
     expect(text).toContain("Check with HR for internship job posting");
     expect(text).toContain("Centralised TODO system");
