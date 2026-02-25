@@ -33,8 +33,8 @@ module.exports = {
 
     // ── Daily briefings ────────────────────────────────────────────────────
     {
-      name: "enhanced-morning-summary",
-      script: "routines/enhanced-morning-summary.ts",
+      name: "morning-summary",
+      script: "routines/morning-summary.ts",
       interpreter: BUN,
       exec_mode: "fork",
       cwd: CWD,
@@ -43,8 +43,8 @@ module.exports = {
       watch: false,
       cron_restart: "0 7 * * *",
       env: ENV,
-      error_file: CWD + "/logs/enhanced-morning-summary-error.log",
-      out_file: CWD + "/logs/enhanced-morning-summary.log",
+      error_file: CWD + "/logs/morning-summary-error.log",
+      out_file: CWD + "/logs/morning-summary.log",
       log_date_format: "YYYY-MM-DD HH:mm:ss Z",
     },
     {

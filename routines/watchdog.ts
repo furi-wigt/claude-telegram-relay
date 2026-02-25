@@ -57,7 +57,7 @@ function loadMonitoredProcesses(): MonitoredProcess[] {
     console.error("Failed to load ecosystem config, using fallback list:", error);
     return [
       { name: "telegram-relay", alwaysOn: true },
-      { name: "enhanced-morning-summary", alwaysOn: false },
+      { name: "morning-summary", alwaysOn: false },
       { name: "smart-checkin", alwaysOn: false },
       { name: "night-summary", alwaysOn: false },
       { name: "weekly-etf", alwaysOn: false },
