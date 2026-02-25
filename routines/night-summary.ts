@@ -25,7 +25,6 @@ import { createClient } from "@supabase/supabase-js";
 import { runPrompt } from "../integrations/claude/index.ts";
 import { callOllama } from "../src/fallback.ts";
 import { sendAndRecord } from "../src/utils/routineMessage.ts";
-import { markdownToHtml } from "../src/utils/htmlFormat.ts";
 import { GROUPS, validateGroup } from "../src/config/groups.ts";
 import { USER_NAME, USER_TIMEZONE } from "../src/config/userConfig.ts";
 
@@ -358,26 +357,24 @@ async function main() {
 
   if (provider === null) {
     const failureMessage =
-      "⚠️ <b>Night summary unavailable</b>\n\n" +
+      "⚠️ **Night summary unavailable**\n\n" +
       "Both Claude and Ollama are offline right now.\n" +
       "- Claude: check that the Claude CLI is installed and authenticated\n" +
-      "- Ollama: start it with <code>ollama serve</code>\n\n" +
+      "- Ollama: start it with `ollama serve`\n\n" +
       "Your day was still great — pick this up tomorrow! 🌟";
 
     await sendAndRecord(GROUPS.GENERAL.chatId, failureMessage, {
       routineName: "night-summary",
       agentId: "general-assistant",
-      parseMode: "HTML",
       topicId: GROUPS.GENERAL.topicId,
     });
     console.error("Night summary failed — both providers unavailable");
     process.exit(0); // failure message already sent to Telegram; exit 0 prevents PM2 restart loop
   }
 
-  await sendAndRecord(GROUPS.GENERAL.chatId, markdownToHtml(summary), {
+  await sendAndRecord(GROUPS.GENERAL.chatId, summary, {
     routineName: "night-summary",
     agentId: "general-assistant",
-    parseMode: "HTML",
     topicId: GROUPS.GENERAL.topicId,
   });
   console.log(`Night summary sent to General group (via ${provider})`);

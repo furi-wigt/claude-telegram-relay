@@ -18,7 +18,7 @@
  * 2. Yesterday's recap as a Claude Haiku narrative summary
  * 3. Daily devotional (stub — Gmail integration pending)
  * 4. Suggested tasks calendar-aware, slotted around Apple Calendar events
- * 5. HTML output via markdownToHtml, parseMode: "HTML"
+ * 5. Markdown output — sendAndRecord auto-converts to HTML
  *
  * Run manually: bun run routines/enhanced-morning-summary.ts
  */
@@ -26,7 +26,6 @@
 import { createClient } from "@supabase/supabase-js";
 import { sendAndRecord } from "../src/utils/routineMessage.ts";
 import { GROUPS, validateGroup } from "../src/config/groups.ts";
-import { markdownToHtml } from "../src/utils/htmlFormat.ts";
 import { claudeText } from "../src/claude-process.ts";
 import { createWeatherClient } from "../integrations/weather/index.ts";
 import {
@@ -537,8 +536,7 @@ async function buildEnhancedBriefing(): Promise<{
     lines.push(`_Reply "confirm" to set reminders, or "skip" to proceed._`);
   }
 
-  const htmlMessage = markdownToHtml(lines.join("\n"));
-  return { message: htmlMessage, tasks: suggestedTasks };
+  return { message: lines.join("\n"), tasks: suggestedTasks };
 }
 
 // ============================================================
@@ -596,7 +594,6 @@ async function main() {
   await sendAndRecord(GROUPS.GENERAL.chatId, message, {
     routineName: "morning-summary",
     agentId: "general-assistant",
-    parseMode: "HTML",
     topicId: GROUPS.GENERAL.topicId,
   });
   console.log("Enhanced morning summary sent to General group");

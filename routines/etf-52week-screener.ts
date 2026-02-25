@@ -20,7 +20,6 @@ import YahooFinance from "yahoo-finance2";
 const yahooFinance = new YahooFinance({ suppressNotices: ["yahooSurvey", "ripHistorical"] });
 import { sendAndRecord } from "../src/utils/routineMessage.ts";
 import { GROUPS, validateGroup } from "../src/config/groups.ts";
-import { markdownToHtml } from "../src/utils/htmlFormat.ts";
 import { USER_TIMEZONE } from "../src/config/userConfig.ts";
 
 // ── ETF Universe (~55 tickers) ────────────────────────────────────────────────
@@ -408,7 +407,7 @@ export function formatMessage(
   const total = breakouts.length + candidates.length;
   lines.push(`🔍 Screened: ${screened} ETFs · ${total} near-high · ${oversold.length} oversold`);
 
-  return markdownToHtml(lines.join("\n"));
+  return lines.join("\n");
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
@@ -457,7 +456,6 @@ async function main() {
   await sendAndRecord(GROUPS.GENERAL.chatId, message, {
     routineName: "etf-52week-screener",
     agentId: "general-assistant",
-    parseMode: "HTML",
     topicId: GROUPS.GENERAL.topicId,
   });
 
