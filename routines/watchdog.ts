@@ -296,8 +296,8 @@ async function main() {
   console.log("Running Watchdog...");
 
   if (!validateGroup("GENERAL")) {
-    console.error("Cannot run — GENERAL group not configured in .env");
-    console.error("Set GROUP_GENERAL_CHAT_ID in your .env file");
+    console.error("Cannot run — GENERAL group not configured");
+    console.error("Set chatId for the 'GENERAL' agent in config/agents.json");
     process.exit(0); // graceful skip — PM2 will retry on next cron cycle
   }
 

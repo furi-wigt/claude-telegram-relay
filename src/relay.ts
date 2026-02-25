@@ -64,6 +64,7 @@ import { searchDocuments } from "./rag/documentSearch.ts";
 import { ingestDocument } from "./documents/documentProcessor.ts";
 import { analyzeImages, combineImageContexts } from "./vision/visionClient.ts";
 import { analyzeDiagnosticImages } from "./documents/diagnosticAnalyzer.ts";
+import { USER_NAME, USER_TIMEZONE } from "./config/userConfig.ts";
 
 const PROJECT_ROOT = dirname(dirname(import.meta.path));
 
@@ -1293,9 +1294,6 @@ try {
 } catch {
   // No profile yet — that's fine
 }
-
-const USER_NAME = process.env.USER_NAME || "";
-const USER_TIMEZONE = process.env.USER_TIMEZONE || Intl.DateTimeFormat().resolvedOptions().timeZone;
 
 // Prompt building is now handled by src/agents/promptBuilder.ts (buildAgentPrompt)
 

@@ -33,11 +33,10 @@ import {
   createAppleCalendarClient,
   type AppleCalendarEvent,
 } from "../integrations/osx-calendar/index.ts";
+import { USER_NAME, USER_TIMEZONE } from "../src/config/userConfig.ts";
 
 const SUPABASE_URL = process.env.SUPABASE_URL || "";
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || "";
-const USER_NAME = process.env.USER_NAME || "there";
-const USER_TIMEZONE = process.env.USER_TIMEZONE || "Asia/Singapore";
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
 
 // ── Area targets for 2-hour forecast ─────────────────────────────────────────
@@ -588,8 +587,8 @@ async function main() {
   console.log("Running Enhanced Morning Summary...");
 
   if (!validateGroup("GENERAL")) {
-    console.error("Cannot run — GENERAL group not configured in .env");
-    console.error("Set GROUP_GENERAL_CHAT_ID in your .env file");
+    console.error("Cannot run — GENERAL group not configured");
+    console.error("Set chatId for the 'GENERAL' agent in config/agents.json");
     process.exit(0); // graceful skip — PM2 will retry on next cron cycle
   }
 

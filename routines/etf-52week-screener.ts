@@ -21,8 +21,7 @@ const yahooFinance = new YahooFinance({ suppressNotices: ["yahooSurvey", "ripHis
 import { sendAndRecord } from "../src/utils/routineMessage.ts";
 import { GROUPS, validateGroup } from "../src/config/groups.ts";
 import { markdownToHtml } from "../src/utils/htmlFormat.ts";
-
-const USER_TIMEZONE = process.env.USER_TIMEZONE || "Asia/Singapore";
+import { USER_TIMEZONE } from "../src/config/userConfig.ts";
 
 // ── ETF Universe (~55 tickers) ────────────────────────────────────────────────
 
@@ -418,8 +417,8 @@ async function main() {
   console.log("Running ETF 52-Week High Screener (with VIX + Volume + Triple RSI)...");
 
   if (!validateGroup("GENERAL")) {
-    console.error("Cannot run — GENERAL group not configured in .env");
-    console.error("Set GROUP_GENERAL_CHAT_ID in your .env file");
+    console.error("Cannot run — GENERAL group not configured");
+    console.error("Set chatId for the 'GENERAL' agent in config/agents.json");
     process.exit(0); // graceful skip — PM2 will retry on next cron cycle
   }
 

@@ -27,11 +27,10 @@ import { callOllama } from "../src/fallback.ts";
 import { sendAndRecord } from "../src/utils/routineMessage.ts";
 import { markdownToHtml } from "../src/utils/htmlFormat.ts";
 import { GROUPS, validateGroup } from "../src/config/groups.ts";
+import { USER_NAME, USER_TIMEZONE } from "../src/config/userConfig.ts";
 
 const SUPABASE_URL = process.env.SUPABASE_URL || "";
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || "";
-const USER_TIMEZONE = process.env.USER_TIMEZONE || "Asia/Singapore";
-const USER_NAME = process.env.USER_NAME || "there";
 
 const CLAUDE_MODEL = "claude-haiku-4-5-20251001";
 const CLAUDE_TIMEOUT_MS = 90_000;
@@ -345,8 +344,8 @@ async function main() {
   console.log("Running Night Summary (Claude Haiku, Ollama fallback)...");
 
   if (!validateGroup("GENERAL")) {
-    console.error("Cannot run — GENERAL group not configured in .env");
-    console.error("Set GROUP_GENERAL_CHAT_ID in your .env file");
+    console.error("Cannot run — GENERAL group not configured");
+    console.error("Set chatId for the 'GENERAL' agent in config/agents.json");
     process.exit(0); // graceful skip — PM2 will retry on next cron cycle
   }
 

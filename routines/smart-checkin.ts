@@ -25,11 +25,11 @@ import { readFile, writeFile } from "fs/promises";
 import { createClient } from "@supabase/supabase-js";
 import { sendAndRecord } from "../src/utils/routineMessage.ts";
 import { GROUPS, validateGroup } from "../src/config/groups.ts";
+import { USER_NAME, USER_TIMEZONE } from "../src/config/userConfig.ts";
 
 const CLAUDE_PATH = process.env.CLAUDE_PATH || "claude";
 const SUPABASE_URL = process.env.SUPABASE_URL || "";
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || "";
-const USER_TIMEZONE = process.env.USER_TIMEZONE || "Asia/Singapore";
 const STATE_FILE = process.env.CHECKIN_STATE_FILE || "/tmp/group-checkin-state.json";
 
 // ============================================================
@@ -128,7 +128,7 @@ async function askClaudeToDecide(): Promise<{
     ? (now.getTime() - new Date(state.lastCheckinTime).getTime()) / (1000 * 60 * 60)
     : 999;
 
-  const userName = process.env.USER_NAME || "the user";
+  const userName = USER_NAME;
   const prompt = `You are a proactive AI assistant deciding whether to check in with ${userName} via a Telegram group chat.
 
 CONTEXT:
@@ -189,8 +189,8 @@ async function main() {
   console.log("Running Smart Check-in...");
 
   if (!validateGroup("GENERAL")) {
-    console.error("Cannot run — GENERAL group not configured in .env");
-    console.error("Set GROUP_GENERAL_CHAT_ID in your .env file");
+    console.error("Cannot run — GENERAL group not configured");
+    console.error("Set chatId for the 'GENERAL' agent in config/agents.json");
     process.exit(0); // graceful skip — PM2 will retry on next cron cycle
   }
 

@@ -94,8 +94,8 @@ async function main() {
   console.log("Running Security Daily Scan...");
 
   if (!validateGroup("SECURITY")) {
-    console.error("Cannot run — SECURITY group not configured in .env");
-    console.error("Set GROUP_SECURITY_CHAT_ID in your .env file");
+    console.error("Cannot run — SECURITY group not configured");
+    console.error("Set chatId for the 'SECURITY' agent in config/agents.json");
     process.exit(1);
   }
 
