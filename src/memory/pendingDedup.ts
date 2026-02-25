@@ -50,7 +50,10 @@ export async function loadPendingCandidates(
       return null; // expired
     }
     return data;
-  } catch {
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      console.warn("pendingDedup: unexpected error reading pending file:", err);
+    }
     return null;
   }
 }
