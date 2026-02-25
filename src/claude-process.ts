@@ -55,6 +55,21 @@ export function getClaudePath(override?: string): string {
 // ── Tool Summary Formatter ───────────────────────────────────────────────────
 
 /**
+ * Shorten a file path to the last `keepParts` components.
+ * Paths with fewer or equal components are returned unchanged.
+ *
+ * @example
+ *   trimPath("/a/b/c/d/e/f")  // ".../d/e/f"
+ *   trimPath("src/relay.ts")  // "src/relay.ts"  (only 2 parts)
+ */
+export function trimPath(filePath: string, keepParts = 3): string {
+  if (!filePath) return filePath;
+  const parts = filePath.split("/").filter(Boolean);
+  if (parts.length <= keepParts) return filePath;
+  return "..." + "/" + parts.slice(-keepParts).join("/");
+}
+
+/**
  * Format a tool_use block into a human-readable one-line progress summary.
  * Exported for unit testing.
  */
@@ -65,7 +80,7 @@ export function formatToolSummary(toolName: string, input: Record<string, unknow
     return `bash: ${trunc((input.command as string) ?? "", 80)}`;
   }
   if (input.file_path) {
-    return `${toolName}: ${input.file_path as string}`;
+    return `${toolName}: ${trimPath(input.file_path as string)}`;
   }
   if (toolName === "Glob") {
     return `Glob: ${(input.pattern as string) ?? ""}`;

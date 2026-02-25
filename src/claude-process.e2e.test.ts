@@ -80,7 +80,7 @@ mock.module("./spawn", () => ({
 }));
 
 // Import AFTER mocking so the module picks up our mock
-const { claudeText, claudeStream, buildClaudeEnv, getClaudePath, formatToolSummary } = await import(
+const { claudeText, claudeStream, buildClaudeEnv, getClaudePath, formatToolSummary, trimPath } = await import(
   "./claude-process.ts"
 );
 
@@ -151,10 +151,17 @@ describe("formatToolSummary", () => {
     const long = "x".repeat(100);
     expect(formatToolSummary("Bash", { command: long })).toMatch(/^bash: x+…$/);
   });
-  test("file_path tools (Read, Edit, Write)", () => {
+  test("file_path tools — short paths (≤3 parts) unchanged", () => {
     expect(formatToolSummary("Read",  { file_path: "src/relay.ts" })).toBe("Read: src/relay.ts");
     expect(formatToolSummary("Edit",  { file_path: "src/foo.ts"   })).toBe("Edit: src/foo.ts");
     expect(formatToolSummary("Write", { file_path: "out.txt"      })).toBe("Write: out.txt");
+  });
+  test("file_path tools — deep paths trimmed to last 3 parts", () => {
+    expect(formatToolSummary("Read",  { file_path: "/a/b/c/d/e/f" })).toBe("Read: .../d/e/f");
+    expect(formatToolSummary("Edit",  { file_path: "/Users/furi/project/src/memory/extractor.ts" }))
+      .toBe("Edit: .../src/memory/extractor.ts");
+    expect(formatToolSummary("Write", { file_path: "routines/a/b/output.json" }))
+      .toBe("Write: .../a/b/output.json");
   });
   test("Glob", () => {
     expect(formatToolSummary("Glob", { pattern: "**/*.ts" })).toBe("Glob: **/*.ts");
@@ -185,6 +192,36 @@ describe("formatToolSummary", () => {
   test("unknown tool falls back to bare name", () => {
     expect(formatToolSummary("TodoWrite", {})).toBe("TodoWrite");
     expect(formatToolSummary("SomeFutureTool", {})).toBe("SomeFutureTool");
+  });
+});
+
+// ============================================================
+// 1c. trimPath — path shortener
+// ============================================================
+
+describe("trimPath", () => {
+  test("path with more than 3 parts is trimmed to last 3", () => {
+    expect(trimPath("a/b/c/d/e")).toBe(".../c/d/e");
+    expect(trimPath("a/b/c/d")).toBe(".../b/c/d");
+  });
+  test("path with exactly 3 parts is returned as-is", () => {
+    expect(trimPath("a/b/c")).toBe("a/b/c");
+    expect(trimPath("src/memory/extractor.ts")).toBe("src/memory/extractor.ts");
+  });
+  test("path with fewer than 3 parts is returned as-is", () => {
+    expect(trimPath("src/relay.ts")).toBe("src/relay.ts");
+    expect(trimPath("out.txt")).toBe("out.txt");
+  });
+  test("absolute path (leading slash) trims correctly", () => {
+    expect(trimPath("/Users/furi/project/src/memory/extractor.ts"))
+      .toBe(".../src/memory/extractor.ts");
+    expect(trimPath("/a/b/c/d")).toBe(".../b/c/d");
+  });
+  test("empty string returns empty string", () => {
+    expect(trimPath("")).toBe("");
+  });
+  test("single component returns as-is", () => {
+    expect(trimPath("file.ts")).toBe("file.ts");
   });
 });
 
