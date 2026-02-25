@@ -26,8 +26,8 @@ export async function listCalendarsJXA(): Promise<RawCalendar[]> {
   return runJXAWithJSON<Record<string, never>, RawCalendar[]>(
     `
     const app = Application('Calendar');
-    JSON.stringify(app.calendars().map(c => ({
-      id: c.id(),
+    JSON.stringify(app.calendars().map((c, i) => ({
+      id: (function() { try { return c.id(); } catch (_) { return 'calendar-' + i; } })(),
       title: c.name(),
     })));
     `,
