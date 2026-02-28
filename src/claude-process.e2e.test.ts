@@ -18,7 +18,7 @@
  * Run: bun test src/claude-process.e2e.test.ts
  */
 
-import { describe, test, expect, mock, beforeEach } from "bun:test";
+import { describe, test, expect, mock, beforeEach, afterAll } from "bun:test";
 
 // ── Spawn mock infrastructure ────────────────────────────────────────────────
 
@@ -80,12 +80,17 @@ mock.module("./spawn", () => ({
 }));
 
 // Import AFTER mocking so the module picks up our mock
-const { claudeText, claudeStream, buildClaudeEnv, getClaudePath } = await import(
+const { claudeText, claudeStream, buildClaudeEnv, getClaudePath, formatToolSummary, trimPath, enrichProgressText } = await import(
   "./claude-process.ts"
 );
 
 beforeEach(() => {
   spawnMock.mockReset();
+});
+
+// Restore module mocks after this file so subsequent test files see the real spawn.
+afterAll(() => {
+  mock.restore();
 });
 
 // ============================================================
@@ -133,6 +138,167 @@ describe("claudeText — simple text call", () => {
 
     const [args] = spawnMock.mock.calls[0] as [string[]];
     expect(args).toContain("claude-haiku-4-5-20251001");
+  });
+});
+
+// ============================================================
+// 1b. formatToolSummary — tool progress label formatter
+// ============================================================
+
+describe("formatToolSummary", () => {
+  test("Bash", () => {
+    expect(formatToolSummary("Bash", { command: "echo hi" })).toBe("bash: echo hi");
+  });
+  test("bash (lowercase alias)", () => {
+    expect(formatToolSummary("bash", { command: "ls -la" })).toBe("bash: ls -la");
+  });
+  test("Bash truncates long commands", () => {
+    const long = "x".repeat(100);
+    expect(formatToolSummary("Bash", { command: long })).toMatch(/^bash: x+…$/);
+  });
+  test("file_path tools — short paths (≤3 parts) unchanged", () => {
+    expect(formatToolSummary("Read",  { file_path: "src/relay.ts" })).toBe("Read: src/relay.ts");
+    expect(formatToolSummary("Edit",  { file_path: "src/foo.ts"   })).toBe("Edit: src/foo.ts");
+    expect(formatToolSummary("Write", { file_path: "out.txt"      })).toBe("Write: out.txt");
+  });
+  test("file_path tools — deep paths trimmed to last 3 parts", () => {
+    expect(formatToolSummary("Read",  { file_path: "/a/b/c/d/e/f" })).toBe("Read: .../d/e/f");
+    expect(formatToolSummary("Edit",  { file_path: "/Users/furi/project/src/memory/extractor.ts" }))
+      .toBe("Edit: .../src/memory/extractor.ts");
+    expect(formatToolSummary("Write", { file_path: "routines/a/b/output.json" }))
+      .toBe("Write: .../a/b/output.json");
+  });
+  test("Glob", () => {
+    expect(formatToolSummary("Glob", { pattern: "**/*.ts" })).toBe("Glob: **/*.ts");
+  });
+  test("Grep", () => {
+    expect(formatToolSummary("Grep", { pattern: "onProgress" })).toBe('Grep: "onProgress"');
+  });
+  test("Grep truncates long patterns", () => {
+    const long = "a".repeat(80);
+    expect(formatToolSummary("Grep", { pattern: long })).toMatch(/^Grep: "a+…"$/);
+  });
+  test("WebFetch", () => {
+    expect(formatToolSummary("WebFetch", { url: "https://example.com/page" }))
+      .toBe("WebFetch: https://example.com/page");
+  });
+  test("WebSearch", () => {
+    expect(formatToolSummary("WebSearch", { query: "Claude API docs" }))
+      .toBe('WebSearch: "Claude API docs"');
+  });
+  test("Task with subagent_type", () => {
+    expect(formatToolSummary("Task", { subagent_type: "builder", description: "Build auth module" }))
+      .toBe("Task(builder): Build auth module");
+  });
+  test("Task without subagent_type", () => {
+    expect(formatToolSummary("Task", { description: "Explore codebase" }))
+      .toBe("Task: Explore codebase");
+  });
+  test("unknown tool falls back to bare name", () => {
+    expect(formatToolSummary("TodoWrite", {})).toBe("TodoWrite");
+    expect(formatToolSummary("SomeFutureTool", {})).toBe("SomeFutureTool");
+  });
+});
+
+// ============================================================
+// 1b'. enrichProgressText — emoji enrichment for onProgress summaries
+// ============================================================
+
+describe("enrichProgressText", () => {
+  test("Thinking... → 💭", () => {
+    expect(enrichProgressText("Thinking...")).toBe("💭 Thinking...");
+  });
+
+  test("bash: prefix → 🔧", () => {
+    expect(enrichProgressText("bash: npx pm2 status")).toBe("🔧 bash: npx pm2 status");
+  });
+
+  test("Read: prefix → 📖", () => {
+    expect(enrichProgressText("Read: src/relay.ts")).toBe("📖 Read: src/relay.ts");
+  });
+
+  test("Write: prefix → ✏️", () => {
+    expect(enrichProgressText("Write: out.txt")).toBe("✏️ Write: out.txt");
+  });
+
+  test("Edit: prefix → ✏️", () => {
+    expect(enrichProgressText("Edit: src/foo.ts")).toBe("✏️ Edit: src/foo.ts");
+  });
+
+  test("MultiEdit: prefix → ✏️", () => {
+    expect(enrichProgressText("MultiEdit: src/foo.ts")).toBe("✏️ MultiEdit: src/foo.ts");
+  });
+
+  test("Glob: prefix → 🔍", () => {
+    expect(enrichProgressText("Glob: **/*.ts")).toBe("🔍 Glob: **/*.ts");
+  });
+
+  test("Grep: prefix → 🔍", () => {
+    expect(enrichProgressText('Grep: "onProgress"')).toBe('🔍 Grep: "onProgress"');
+  });
+
+  test("WebFetch: prefix → 🌐", () => {
+    expect(enrichProgressText("WebFetch: https://example.com")).toBe("🌐 WebFetch: https://example.com");
+  });
+
+  test("WebSearch: prefix → 🌐", () => {
+    expect(enrichProgressText('WebSearch: "Claude API docs"')).toBe('🌐 WebSearch: "Claude API docs"');
+  });
+
+  test("Task( prefix → 🤖", () => {
+    expect(enrichProgressText("Task(builder): Build auth module")).toBe("🤖 Task(builder): Build auth module");
+  });
+
+  test("Task: prefix → 🤖", () => {
+    expect(enrichProgressText("Task: Explore codebase")).toBe("🤖 Task: Explore codebase");
+  });
+
+  test("bare tool name (no spaces) → 🔧", () => {
+    expect(enrichProgressText("TodoWrite")).toBe("🔧 TodoWrite");
+    expect(enrichProgressText("SomeFutureTool")).toBe("🔧 SomeFutureTool");
+  });
+
+  test("assistant text preview → 💭 with truncation at 50 chars", () => {
+    const short = "Let me analyse this carefully.";
+    expect(enrichProgressText(short)).toBe(`💭 ${short}`);
+
+    // Long assistant text (with spaces — real Claude output always has spaces)
+    const long = "I will now examine the file structure and identify any issues with the current implementation.";
+    const result = enrichProgressText(long);
+    expect(result).toStartWith("💭 ");
+    expect(result).toContain("…");
+    // "💭 " + 50 content chars + "…" → 54 chars total
+    expect(result.replace("💭 ", "").replace("…", "").length).toBeLessThanOrEqual(50);
+  });
+});
+
+// ============================================================
+// 1c. trimPath — path shortener
+// ============================================================
+
+describe("trimPath", () => {
+  test("path with more than 3 parts is trimmed to last 3", () => {
+    expect(trimPath("a/b/c/d/e")).toBe(".../c/d/e");
+    expect(trimPath("a/b/c/d")).toBe(".../b/c/d");
+  });
+  test("path with exactly 3 parts is returned as-is", () => {
+    expect(trimPath("a/b/c")).toBe("a/b/c");
+    expect(trimPath("src/memory/extractor.ts")).toBe("src/memory/extractor.ts");
+  });
+  test("path with fewer than 3 parts is returned as-is", () => {
+    expect(trimPath("src/relay.ts")).toBe("src/relay.ts");
+    expect(trimPath("out.txt")).toBe("out.txt");
+  });
+  test("absolute path (leading slash) trims correctly", () => {
+    expect(trimPath("/Users/furi/project/src/memory/extractor.ts"))
+      .toBe(".../src/memory/extractor.ts");
+    expect(trimPath("/a/b/c/d")).toBe(".../b/c/d");
+  });
+  test("empty string returns empty string", () => {
+    expect(trimPath("")).toBe("");
+  });
+  test("single component returns as-is", () => {
+    expect(trimPath("file.ts")).toBe("file.ts");
   });
 });
 
@@ -188,6 +354,36 @@ describe("claudeStream — streaming NDJSON call", () => {
 
     expect(capturedSessionId).toBe("sess-abc");
     expect(progressUpdates).toContain("Step 1 done");
+    expect(progressUpdates.some((p) => p.startsWith("bash:"))).toBe(true);
+  });
+
+  test("reports tool_use blocks embedded inside assistant.message.content", async () => {
+    // In one-shot (-p) mode the CLI bundles tool_use blocks inside the
+    // assistant message rather than emitting standalone tool_use events.
+    const ndjson = [
+      JSON.stringify({ type: "system", subtype: "init", session_id: "sess-embed" }),
+      JSON.stringify({
+        type: "assistant",
+        message: {
+          content: [
+            { type: "text", text: "Reading the file..." },
+            { type: "tool_use", name: "Read", input: { file_path: "src/relay.ts" } },
+            { type: "tool_use", name: "Bash", input: { command: "grep foo src/relay.ts" } },
+          ],
+        },
+      }),
+      JSON.stringify({ type: "result", subtype: "success", result: "Done" }),
+    ].join("\n") + "\n";
+
+    spawnMock.mockImplementation(() =>
+      mockProc({ stdout: ndjson, exitCode: 0 })
+    );
+
+    const progressUpdates: string[] = [];
+    await claudeStream("task", { onProgress: (s) => progressUpdates.push(s) });
+
+    expect(progressUpdates).toContain("Reading the file...");
+    expect(progressUpdates).toContain("Read: src/relay.ts");
     expect(progressUpdates.some((p) => p.startsWith("bash:"))).toBe(true);
   });
 

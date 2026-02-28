@@ -7,14 +7,15 @@
  * Run: bun run src/relay.ts
  */
 
-import { Bot, Context } from "grammy";
+import { Bot, Context, InlineKeyboard } from "grammy";
 import { writeFile, mkdir, readFile, unlink } from "fs/promises";
 import { readFileSync } from "fs";
-import { join, dirname } from "path";
+import { join, dirname, basename, extname } from "path";
 import { supabase } from "./utils/supabase.ts";
 import {
   activeStreams,
   streamKey,
+  parseCancelKey,
   handleCancelCallback,
   handleCancelCommand,
 } from "./cancel.ts";
@@ -44,20 +45,29 @@ import {
 import { enqueueExtraction } from "./memory/extractionQueue.ts";
 import { callOllama, checkOllamaAvailable } from "./fallback.ts";
 import { getAgentForChat, autoDiscoverGroup, loadGroupMappings } from "./routing/groupRouter.ts";
-import { loadModelRouterConfig, resolveModel } from "./routing/modelRouter.ts";
-import { loadSession as loadGroupSession, updateSessionId, initSessions, saveSession } from "./session/groupSessions.ts";
+// Router removed: always use Sonnet for simplicity and predictable latency
+import { loadSession as loadGroupSession, updateSessionIdGuarded, initSessions, loadAllSessions, saveSession, isResumeReliable, didResumeFail, lockActiveCwd } from "./session/groupSessions.ts";
 import { buildAgentPrompt } from "./agents/promptBuilder.ts";
 import { GroupQueueManager } from "./queue/groupQueueManager.ts";
-import { registerCommands, buildProgressFooter, registerContextSwitchCallbackHandler } from "./commands/botCommands.ts";
+import { registerCommands, registerContextSwitchCallbackHandler } from "./commands/botCommands.ts";
+import { registerTshoOtCommands, handleTshoOtCapture } from "./commands/tshoOtCommands.ts";
 import { detectAndHandle, registerCallbackHandler } from "./routines/routineHandler.ts";
+import { getTROQAState, appendQAAnswer } from "./tro/troQAState.ts";
+import { registerDedupReviewCallbackHandler } from "./memory/dedupReviewCallbackHandler.ts";
 import { CodingSessionManager } from "./coding/sessionManager.ts";
 import { InputRouter } from "./coding/inputRouter.ts";
 import { ReminderManager } from "./coding/reminderManager.ts";
 import { registerCodingCommands } from "./coding/codingCommands.ts";
 import { InteractiveStateMachine } from "./interactive/index.ts";
-import { claudeText, claudeStream } from "./claude-process.ts";
+import { claudeText, claudeStream, enrichProgressText, type AskUserQuestionItem, type AskUserQuestionEvent } from "./claude-process.ts";
 import { ProgressIndicator } from "./utils/progressIndicator.ts";
 import { trace, generateTraceId } from "./utils/tracer.ts";
+import { searchDocuments } from "./rag/documentSearch.ts";
+import { ingestDocument } from "./documents/documentProcessor.ts";
+import { analyzeImages, combineImageContexts } from "./vision/visionClient.ts";
+import { analyzeDiagnosticImages } from "./documents/diagnosticAnalyzer.ts";
+import { USER_NAME, USER_TIMEZONE } from "./config/userConfig.ts";
+import { buildFooter, extractNextStep, type FooterData } from "./utils/footer.ts";
 
 const PROJECT_ROOT = dirname(dirname(import.meta.path));
 
@@ -108,8 +118,173 @@ const UPLOADS_DIR = join(RELAY_DIR, "uploads");
 
 // Session management is now per-group — see src/session/groupSessions.ts
 
-// Model routing config — loaded once at startup from config/models.json
-const modelRouterConfig = loadModelRouterConfig();
+// Model selection: always use Sonnet (predictable latency, no routing overhead)
+const SONNET_MODEL = "claude-sonnet-4-6";
+
+// ============================================================
+// RELAY QUESTION FORM — state and helpers
+// ============================================================
+
+/** In-flight AskUserQuestion form state for a Telegram chat/thread. */
+interface RelayQuestionForm {
+  toolUseId: string;
+  questions: AskUserQuestionItem[];
+  /** qIdx → selected label(s). Single-select: string, multiSelect: string[]. */
+  selections: Map<number, string | string[]>;
+  /** Currently focused/expanded question index. */
+  activeQIdx: number;
+  /** message_id of the Telegram form message to edit in-place. */
+  formMessageId: number;
+  resolve: (answers: Record<string, string>) => void;
+  reject: () => void;
+  timeoutId: ReturnType<typeof setTimeout>;
+  /** Called just before resolve() so the onQuestion closure can update the indicator. */
+  onResolve?: () => void;
+}
+
+/** Key: streamKey(chatId, threadId) */
+const pendingRelayForms = new Map<string, RelayQuestionForm>();
+
+/** Force-reply routing: messageId → {key, qIdx} */
+interface PendingCustomReply {
+  key: string;   // streamKey(chatId, threadId)
+  qIdx: number;
+}
+const pendingRelayCustomReplies = new Map<number, PendingCustomReply>();
+
+const RELAY_FORM_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+
+/** Build the form message text for a RelayQuestionForm. */
+function buildFormText(form: RelayQuestionForm): string {
+  const { questions, selections, activeQIdx } = form;
+  const n = questions.length;
+  const answeredCount = [...Array(n).keys()].filter((i) => {
+    const v = selections.get(i);
+    if (v === undefined) return false;
+    if (Array.isArray(v)) return v.length > 0;
+    return v !== "";
+  }).length;
+
+  const lines: string[] = [];
+  lines.push(`📋 Claude has ${n} question${n > 1 ? "s" : ""} for you`);
+  lines.push("Answer any or all, then tap Submit.");
+
+  for (let i = 0; i < n; i++) {
+    const q = questions[i];
+    const sel = selections.get(i);
+    const isActive = i === activeQIdx;
+
+    if (isActive) {
+      lines.push("");
+      lines.push(`▶ Q${i + 1} — ${q.question}   [${q.header}]`);
+      lines.push("");
+      for (const opt of q.options) {
+        const isSelected = sel
+          ? Array.isArray(sel) ? sel.includes(opt.label) : sel === opt.label
+          : false;
+        const bullet = q.multiSelect
+          ? isSelected ? "  ✅" : "  ☐"
+          : isSelected ? "  ◉" : "  ○";
+        lines.push(`${bullet} ${opt.label}`);
+        if (opt.description) lines.push(`    ${opt.description}`);
+      }
+    } else {
+      lines.push("");
+      lines.push("──────────────────────────────");
+      let summary: string;
+      if (sel === undefined) {
+        summary = "(not answered)";
+      } else if (Array.isArray(sel)) {
+        summary = sel.length > 0 ? "✅ " + sel.join(", ") : "(not answered)";
+      } else {
+        const truncated = sel.length > 60 ? sel.slice(0, 59) + "…" : sel;
+        summary = "✅ " + truncated;
+      }
+      lines.push(`  Q${i + 1} — ${q.question} [${q.header}]`);
+      lines.push(`  ${summary}`);
+    }
+  }
+
+  lines.push("");
+  lines.push(`${answeredCount} of ${n} answered`);
+  return lines.join("\n");
+}
+
+/** Build the inline keyboard for the active question of a RelayQuestionForm. */
+function buildFormKeyboard(
+  form: RelayQuestionForm,
+  chatId: number,
+  threadId: number | null,
+): { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> } {
+  const { questions, selections, activeQIdx } = form;
+  const q = questions[activeQIdx];
+  const sel = selections.get(activeQIdx);
+  const tid = threadId ?? 0;
+  const rows: Array<Array<{ text: string; callback_data: string }>> = [];
+
+  // Option buttons (2 per row max)
+  for (let i = 0; i < q.options.length; i += 2) {
+    const row: Array<{ text: string; callback_data: string }> = [];
+    for (let j = i; j < Math.min(i + 2, q.options.length); j++) {
+      const opt = q.options[j];
+      const isSelected = sel
+        ? Array.isArray(sel) ? sel.includes(opt.label) : sel === opt.label
+        : false;
+      const btnText = q.multiSelect
+        ? isSelected ? `✅ ${opt.label}` : opt.label
+        : isSelected ? `◉ ${opt.label}` : opt.label;
+      row.push({
+        text: btnText,
+        callback_data: `rq:s:${chatId}:${tid}:${activeQIdx}:${j}`,
+      });
+    }
+    rows.push(row);
+  }
+
+  // [Other...] button — always last in option area
+  const lastOptionRow = rows[rows.length - 1];
+  const otherBtn = {
+    text: "Other...",
+    callback_data: `rq:o:${chatId}:${tid}:${activeQIdx}`,
+  };
+  if (lastOptionRow && lastOptionRow.length < 2) {
+    lastOptionRow.push(otherBtn);
+  } else {
+    rows.push([otherBtn]);
+  }
+
+  // Navigation row (only if multiple questions)
+  if (questions.length > 1) {
+    const navRow: Array<{ text: string; callback_data: string }> = [];
+    if (activeQIdx > 0) {
+      navRow.push({ text: `← Q${activeQIdx}`, callback_data: `rq:n:${chatId}:${tid}:${activeQIdx - 1}` });
+    }
+    if (activeQIdx < questions.length - 1) {
+      navRow.push({ text: `Q${activeQIdx + 2} →`, callback_data: `rq:n:${chatId}:${tid}:${activeQIdx + 1}` });
+    }
+    if (navRow.length > 0) rows.push(navRow);
+  }
+
+  // Submit + Cancel row
+  rows.push([
+    { text: "✓ Submit All", callback_data: `rq:sub:${chatId}:${tid}` },
+    { text: "✗ Cancel",    callback_data: `rq:cxl:${chatId}:${tid}` },
+  ]);
+
+  return { inline_keyboard: rows };
+}
+
+/** Convert form selections to the answers dict expected by AskUserQuestion tool_result. */
+function collectAnswers(form: RelayQuestionForm): Record<string, string> {
+  const answers: Record<string, string> = {};
+  for (let i = 0; i < form.questions.length; i++) {
+    const sel = form.selections.get(i);
+    if (sel === undefined) continue;
+    const key = form.questions[i].question;
+    answers[key] = Array.isArray(sel) ? sel.join(", ") : sel;
+  }
+  return answers;
+}
 
 // ============================================================
 // SETUP
@@ -170,6 +345,36 @@ if (process.env.FALLBACK_MODEL) {
 
 const bot = new Bot(BOT_TOKEN);
 
+// ── Resume failure: pending context injection store ──────────────────────────
+// When resume fails we ask the user via inline keyboard whether to inject
+// shortTermContext into the next call. The formatted context is held here until
+// the user responds (or the entry is garbage-collected by restart).
+const pendingResumeContext = new Map<string, string>(); // key → formatted context
+
+function resumeCtxKey(chatId: number, threadId: number | null): string {
+  return `${chatId}_${threadId ?? ""}`;
+}
+
+async function sendResumeFailedKeyboard(
+  ctx: Context,
+  chatId: number,
+  threadId: number | null,
+  formattedContext: string,
+): Promise<void> {
+  const key = resumeCtxKey(chatId, threadId);
+  pendingResumeContext.set(key, formattedContext);
+
+  const keyboard = new InlineKeyboard()
+    .text("✓ Inject context", `rsm_ctx:yes:${chatId}:${threadId ?? ""}`)
+    .text("✗ Fresh start", `rsm_ctx:no:${chatId}:${threadId ?? ""}`);
+
+  await ctx.reply(
+    "⚠️ *Session reset* — resume failed, fresh session started.\n\n" +
+    "Inject recent conversation context into the next reply for continuity?",
+    { parse_mode: "Markdown", reply_markup: keyboard },
+  ).catch(console.error);
+}
+
 // ============================================================
 // SECURITY: Only respond to authorized user
 // ============================================================
@@ -199,17 +404,25 @@ const allowedUserId = parseInt(ALLOWED_USER_ID || "0", 10);
 registerCommands(bot, {
   supabase,
   userId: allowedUserId,
+  projectDir: PROJECT_DIR || undefined,
+  agentResolver: (chatId) => getAgentForChat(chatId).id,
   // Allow /new <prompt> to immediately process the follow-up text as a user message
   onMessage: async (chatId: number, text: string, ctx: Context) => {
-    if (!queueManager.hasCapacity(chatId, null)) {
+    const threadId = ctx.message?.message_thread_id ?? null;
+    if (!queueManager.hasCapacity(chatId, threadId)) {
       await ctx.reply("Queue is full. Please try again shortly.");
       return;
     }
-    queueManager.getOrCreate(chatId, null).enqueue({
+    queueManager.getOrCreate(chatId, threadId).enqueue({
       label: `[chat:${chatId}] /new: ${text.substring(0, 30)}`,
-      run: () => processTextMessage(chatId, null, text, ctx),
+      run: () => processTextMessage(chatId, threadId, text, ctx),
     });
   },
+});
+
+// Register tshoot commands (/scan, /ts-new, /ts-sessions, /ts-resume, /ts-status)
+registerTshoOtCommands(bot, {
+  agentResolver: (chatId) => getAgentForChat(chatId).id,
 });
 
 // Register routine creation callback handler (inline keyboard for output target)
@@ -218,17 +431,21 @@ registerCallbackHandler(bot);
 // Register memory confirmation callback handler (inline keyboard for uncertain memory items)
 registerMemoryConfirmHandler(bot, supabase);
 
+// Register weekly dedup review callback handler (mdr_yes / mdr_no from memory-dedup-review routine)
+registerDedupReviewCallbackHandler(bot, supabase);
+
 // Kept for backward compat: handles "New topic / Continue" button clicks from any
 // context-switch prompts that were sent before topic detection was removed. Safe to
 // keep indefinitely — it no-ops when there are no pending context-switch messages.
 registerContextSwitchCallbackHandler(bot, async (chatId: number, text: string, ctx: Context) => {
-  if (!queueManager.hasCapacity(chatId, null)) {
+  const threadId = ctx.message?.message_thread_id ?? null;
+  if (!queueManager.hasCapacity(chatId, threadId)) {
     await ctx.reply("Queue is full. Please try again shortly.");
     return;
   }
-  queueManager.getOrCreate(chatId, null).enqueue({
+  queueManager.getOrCreate(chatId, threadId).enqueue({
     label: `[chat:${chatId}] ctxswitch: ${text.substring(0, 30)}`,
-    run: () => processTextMessage(chatId, null, text, ctx),
+    run: () => processTextMessage(chatId, threadId, text, ctx),
   });
 });
 
@@ -248,6 +465,14 @@ async function callClaude(
     threadId?: number | null;
     /** Claude model to use (resolved by model router). Omit to use CLI default. */
     model?: string;
+    /** Working directory for the Claude subprocess. Overrides PROJECT_DIR when set. */
+    cwd?: string;
+    /**
+     * Called when Claude invokes AskUserQuestion. The stream suspends until
+     * the returned Promise resolves with the user's answers.
+     * Set by processTextMessage; unset for routines and fallback callers.
+     */
+    onQuestion?: (event: AskUserQuestionEvent) => Promise<Record<string, string>>;
   }
 ): Promise<string> {
   console.log(`Calling Claude: ${prompt.substring(0, 50)}...`);
@@ -263,12 +488,13 @@ async function callClaude(
     const threadId = options?.threadId ?? null;
     return await claudeStream(prompt, {
       sessionId: options?.resume && options?.sessionId ? options.sessionId : undefined,
-      cwd: PROJECT_DIR || undefined,
+      cwd: options?.cwd ?? (PROJECT_DIR || undefined),
       claudePath: CLAUDE_PATH,
       onProgress: options?.onProgress,
       onSessionId: options?.onSessionId,
       signal: controller.signal,
       model: options?.model,
+      onQuestion: options?.onQuestion,
       // Notify the user in Telegram when Claude has been running for 30 min (soft ceiling).
       // The stream is NOT killed — the user can tap /cancel if they want to stop.
       onSoftCeiling: chatId != null ? (msg) => {
@@ -368,24 +594,156 @@ if (CODING_AUTO_SCAN_INTERVAL > 0 && ALLOWED_USER_ID) {
   }, CODING_AUTO_SCAN_INTERVAL);
 }
 
-// Handle coding session callback queries (answer, plan, dashboard only — NOT code_perm:)
-// code_perm: is handled exclusively in registerCodingCommands via handlePermCallback
+// Handle iq: and cancel: callback queries.
+// code_*: callbacks are fully consumed by registerCodingCommands middleware (no next()).
 bot.on("callback_query:data", async (ctx) => {
   const data = ctx.callbackQuery.data || "";
-  if (
-    data.startsWith("code_answer:") ||
-    data.startsWith("code_plan:") ||
-    data.startsWith("code_dash:")
-  ) {
-    await inputRouter.handleCallbackQuery(ctx, sessionManager);
+  if (data.startsWith("rq:")) {
+    // ── Relay Question Form callbacks ────────────────────────────────────────
     await ctx.answerCallbackQuery().catch(() => {});
+
+    const parts = data.split(":");
+    const action = parts[1]; // s | n | o | sub | cxl
+    const chatId = parseInt(parts[2] ?? "0", 10);
+    const tid = parseInt(parts[3] ?? "0", 10);
+    const threadId = tid === 0 ? null : tid;
+    const key = streamKey(chatId, threadId);
+    const form = pendingRelayForms.get(key);
+    if (!form) return; // form already resolved/cancelled
+
+    if (action === "s") {
+      // Select/toggle option: rq:s:{chatId}:{tid}:{qIdx}:{oIdx}
+      const qIdx = parseInt(parts[4] ?? "0", 10);
+      const oIdx = parseInt(parts[5] ?? "0", 10);
+      console.debug(`[relay-form] rq:s key=${key} qIdx=${qIdx} oIdx=${oIdx}`);
+      const q = form.questions[qIdx];
+      if (!q) { console.warn(`[relay-form] rq:s: no question at qIdx=${qIdx}`); return; }
+      const opt = q.options[oIdx];
+      if (!opt) { console.warn(`[relay-form] rq:s: no option at oIdx=${oIdx}`); return; }
+
+      if (q.multiSelect) {
+        const current = (form.selections.get(qIdx) as string[] | undefined) ?? [];
+        const newSel = current.includes(opt.label)
+          ? current.filter((l) => l !== opt.label)
+          : [...current, opt.label];
+        form.selections.set(qIdx, newSel);
+      } else {
+        // Toggle: tap selected option again → deselect
+        const current = form.selections.get(qIdx);
+        form.selections.set(qIdx, current === opt.label ? "" : opt.label);
+      }
+      console.debug(`[relay-form] rq:s: stored selections for qIdx=${qIdx}:`, JSON.stringify(form.selections.get(qIdx)));
+
+      // Edit form message in-place
+      try {
+        await bot.api.editMessageText(chatId, form.formMessageId, buildFormText(form), {
+          reply_markup: buildFormKeyboard(form, chatId, threadId),
+        });
+      } catch { /* message not modified is fine */ }
+
+    } else if (action === "n") {
+      // Navigate: rq:n:{chatId}:{tid}:{qIdx}
+      const newQIdx = parseInt(parts[4] ?? "0", 10);
+      if (newQIdx >= 0 && newQIdx < form.questions.length) {
+        form.activeQIdx = newQIdx;
+        try {
+          await bot.api.editMessageText(chatId, form.formMessageId, buildFormText(form), {
+            reply_markup: buildFormKeyboard(form, chatId, threadId),
+          });
+        } catch { /* ignore */ }
+      }
+
+    } else if (action === "o") {
+      // Other (force-reply): rq:o:{chatId}:{tid}:{qIdx}
+      const qIdx = parseInt(parts[4] ?? "0", 10);
+      const q = form.questions[qIdx];
+      if (!q) return;
+
+      try {
+        const promptMsg = await bot.api.sendMessage(
+          chatId,
+          `✏ Type your answer for [${q.header}]:`,
+          {
+            ...(threadId != null && { message_thread_id: threadId }),
+            reply_markup: { force_reply: true, selective: true },
+          }
+        );
+        pendingRelayCustomReplies.set(promptMsg.message_id, { key, qIdx });
+      } catch (err) {
+        console.error("[relay-form] Failed to send force-reply prompt:", err);
+      }
+
+    } else if (action === "sub") {
+      // Submit All: rq:sub:{chatId}:{tid}
+      const submittedAnswers = collectAnswers(form);
+      console.debug(`[relay-form] rq:sub key=${key} answers:`, JSON.stringify(submittedAnswers));
+      pendingRelayForms.delete(key);
+      clearTimeout(form.timeoutId);
+
+      try {
+        await bot.api.editMessageReplyMarkup(chatId, form.formMessageId, {
+          reply_markup: undefined,
+        });
+      } catch { /* ignore */ }
+
+      form.onResolve?.();
+      form.resolve(submittedAnswers);
+
+    } else if (action === "cxl") {
+      // Cancel: rq:cxl:{chatId}:{tid}
+      pendingRelayForms.delete(key);
+      clearTimeout(form.timeoutId);
+
+      try {
+        await bot.api.editMessageReplyMarkup(chatId, form.formMessageId, {
+          reply_markup: undefined,
+        });
+      } catch { /* ignore */ }
+
+      form.reject();
+    }
+    return;
   } else if (data.startsWith("iq:")) {
     await interactive.handleCallback(ctx, data);
   } else if (data.startsWith("cancel:")) {
-    const chatId = ctx.chat?.id ?? 0;
-    const threadId = ctx.message?.message_thread_id ?? null;
+    // Parse chatId/threadId directly from callback_data to avoid relying on
+    // ctx.chat?.id which can be undefined in certain Grammy edge cases.
+    const { chatId, threadId } = parseCancelKey(data);
     await ctx.answerCallbackQuery().catch(() => {});
     await handleCancelCallback(chatId, threadId, ctx, bot);
+  } else if (data.startsWith("rsm_ctx:")) {
+    // Resume failure context injection: rsm_ctx:{yes|no}:{chatId}:{threadId}
+    const parts = data.split(":");
+    const choice = parts[1];         // "yes" | "no"
+    const chatId = parseInt(parts[2] ?? "0", 10);
+    const threadIdRaw = parts[3] ?? "";
+    const threadId = threadIdRaw === "" ? null : parseInt(threadIdRaw, 10);
+
+    await ctx.answerCallbackQuery().catch(() => {});
+    // Remove the keyboard from the prompt message
+    await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
+
+    if (choice === "yes") {
+      const key = resumeCtxKey(chatId, threadId);
+      const stored = pendingResumeContext.get(key);
+      pendingResumeContext.delete(key);
+
+      if (stored) {
+        // Set flag — next Claude call will force-inject the stored context
+        const agentId = getAgentForChat(chatId).id;
+        const session = await loadGroupSession(chatId, agentId, threadId);
+        session.pendingContextInjection = true;
+        await saveSession(session);
+        await ctx.reply(
+          "✓ Context injection queued — your next message will include recent conversation history.",
+        ).catch(console.error);
+      } else {
+        await ctx.reply("Context already expired. Just continue — Claude will ask if needed.").catch(console.error);
+      }
+    } else {
+      pendingResumeContext.delete(resumeCtxKey(chatId, threadId));
+      // no-op — user wants a fresh start
+    }
   }
 });
 
@@ -410,6 +768,7 @@ async function processTextMessage(
   text: string,
   ctx: Context
 ): Promise<void> {
+  const requestStart = Date.now();
   const typingInterval = startTypingIndicator(ctx);
   try {
     const agent = getAgentForChat(chatId);
@@ -420,14 +779,38 @@ async function processTextMessage(
 
     const session = await loadGroupSession(chatId, agent.id, threadId);
 
+    // ── Capture resume state BEFORE calling Claude ────────────────────
+    const prevSessionId = session.sessionId;
+    const capturedGen = session.resetGen;  // guard against stale onSessionId after /new
+    const triedResume = isResumeReliable(session);
+    // Consume pendingContextInjection flag (set when user tapped "Inject context"
+    // after a previous resume failure). Force inject even if session looks resumable.
+    const forceInjectContext = session.pendingContextInjection === true;
+    if (forceInjectContext) {
+      session.pendingContextInjection = false;
+      // saveSession is called below after messageCount update
+    }
+
+    const suppressContext = session.suppressContextInjection === true;
+    if (suppressContext) {
+      session.suppressContextInjection = false;
+      // saveSession is called below after messageCount update
+    }
+
     const userId = ctx.from?.id ?? 0;
-    const [shortTermCtxRaw, userProfile, relevantContext, memoryContext] = await Promise.all([
+    const [shortTermCtxRaw, userProfile, relevantContext, memoryContext, docSearchResult] = await Promise.all([
       supabase ? getShortTermContext(supabase, chatId, threadId) : Promise.resolve({ verbatimMessages: [], summaries: [], totalMessages: 0 }),
       supabase ? getUserProfile(supabase, userId) : Promise.resolve(""),
       getRelevantContext(supabase, text, chatId),
       getMemoryContext(supabase, chatId),
+      supabase ? searchDocuments(supabase, text) : Promise.resolve({ chunks: [], context: "", hasResults: false }),
     ]);
-    const shortTermContext = supabase ? formatShortTermContext(shortTermCtxRaw, USER_TIMEZONE) : "";
+    // Skip shortTermContext when --resume is active and the session is recent enough —
+    // Claude already has the conversation history in its context window.
+    // Exception: forceInjectContext = true (user requested injection after resume failure).
+    const shortTermContext = (supabase && !suppressContext && (!isResumeReliable(session) || forceInjectContext))
+      ? formatShortTermContext(shortTermCtxRaw, USER_TIMEZONE)
+      : "";
 
     const now = new Date();
     const timeStr = now.toLocaleString("en-US", {
@@ -448,14 +831,13 @@ async function processTextMessage(
       profileContext,
       userName: USER_NAME,
       timeStr,
+      documentContext: docSearchResult.hasResults ? docSearchResult.context : undefined,
+      isResumedSession: session.messageCount > 1 && triedResume && !forceInjectContext,
     });
 
-    // Resolve model via two-pass router (classifier runs in Pass 1, result used in Pass 2)
-    const routing = await resolveModel(text, modelRouterConfig);
-
+    // Start indicator before model routing so it's visible during the classifier call (3-8s)
     const cancelKey = streamKey(chatId, threadId);
     const indicator = new ProgressIndicator();
-    indicator.setModelLabel(routing.displayName);
     indicator.start(chatId, bot, threadId, {
       cancelKey,
       onMessageId: (msgId) => {
@@ -463,6 +845,68 @@ async function processTextMessage(
         if (entry) entry.progressMessageId = msgId;
       },
     }).catch(() => {}); // fire-and-forget
+    indicator.setModelLabel("Sonnet");
+    void indicator.update("Using Sonnet", { immediate: true });
+
+    // Lock activeCwd for this session (no-op if sessionId already set — resume coherence).
+    await lockActiveCwd(chatId, threadId, PROJECT_DIR || undefined);
+
+    // ── AskUserQuestion: relay form handler ──────────────────────────
+    // Builds and manages a Telegram form while claudeStream is suspended.
+    const onQuestion = async (event: AskUserQuestionEvent): Promise<Record<string, string>> => {
+      const formKey = streamKey(chatId, threadId);
+
+      void indicator.update("⏳ Waiting for your answer...", { immediate: true });
+
+      const form: RelayQuestionForm = {
+        toolUseId: event.toolUseId,
+        questions: event.questions,
+        selections: new Map(),
+        activeQIdx: 0,
+        formMessageId: 0,
+        resolve: () => {},
+        reject: () => {},
+        timeoutId: setTimeout(() => {}, 0),
+      };
+
+      const answerPromise = new Promise<Record<string, string>>((resolve, reject) => {
+        form.resolve = resolve;
+        form.reject = reject;
+      });
+
+      // Send form message
+      const formText = buildFormText(form);
+      const keyboard = buildFormKeyboard(form, chatId, threadId);
+      try {
+        const formMsg = await bot.api.sendMessage(chatId, formText, {
+          ...(threadId != null && { message_thread_id: threadId }),
+          reply_markup: keyboard,
+        });
+        form.formMessageId = formMsg.message_id;
+      } catch (err) {
+        console.error("[relay-form] Failed to send form message:", err);
+        form.resolve({});
+        return {};
+      }
+
+      // Wire indicator update: called by submit handler and timeout before resolving.
+      form.onResolve = () => { void indicator.update("↩ Resuming...", { immediate: true }); };
+
+      // 5-minute form timeout — resolve with whatever is answered so far
+      form.timeoutId = setTimeout(() => {
+        const key = streamKey(chatId, threadId);
+        const f = pendingRelayForms.get(key);
+        if (!f) return;
+        pendingRelayForms.delete(key);
+        // Remove keyboard
+        bot.api.editMessageReplyMarkup(chatId, f.formMessageId, { reply_markup: undefined }).catch(() => {});
+        f.onResolve?.();
+        f.resolve(collectAnswers(f));
+      }, RELAY_FORM_TIMEOUT_MS);
+
+      pendingRelayForms.set(formKey, form);
+      return answerPromise;
+    };
 
     let rawResponse: string;
     const callStart = Date.now();
@@ -471,11 +915,13 @@ async function processTextMessage(
       rawResponse = await callClaude(enrichedPrompt, {
         resume: !!session.sessionId,
         sessionId: session.sessionId,
-        onProgress: (summary) => void indicator.update(summary, { immediate: true }),
-        onSessionId: (id) => void updateSessionId(chatId, id, threadId),
+        onProgress: (summary) => void indicator.update(enrichProgressText(summary), { immediate: true }),
+        onSessionId: (id) => void updateSessionIdGuarded(chatId, id, capturedGen, threadId),
         chatId,
         threadId,
-        model: routing.model,
+        model: SONNET_MODEL,
+        cwd: session.activeCwd,
+        onQuestion,
       });
       await indicator.finish(true);
     } catch (claudeErr) {
@@ -487,22 +933,33 @@ async function processTextMessage(
     trace({ event: "claude_complete", traceId, chatId, responseLength: rawResponse.length, durationMs: callDurationMs, fallback: rawResponse.startsWith("[via "), error: null });
     console.log(`Claude raw response length: ${rawResponse.length} (${callDurationMs}ms)`);
 
-    const response = await processMemoryIntents(supabase, rawResponse, chatId);
+    const { nextStep, response: rawWithoutNext } = extractNextStep(rawResponse);
+    const response = await processMemoryIntents(supabase, rawWithoutNext, chatId);
     console.log(`Processed response length: ${response.length}`);
 
+    // ── Detect resume failure ─────────────────────────────────────────
+    // session.sessionId was updated in-memory by onSessionId callback above.
+    const resumeFailed = didResumeFail(triedResume, prevSessionId, session.sessionId);
+    if (resumeFailed) {
+      // New session was silently created — reset the turn counter.
+      session.messageCount = 1;
+    }
+
     // ── Update session metadata ──────────────────────────────────────
-    session.messageCount = (session.messageCount || 0) + 1;
+    if (!resumeFailed) {
+      session.messageCount = (session.messageCount || 0) + 1;
+    }
     session.lastActivity = new Date().toISOString();
     await saveSession(session);
 
     await saveMessage("user", text, undefined, chatId, agent.id, threadId);
-    await saveMessage("assistant", response || rawResponse, undefined, chatId, agent.id, threadId);
+    await saveMessage("assistant", response || rawWithoutNext, undefined, chatId, agent.id, threadId);
 
     // Per-chat queue ensures every message is processed — no silent drops during bursts.
     if (supabase) {
       const db = supabase;
       const msgCount = session.messageCount;
-      const assistantText = response || rawResponse;
+      const assistantText = response || rawWithoutNext;
       // Snapshot of injected system context: tells LTM extractor what to ignore so it
       // doesn't re-store facts that the assistant merely echoed back from the profile/memory.
       const ltmInjectedContext = [userProfile, memoryContext, relevantContext, profileContext]
@@ -534,12 +991,20 @@ async function processTextMessage(
       });
     }
 
-    // Append progress footer for slow Claude calls (>30s)
-    const footer = buildProgressFooter(chatId, callDurationMs);
-    const finalResponse = (response || rawResponse || "No response generated") +
-      (footer ? `\n\n${footer}` : "");
+    const footer: FooterData = {
+      elapsedMs: Date.now() - requestStart,
+      turnCount: session.messageCount,
+      nextStep,
+      sessionId: session.sessionId,
+      cwd: session.activeCwd,
+    };
+    await sendResponse(ctx, response || rawWithoutNext || "No response generated", footer);
 
-    await sendResponse(ctx, finalResponse);
+    // Offer context re-injection after resume failure (shown after the response)
+    if (resumeFailed) {
+      const formattedCtx = formatShortTermContext(shortTermCtxRaw, USER_TIMEZONE);
+      await sendResumeFailedKeyboard(ctx, chatId, threadId, formattedCtx);
+    }
   } catch (error) {
     console.error("Text handler error:", error);
     try {
@@ -560,6 +1025,17 @@ bot.on("message:text", async (ctx) => {
 
   if (!chatId) return;
 
+  // Priority 0: TRO Monthly Update Q&A — capture Furi's context answers
+  // Skip bot commands (start with /) so /new, /plan, /cancel still work normally.
+  {
+    const troQA = getTROQAState();
+    if (troQA && troQA.chatId === chatId && !text.startsWith("/")) {
+      appendQAAnswer(troQA, text);
+      await ctx.reply("Got it — recorded your answer.");
+      return;
+    }
+  }
+
   // Priority 1: /code answer explicit routing to coding sessions
   if (text.startsWith("/code answer ")) {
     await sessionManager.answerCurrentWaiting(chatId, text.slice(13).trim());
@@ -569,8 +1045,38 @@ bot.on("message:text", async (ctx) => {
   // Priority 2: Reply-to-message routing to coding sessions
   if (await inputRouter.tryRouteReply(ctx, sessionManager)) return;
 
+  // Priority 2b: Relay question form — force-reply "Other..." answer routing
+  {
+    const replyToId = ctx.message?.reply_to_message?.message_id;
+    if (replyToId != null) {
+      const pending = pendingRelayCustomReplies.get(replyToId);
+      if (pending) {
+        pendingRelayCustomReplies.delete(replyToId);
+        const form = pendingRelayForms.get(pending.key);
+        if (form) {
+          form.selections.set(pending.qIdx, text);
+          // Parse chatId/threadId from the key so we can rebuild the keyboard
+          const colonIdx = pending.key.indexOf(":");
+          const kChatId = parseInt(pending.key.slice(0, colonIdx), 10);
+          const tidStr = pending.key.slice(colonIdx + 1);
+          const kThreadId = tidStr === "" ? null : parseInt(tidStr, 10);
+          try {
+            await bot.api.editMessageText(kChatId, form.formMessageId, buildFormText(form), {
+              reply_markup: buildFormKeyboard(form, kChatId, kThreadId),
+            });
+          } catch { /* ignore "message not modified" */ }
+          await ctx.reply("✓ Noted!", { reply_to_message_id: ctx.message.message_id });
+        }
+        return;
+      }
+    }
+  }
+
   // Priority 3: Interactive Q&A free-text answer (when user is mid-plan session)
   if (await interactive.handleFreeText(ctx, text)) return;
+
+  // Priority 3b: Inline tshoot capture (!finding / !discovery)
+  if (await handleTshoOtCapture(ctx, text, chatId, threadId, (id) => getAgentForChat(id).id)) return;
 
   // Priority 4: Check for routine creation intent before normal Claude processing
   if (await detectAndHandle(ctx, text)) return;
@@ -602,6 +1108,7 @@ bot.on("message:voice", async (ctx) => {
   queueManager.getOrCreate(chatId, threadId).enqueue({
     label: `[chat:${chatId}] voice: ${voice.duration}s`,
     run: async () => {
+      const voiceRequestStart = Date.now();
       const typingInterval = startTypingIndicator(ctx);
       try {
         const agent = getAgentForChat(chatId);
@@ -630,6 +1137,13 @@ bot.on("message:voice", async (ctx) => {
         const session = await loadGroupSession(chatId, agent.id, threadId);
         const voiceUserId = ctx.from?.id ?? 0;
 
+        // ── Capture resume state BEFORE calling Claude ────────────────
+        const voicePrevSessionId = session.sessionId;
+        const voiceCapturedGen = session.resetGen;  // guard against stale onSessionId after /new
+        const voiceTriedResume = isResumeReliable(session);
+        const voiceForceInjectContext = session.pendingContextInjection === true;
+        if (voiceForceInjectContext) session.pendingContextInjection = false;
+
         await saveMessage("user", `[Voice ${voice.duration}s]: ${transcription}`, undefined, chatId, agent.id, threadId);
 
         const [shortTermCtxRaw, userProfile, relevantContext, memoryContext] = await Promise.all([
@@ -638,7 +1152,10 @@ bot.on("message:voice", async (ctx) => {
           getRelevantContext(supabase, transcription, chatId),
           getMemoryContext(supabase, chatId),
         ]);
-        const shortTermContext = supabase ? formatShortTermContext(shortTermCtxRaw, USER_TIMEZONE) : "";
+        // Skip shortTermContext when --resume is active and the session is recent enough.
+        const shortTermContext = (supabase && (!isResumeReliable(session) || voiceForceInjectContext))
+          ? formatShortTermContext(shortTermCtxRaw, USER_TIMEZONE)
+          : "";
 
         const now = new Date();
         const timeStr = now.toLocaleString("en-US", {
@@ -659,6 +1176,7 @@ bot.on("message:voice", async (ctx) => {
           profileContext,
           userName: USER_NAME,
           timeStr,
+          isResumedSession: session.messageCount > 1 && triedResume && !voiceForceInjectContext,
         });
 
         const voiceCancelKey = streamKey(chatId, threadId);
@@ -670,6 +1188,9 @@ bot.on("message:voice", async (ctx) => {
             if (entry) entry.progressMessageId = msgId;
           },
         }).catch(() => {}); // fire-and-forget
+        voiceIndicator.setModelLabel("Sonnet");
+
+        await lockActiveCwd(chatId, threadId, PROJECT_DIR || undefined);
 
         let rawResponse: string;
         const voiceCallStart = Date.now();
@@ -678,9 +1199,11 @@ bot.on("message:voice", async (ctx) => {
             resume: !!session.sessionId,
             sessionId: session.sessionId,
             onProgress: (summary) => void voiceIndicator.update(summary, { immediate: true }),
-            onSessionId: (id) => void updateSessionId(chatId, id, threadId),
+            onSessionId: (id) => void updateSessionIdGuarded(chatId, id, voiceCapturedGen, threadId),
             chatId,
             threadId,
+            model: SONNET_MODEL,
+            cwd: session.activeCwd,
           });
           await voiceIndicator.finish(true);
         } catch (claudeErr) {
@@ -689,10 +1212,19 @@ bot.on("message:voice", async (ctx) => {
         }
         const voiceCallDurationMs = Date.now() - voiceCallStart;
 
-        const claudeResponse = await processMemoryIntents(supabase, rawResponse, chatId);
+        const { nextStep: voiceNextStep, response: voiceRawWithoutNext } = extractNextStep(rawResponse);
+        const claudeResponse = await processMemoryIntents(supabase, voiceRawWithoutNext, chatId);
+
+        // ── Detect resume failure ─────────────────────────────────────
+        const voiceResumeFailed = didResumeFail(voiceTriedResume, voicePrevSessionId, session.sessionId);
+        if (voiceResumeFailed) {
+          session.messageCount = 1;
+        }
 
         // Update session metadata
-        session.messageCount = (session.messageCount || 0) + 1;
+        if (!voiceResumeFailed) {
+          session.messageCount = (session.messageCount || 0) + 1;
+        }
         session.lastActivity = new Date().toISOString();
         await saveSession(session);
 
@@ -730,9 +1262,18 @@ bot.on("message:voice", async (ctx) => {
           });
         }
 
-        const voiceFooter = buildProgressFooter(chatId, voiceCallDurationMs);
-        const finalVoiceResponse = claudeResponse + (voiceFooter ? `\n\n${voiceFooter}` : "");
-        await sendResponse(ctx, finalVoiceResponse);
+        const voiceFooter: FooterData = {
+          elapsedMs: Date.now() - voiceRequestStart,
+          turnCount: session.messageCount,
+          nextStep: voiceNextStep,
+          cwd: session.activeCwd,
+        };
+        await sendResponse(ctx, claudeResponse, voiceFooter);
+
+        if (voiceResumeFailed) {
+          const formattedCtx = formatShortTermContext(shortTermCtxRaw, USER_TIMEZONE);
+          await sendResumeFailedKeyboard(ctx, chatId, threadId, formattedCtx);
+        }
       } catch (error) {
         console.error("Voice handler error:", error);
         try {
@@ -748,48 +1289,138 @@ bot.on("message:voice", async (ctx) => {
 });
 
 // Photos/Images
-bot.on("message:photo", async (ctx) => {
-  const chatId = ctx.chat?.id;
-  const threadId = ctx.message?.message_thread_id ?? null;
+// ── Media group (album) accumulator ──────────────────────────────────────────
+// Telegram sends each photo in an album as a separate message:photo event
+// sharing the same media_group_id. We buffer them over a short window and
+// process all images in one batch to give the user a single coherent reply.
 
-  if (!chatId) return;
+interface AlbumAccumulator {
+  caption: string;
+  chatId: number;
+  threadId: number | null;
+  ctx: Parameters<Parameters<typeof bot.on>[1]>[0]; // grammY Context
+  /** Telegram file_ids collected during the debounce window — NOT buffers.
+   * Downloads happen in processAlbum() only after the window closes, eliminating
+   * the race where a slow download on an early photo finishes after the timer fires. */
+  fileIds: string[];
+  timer: ReturnType<typeof setTimeout>;
+}
 
+const MEDIA_GROUP_DEBOUNCE_MS = 800;
+const albumAccumulators = new Map<string, AlbumAccumulator>();
+
+// ── Shared photo processing ────────────────────────────────────────────────────
+// Called either directly (single photo) or from the debounce timer (album).
+
+function enqueuePhotoJob(
+  ctx: Parameters<Parameters<typeof bot.on>[1]>[0],
+  chatId: number,
+  threadId: number | null,
+  imageBuffers: Buffer[],
+  caption: string
+): void {
   if (!queueManager.hasCapacity(chatId, threadId)) {
-    await ctx.reply("Too many pending messages. Please wait for the current ones to complete.");
+    ctx.reply("Too many pending messages. Please wait for the current ones to complete.").catch(() => {});
     return;
   }
 
+  const batchLabel = imageBuffers.length > 1 ? ` x${imageBuffers.length}` : "";
+
   queueManager.getOrCreate(chatId, threadId).enqueue({
-    label: `[chat:${chatId}] photo`,
+    label: `[chat:${chatId}] photo${batchLabel}`,
     run: async () => {
+      const photoRequestStart = Date.now();
       const typingInterval = startTypingIndicator(ctx);
       try {
         const agent = getAgentForChat(chatId);
-        console.log(`[${agent.name}] Image received`);
+        const traceId = generateTraceId();
+        console.log(`[${agent.name}] Image(s) received x${imageBuffers.length} (caption: ${caption.substring(0, 40)})`);
         await ctx.replyWithChatAction("typing");
 
-        const photos = ctx.message.photo;
-        const photo = photos[photos.length - 1];
-        const file = await ctx.api.getFile(photo.file_id);
+        // Analyze all images in parallel — each in its own separate claudeText process
+        // (--dangerously-skip-permissions, cwd=/tmp). Partial failures are tolerated.
+        //
+        // Diagnostic agents (aws-architect, security-analyst, code-quality-coach) use
+        // structured domain-specific extraction prompts → result injected as <diagnostic_image>.
+        // All other agents use the user's caption → result injected as <image_analysis>.
+        let imageContext: string | undefined;
+        let diagnosticContext: string | undefined;
+        try {
+          if (agent.diagnostics?.enabled) {
+            diagnosticContext = await analyzeDiagnosticImages(imageBuffers, agent.id, PROJECT_ROOT);
+            if (!diagnosticContext) {
+              await ctx.reply("Could not extract diagnostic information from the image(s). Please try again.");
+              return;
+            }
+          } else {
+            const results = await analyzeImages(imageBuffers, caption);
+            imageContext = combineImageContexts(results);
+            if (!imageContext) {
+              await ctx.reply("Could not analyze the image(s). Please try again.");
+              return;
+            }
+          }
+        } catch (visionErr) {
+          const errMsg = visionErr instanceof Error ? visionErr.message : String(visionErr);
+          console.error("[vision] Analysis failed:", errMsg);
+          await ctx.reply(`Could not analyze image: ${errMsg}`);
+          return;
+        }
 
-        const timestamp = Date.now();
-        const filePath = join(UPLOADS_DIR, `image_${timestamp}.jpg`);
-
-        const response = await fetch(
-          `https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`
-        );
-        const buffer = await response.arrayBuffer();
-        await writeFile(filePath, Buffer.from(buffer));
-
-        const caption = ctx.message.caption || "Analyze this image.";
-        const prompt = `[Image: ${filePath}]\n\n${caption}`;
-
+        const photoUserId = ctx.from?.id ?? 0;
         const session = await loadGroupSession(chatId, agent.id, threadId);
+
+        // ── Capture resume state BEFORE calling Claude ────────────────
+        const photoPrevSessionId = session.sessionId;
+        const photoCapturedGen = session.resetGen;  // guard against stale onSessionId after /new
+        const photoTriedResume = isResumeReliable(session);
+        const photoForceInjectContext = session.pendingContextInjection === true;
+        if (photoForceInjectContext) session.pendingContextInjection = false;
+
+        const [shortTermCtxRaw, userProfile, relevantContext, memoryContext] = await Promise.all([
+          supabase ? getShortTermContext(supabase, chatId, threadId) : Promise.resolve({ verbatimMessages: [], summaries: [], totalMessages: 0 }),
+          supabase ? getUserProfile(supabase, photoUserId) : Promise.resolve(""),
+          getRelevantContext(supabase, caption, chatId),
+          getMemoryContext(supabase, chatId),
+        ]);
+        // Skip shortTermContext when --resume is active and the session is recent enough.
+        const shortTermContext = (supabase && (!isResumeReliable(session) || photoForceInjectContext))
+          ? formatShortTermContext(shortTermCtxRaw, USER_TIMEZONE)
+          : "";
+
+        const now = new Date();
+        const timeStr = now.toLocaleString("en-US", {
+          timeZone: USER_TIMEZONE,
+          weekday: "long",
+          year: "numeric",
+          month: "long",
+          day: "numeric",
+          hour: "2-digit",
+          minute: "2-digit",
+        });
+
+        // Build enriched prompt — vision analysis injected as <image_analysis> or <diagnostic_image>
+        const enrichedPrompt = buildAgentPrompt(agent, caption, {
+          shortTermContext,
+          userProfile,
+          relevantContext,
+          memoryContext,
+          profileContext,
+          userName: USER_NAME,
+          timeStr,
+          imageContext,
+          diagnosticContext,
+          isResumedSession: session.messageCount > 1 && photoTriedResume && !photoForceInjectContext,
+        });
+
+        // Always Sonnet for images — vision analysis requires Sonnet+
+        const imageDisplayName = "Sonnet";
 
         await saveMessage("user", `[Image]: ${caption}`, undefined, chatId, agent.id, threadId);
 
         const photoCancelKey = streamKey(chatId, threadId);
         const photoIndicator = new ProgressIndicator();
+        photoIndicator.setModelLabel(`📸 ${imageDisplayName}`);
         photoIndicator.start(chatId, bot, threadId, {
           cancelKey: photoCancelKey,
           onMessageId: (msgId) => {
@@ -798,27 +1429,87 @@ bot.on("message:photo", async (ctx) => {
           },
         }).catch(() => {}); // fire-and-forget
 
-        let claudeResponse: string;
+        await lockActiveCwd(chatId, threadId, PROJECT_DIR || undefined);
+
+        let rawResponse: string;
+        const callStart = Date.now();
+        trace({ event: "claude_start", traceId, chatId, promptLength: enrichedPrompt.length, resume: !!session.sessionId, sessionId: session.sessionId });
         try {
-          claudeResponse = await callClaude(prompt, {
+          rawResponse = await callClaude(enrichedPrompt, {
             resume: !!session.sessionId,
             sessionId: session.sessionId,
             onProgress: (summary) => void photoIndicator.update(summary, { immediate: true }),
-            onSessionId: (id) => void updateSessionId(chatId, id, threadId),
+            onSessionId: (id) => void updateSessionIdGuarded(chatId, id, photoCapturedGen, threadId),
             chatId,
             threadId,
+            model: SONNET_MODEL,
+            cwd: session.activeCwd,
           });
           await photoIndicator.finish(true);
         } catch (claudeErr) {
           await photoIndicator.finish(false);
           throw claudeErr;
         }
+        const callDurationMs = Date.now() - callStart;
+        trace({ event: "claude_complete", traceId, chatId, responseLength: rawResponse.length, durationMs: callDurationMs, fallback: false, error: null });
 
-        await unlink(filePath).catch(() => {});
+        const { nextStep: photoNextStep, response: photoRawWithoutNext } = extractNextStep(rawResponse);
+        const cleanResponse = await processMemoryIntents(supabase, photoRawWithoutNext, chatId);
 
-        const cleanResponse = await processMemoryIntents(supabase, claudeResponse, chatId);
+        // ── Detect resume failure ─────────────────────────────────────
+        const photoResumeFailed = didResumeFail(photoTriedResume, photoPrevSessionId, session.sessionId);
+        if (photoResumeFailed) {
+          session.messageCount = 1;
+        } else {
+          session.messageCount = (session.messageCount || 0) + 1;
+        }
+        session.lastActivity = new Date().toISOString();
+        await saveSession(session);
+
         await saveMessage("assistant", cleanResponse, undefined, chatId, agent.id, threadId);
-        await sendResponse(ctx, cleanResponse);
+
+        if (supabase) {
+          const db = supabase;
+          const msgCount = session.messageCount;
+          const photoLtmInjectedContext = [userProfile, memoryContext, relevantContext, profileContext]
+            .filter(Boolean)
+            .join("\n\n") || undefined;
+          enqueueExtraction({ chatId, userId: photoUserId, text: caption, assistantResponse: cleanResponse, threadId, injectedContext: photoLtmInjectedContext }, async (item) => {
+            const { uncertain, inserted } = await extractAndStore(db, item.chatId, item.userId, item.text, item.assistantResponse, traceId, item.injectedContext);
+            if (uncertain && hasMemoryItems(uncertain)) {
+              await sendMemoryConfirmation(bot, item.chatId, uncertain, item.threadId).catch(() => {});
+            }
+            if (msgCount % 5 === 0 && inserted > 0) {
+              await rebuildProfileSummary(db, item.userId);
+            }
+          });
+        }
+
+        if (supabase && session.messageCount % 5 === 0) {
+          const db = supabase;
+          setImmediate(async () => {
+            try {
+              if (await shouldSummarize(db, chatId, threadId)) {
+                await summarizeOldMessages(db, chatId, threadId);
+              }
+            } catch (err) {
+              console.error("STM summarization failed:", err);
+            }
+          });
+        }
+
+        const photoFooter: FooterData = {
+          elapsedMs: Date.now() - photoRequestStart,
+          turnCount: session.messageCount,
+          nextStep: photoNextStep,
+          cwd: session.activeCwd,
+        };
+        await sendResponse(ctx, cleanResponse || "No response generated", photoFooter);
+
+        if (photoResumeFailed) {
+          const formattedCtx = formatShortTermContext(shortTermCtxRaw, USER_TIMEZONE);
+          await sendResumeFailedKeyboard(ctx, chatId, threadId, formattedCtx);
+        }
       } catch (error) {
         console.error("Photo handler error:", error);
         try {
@@ -831,9 +1522,224 @@ bot.on("message:photo", async (ctx) => {
       }
     },
   });
+}
+
+// ── Album processor (Phase 2 of two-phase download) ──────────────────────────
+// Called once the debounce window closes. At this point we know exactly how
+// many photos are in the album and can download them all in parallel without
+// any race condition from interleaved event/download timing.
+
+async function processAlbum(acc: AlbumAccumulator): Promise<void> {
+  console.log(`[album] Window closed — downloading ${acc.fileIds.length} image(s) in parallel`);
+
+  const downloadResults = await Promise.allSettled(
+    acc.fileIds.map(async (fileId) => {
+      const file = await bot.api.getFile(fileId);
+      const resp = await fetch(`https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`);
+      return Buffer.from(await resp.arrayBuffer());
+    })
+  );
+
+  const buffers = downloadResults
+    .filter((r): r is PromiseFulfilledResult<Buffer> => r.status === "fulfilled")
+    .map((r) => r.value);
+
+  const failCount = downloadResults.filter((r) => r.status === "rejected").length;
+  if (failCount > 0) {
+    console.warn(`[album] ${failCount}/${acc.fileIds.length} download(s) failed — proceeding with ${buffers.length} successful`);
+  }
+
+  if (buffers.length === 0) {
+    await acc.ctx.reply("Could not download any images from the album. Please try again.").catch(() => {});
+    return;
+  }
+
+  const caption = acc.caption || "Describe these images in detail.";
+  enqueuePhotoJob(acc.ctx, acc.chatId, acc.threadId, buffers, caption);
+}
+
+// ── Photo event handler ────────────────────────────────────────────────────────
+
+bot.on("message:photo", async (ctx) => {
+  const chatId = ctx.chat?.id;
+  const threadId = ctx.message?.message_thread_id ?? null;
+  if (!chatId) return;
+
+  // Download the highest-resolution variant immediately.
+  // For media groups we need the buffer before the debounce timer fires.
+  const photos = ctx.message.photo;
+  const photo = photos[photos.length - 1]; // highest-resolution variant
+  const mediaGroupId = ctx.message.media_group_id;
+
+  if (mediaGroupId) {
+    // ── Album (two-phase) ──────────────────────────────────────────────────────
+    // Phase 1 (here): collect file_id — NO download yet.
+    // Downloads happen in processAlbum() once the debounce window closes and we
+    // know the full set of photos. This eliminates the race where a slow download
+    // on an early photo completes after the timer fires and gets silently dropped.
+    const existing = albumAccumulators.get(mediaGroupId);
+    if (existing) {
+      clearTimeout(existing.timer);
+      existing.fileIds.push(photo.file_id);
+      // Caption appears only on the first album message — preserve it
+      if (!existing.caption && ctx.message.caption) {
+        existing.caption = ctx.message.caption;
+      }
+    } else {
+      albumAccumulators.set(mediaGroupId, {
+        caption: ctx.message.caption || "",
+        chatId,
+        threadId,
+        ctx,
+        fileIds: [photo.file_id],
+        timer: undefined as unknown as ReturnType<typeof setTimeout>,
+      });
+    }
+    const acc = albumAccumulators.get(mediaGroupId)!;
+    acc.timer = setTimeout(async () => {
+      albumAccumulators.delete(mediaGroupId);
+      await processAlbum(acc); // Phase 2: download all → enqueue
+    }, MEDIA_GROUP_DEBOUNCE_MS);
+    return;
+  }
+
+  // ── Single photo ───────────────────────────────────────────────────────────
+  // No album window needed — download immediately and process.
+  let imageBuffer: Buffer;
+  try {
+    const file = await ctx.api.getFile(photo.file_id);
+    const photoResponse = await fetch(
+      `https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`
+    );
+    imageBuffer = Buffer.from(await photoResponse.arrayBuffer());
+  } catch (downloadErr) {
+    console.error("[photo] Download failed:", downloadErr);
+    await ctx.reply("Could not download image. Please try again.").catch(() => {});
+    return;
+  }
+
+  const caption = ctx.message.caption || "Describe this image in detail.";
+  enqueuePhotoJob(ctx, chatId, threadId, [imageBuffer], caption);
 });
 
-// Documents
+// Documents — index into RAG on upload
+// ── Document album (multi-file) accumulator ───────────────────────────────────
+// Telegram sends each file in a multi-document send as a separate message:document
+// event sharing the same media_group_id. Buffer them over a short window and
+// process all in one batch to give the user a single coherent reply.
+
+interface DocAlbumEntry {
+  fileId: string;
+  /** Canonical filename — used as the stable source key in Supabase (no timestamp).
+   * Re-uploading the same file always replaces its old chunks (Issue 3 fix). */
+  fileName: string;
+  mimeType: string | undefined;
+}
+
+interface DocAlbumAccumulator {
+  caption: string;
+  chatId: number;
+  threadId: number | null;
+  ctx: Parameters<Parameters<typeof bot.on>[1]>[0];
+  /** File IDs collected during the debounce window — downloads happen in
+   * processDocumentAlbum() only after the window closes (same two-phase pattern
+   * as the image album accumulator, eliminating any download/timer race). */
+  entries: DocAlbumEntry[];
+  timer: ReturnType<typeof setTimeout>;
+}
+
+const DOCUMENT_GROUP_DEBOUNCE_MS = 800;
+const docAlbumAccumulators = new Map<string, DocAlbumAccumulator>();
+
+// ── Document album processor (Phase 2 of two-phase approach) ─────────────────
+
+async function processDocumentAlbum(acc: DocAlbumAccumulator): Promise<void> {
+  console.log(`[doc-album] Window closed — downloading ${acc.entries.length} file(s) in parallel`);
+  const typingInterval = startTypingIndicator(acc.ctx);
+  try {
+    if (!supabase) {
+      await acc.ctx.reply("Document indexing requires Supabase. Please configure your database first.").catch(() => {});
+      return;
+    }
+
+    // Phase 1: parallel downloads
+    const downloadResults = await Promise.allSettled(
+      acc.entries.map(async (entry) => {
+        const file = await bot.api.getFile(entry.fileId);
+        const resp = await fetch(`https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`);
+        return { buffer: Buffer.from(await resp.arrayBuffer()), entry };
+      })
+    );
+
+    const failedDownloads = downloadResults.filter((r) => r.status === "rejected").length;
+    if (failedDownloads > 0) {
+      console.warn(`[doc-album] ${failedDownloads}/${acc.entries.length} download(s) failed`);
+    }
+
+    const downloaded = downloadResults
+      .filter((r): r is PromiseFulfilledResult<{ buffer: Buffer; entry: DocAlbumEntry }> => r.status === "fulfilled")
+      .map((r) => r.value);
+
+    if (downloaded.length === 0) {
+      await acc.ctx.reply("Could not download any documents from the album. Please try again.").catch(() => {});
+      return;
+    }
+
+    // Phase 2: parallel ingestion — each file uses its canonical fileName as source
+    // (Issue 3 fix: re-uploading the same file replaces its old chunks, not accumulates)
+    const ingestResults = await Promise.allSettled(
+      downloaded.map(async ({ buffer, entry }) => {
+        const timestamp = Date.now() + Math.random(); // avoid collisions for parallel writes
+        const tempPath = join(UPLOADS_DIR, `${timestamp}_${entry.fileName}`);
+        try {
+          await writeFile(tempPath, buffer);
+          const title = acc.caption || basename(entry.fileName, extname(entry.fileName));
+          // Issue 3: pass canonical fileName as source (not the timestamped tempPath)
+          const result = await ingestDocument(supabase!, tempPath, title, {
+            mimeType: entry.mimeType,
+            source: entry.fileName,
+          });
+          return { fileName: entry.fileName, title: result.title, chunksInserted: result.chunksInserted };
+        } finally {
+          // Issue 1: always clean up temp file even if ingestDocument throws
+          await unlink(tempPath).catch(() => {});
+        }
+      })
+    );
+
+    // Build single summary reply
+    type IngestOk = { fileName: string; title: string; chunksInserted: number };
+    const indexed = ingestResults.filter((r): r is PromiseFulfilledResult<IngestOk> => r.status === "fulfilled" && r.value.chunksInserted > 0);
+    const empty   = ingestResults.filter((r): r is PromiseFulfilledResult<IngestOk> => r.status === "fulfilled" && r.value.chunksInserted === 0);
+    const failed  = ingestResults.filter((r) => r.status === "rejected");
+
+    const lines: string[] = [];
+    if (indexed.length > 0) {
+      lines.push(`✅ Indexed ${indexed.length} document${indexed.length === 1 ? "" : "s"}:`);
+      for (const r of indexed) {
+        lines.push(`  • "${r.value.title}" — ${r.value.chunksInserted} chunk${r.value.chunksInserted === 1 ? "" : "s"}`);
+      }
+      lines.push("\nYou can now ask me anything about these documents.");
+    }
+    if (empty.length > 0) {
+      lines.push(`⚠️ No text extracted from: ${empty.map((r) => `"${r.value.fileName}"`).join(", ")}`);
+    }
+    if (failed.length > 0) {
+      lines.push(`❌ Failed to index ${failed.length} file${failed.length === 1 ? "" : "s"}.`);
+    }
+    if (lines.length === 0) {
+      lines.push("Could not process any documents. Please try again.");
+    }
+
+    await acc.ctx.reply(lines.join("\n")).catch(() => {});
+  } catch (error) {
+    console.error("[doc-album] Handler error:", error);
+    await acc.ctx.reply("Could not index documents. Please try again.").catch(() => {});
+  } finally {
+    clearInterval(typingInterval);
+  }
+}
+
 bot.on("message:document", async (ctx) => {
   const doc = ctx.message.document;
   const chatId = ctx.chat?.id;
@@ -841,6 +1747,43 @@ bot.on("message:document", async (ctx) => {
 
   if (!chatId) return;
 
+  const mediaGroupId = ctx.message.media_group_id;
+
+  if (mediaGroupId) {
+    // ── Multi-document album (two-phase) ─────────────────────────────────────
+    // Phase 1: collect file_id + metadata — NO download yet.
+    // Downloads happen in processDocumentAlbum() once the debounce window closes.
+    const entry: DocAlbumEntry = {
+      fileId: doc.file_id,
+      fileName: doc.file_name || `file_${Date.now()}`,
+      mimeType: doc.mime_type,
+    };
+    const existing = docAlbumAccumulators.get(mediaGroupId);
+    if (existing) {
+      clearTimeout(existing.timer);
+      existing.entries.push(entry);
+      if (!existing.caption && ctx.message.caption) {
+        existing.caption = ctx.message.caption.trim();
+      }
+    } else {
+      docAlbumAccumulators.set(mediaGroupId, {
+        caption: ctx.message.caption?.trim() || "",
+        chatId,
+        threadId,
+        ctx,
+        entries: [entry],
+        timer: undefined as unknown as ReturnType<typeof setTimeout>,
+      });
+    }
+    const acc = docAlbumAccumulators.get(mediaGroupId)!;
+    acc.timer = setTimeout(async () => {
+      docAlbumAccumulators.delete(mediaGroupId);
+      await processDocumentAlbum(acc); // Phase 2: download all → ingest → reply
+    }, DOCUMENT_GROUP_DEBOUNCE_MS);
+    return;
+  }
+
+  // ── Single document ───────────────────────────────────────────────────────
   if (!queueManager.hasCapacity(chatId, threadId)) {
     await ctx.reply("Too many pending messages. Please wait for the current ones to complete.");
     return;
@@ -850,15 +1793,22 @@ bot.on("message:document", async (ctx) => {
     label: `[chat:${chatId}] doc: ${doc.file_name}`,
     run: async () => {
       const typingInterval = startTypingIndicator(ctx);
+      // Issue 1: declare filePath before try so finally can always clean it up
+      let filePath: string | undefined;
       try {
-        const agent = getAgentForChat(chatId);
-        console.log(`[${agent.name}] Document: ${doc.file_name}`);
+        console.log(`[RAG] Document upload: ${doc.file_name}`);
         await ctx.replyWithChatAction("typing");
+
+        if (!supabase) {
+          await ctx.reply("Document indexing requires Supabase. Please configure your database first.");
+          return;
+        }
 
         const file = await ctx.getFile();
         const timestamp = Date.now();
+        // Issue 3: canonical fileName (no timestamp) used as Supabase source key
         const fileName = doc.file_name || `file_${timestamp}`;
-        const filePath = join(UPLOADS_DIR, `${timestamp}_${fileName}`);
+        filePath = join(UPLOADS_DIR, `${timestamp}_${fileName}`);
 
         const response = await fetch(
           `https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`
@@ -866,53 +1816,40 @@ bot.on("message:document", async (ctx) => {
         const buffer = await response.arrayBuffer();
         await writeFile(filePath, Buffer.from(buffer));
 
-        const caption = ctx.message.caption || `Analyze: ${doc.file_name}`;
-        const prompt = `[File: ${filePath}]\n\n${caption}`;
+        // Use caption as title if provided, otherwise derive from filename
+        const caption = (ctx.message.caption ?? "").trim();
+        const title = caption || basename(fileName, extname(fileName));
 
-        const session = await loadGroupSession(chatId, agent.id, threadId);
+        const result = await ingestDocument(supabase, filePath, title, {
+          mimeType: doc.mime_type,
+          // Issue 3: pass canonical fileName as source — re-uploading the same file
+          // replaces its old chunks rather than creating a second source entry
+          source: fileName,
+        });
 
-        await saveMessage("user", `[Document: ${doc.file_name}]: ${caption}`, undefined, chatId, agent.id, threadId);
-
-        const docCancelKey = streamKey(chatId, threadId);
-        const docIndicator = new ProgressIndicator();
-        docIndicator.start(chatId, bot, threadId, {
-          cancelKey: docCancelKey,
-          onMessageId: (msgId) => {
-            const entry = activeStreams.get(docCancelKey);
-            if (entry) entry.progressMessageId = msgId;
-          },
-        }).catch(() => {}); // fire-and-forget
-
-        let claudeResponse: string;
-        try {
-          claudeResponse = await callClaude(prompt, {
-            resume: !!session.sessionId,
-            sessionId: session.sessionId,
-            onProgress: (summary) => void docIndicator.update(summary, { immediate: true }),
-            onSessionId: (id) => void updateSessionId(chatId, id, threadId),
-            chatId,
-            threadId,
-          });
-          await docIndicator.finish(true);
-        } catch (claudeErr) {
-          await docIndicator.finish(false);
-          throw claudeErr;
+        if (result.chunksInserted === 0) {
+          await ctx.reply(
+            `⚠️ No text extracted from "${fileName}".\n` +
+            "If this is a scanned image, try sending it as a photo instead."
+          );
+        } else {
+          await ctx.reply(
+            `✅ Indexed: "${result.title}"\n` +
+            `📦 ${result.chunksInserted} chunk${result.chunksInserted === 1 ? "" : "s"} stored — embeddings generating.\n\n` +
+            "You can now ask me anything about this document."
+          );
         }
-
-        await unlink(filePath).catch(() => {});
-
-        const cleanResponse = await processMemoryIntents(supabase, claudeResponse, chatId);
-        await saveMessage("assistant", cleanResponse, undefined, chatId, agent.id, threadId);
-        await sendResponse(ctx, cleanResponse);
       } catch (error) {
         console.error("Document handler error:", error);
         try {
-          await ctx.reply("Could not process document. Please try again.");
+          await ctx.reply("Could not index document. Please try again.");
         } catch (replyError) {
           console.error("Failed to send error reply:", replyError);
         }
       } finally {
         clearInterval(typingInterval);
+        // Issue 1: always delete temp file — even when ingestDocument throws
+        if (filePath) await unlink(filePath).catch(() => {});
       }
     },
   });
@@ -929,9 +1866,6 @@ try {
 } catch {
   // No profile yet — that's fine
 }
-
-const USER_NAME = process.env.USER_NAME || "";
-const USER_TIMEZONE = process.env.USER_TIMEZONE || Intl.DateTimeFormat().resolvedOptions().timeZone;
 
 // Prompt building is now handled by src/agents/promptBuilder.ts (buildAgentPrompt)
 
@@ -959,7 +1893,7 @@ function isBalancedHtml(html: string): boolean {
   return tagStack.length === 0;
 }
 
-async function sendResponse(ctx: Context, response: string): Promise<void> {
+async function sendResponse(ctx: Context, response: string, footer?: FooterData): Promise<void> {
   // Handle empty responses
   if (!response || response.trim().length === 0) {
     console.error("Warning: Attempted to send empty response, using fallback");
@@ -970,9 +1904,18 @@ async function sendResponse(ctx: Context, response: string): Promise<void> {
   // Telegram has a 4096 character limit
   const MAX_LENGTH = 4000;
   const html = markdownToHtml(response);
+  const footerHtml = footer ? buildFooter(footer) : "";
 
-  if (html.length <= MAX_LENGTH) {
-    await ctx.reply(html, { parse_mode: "HTML" });
+  if (html.length + footerHtml.length <= MAX_LENGTH) {
+    try {
+      await ctx.reply(html + footerHtml, { parse_mode: "HTML" });
+    } catch {
+      // Telegram rejected the HTML (e.g. unbalanced tags from markdownToHtml).
+      // Fall back to plain text so the response is never silently lost.
+      const plain = html.replace(/<[^>]+>/g, "");
+      const footerPlain = footerHtml.replace(/<[^>]+>/g, "");
+      await ctx.reply(plain + footerPlain);
+    }
     return;
   }
 
@@ -996,13 +1939,17 @@ async function sendResponse(ctx: Context, response: string): Promise<void> {
     remaining = remaining.substring(splitIndex).trim();
   }
 
-  for (const chunk of chunks) {
+  for (let i = 0; i < chunks.length; i++) {
+    const isLast = i === chunks.length - 1;
+    const chunk = isLast ? chunks[i] + footerHtml : chunks[i];
     if (isBalancedHtml(chunk)) {
       await ctx.reply(chunk, { parse_mode: "HTML" });
     } else {
-      // Strip all tags and send as plain text fallback
-      const plain = chunk.replace(/<[^>]+>/g, "");
-      await ctx.reply(plain);
+      // HTML is not balanced in this chunk — strip tags and send as plain text.
+      // For the last chunk, still append the footer as plain text so it's always visible.
+      const plain = chunks[i].replace(/<[^>]+>/g, "");
+      const footerPlain = isLast ? footerHtml.replace(/<[^>]+>/g, "") : "";
+      await ctx.reply(plain + footerPlain);
     }
   }
 }
@@ -1011,8 +1958,13 @@ async function sendResponse(ctx: Context, response: string): Promise<void> {
 // START
 // ============================================================
 
-// Initialize per-group sessions directory
+// Initialize per-group sessions directory and pre-load all sessions into memory.
+// loadAllSessions() must run before any /new command handler can touch the Map —
+// without it, resetSession() silently no-ops (sessions.get() returns undefined)
+// and /new fails to clear sessionId or messageCount.
 await initSessions();
+const loadedCount = await loadAllSessions();
+console.log(`Sessions pre-loaded: ${loadedCount}`);
 
 // Load pre-configured group mappings from .env
 loadGroupMappings();
