@@ -20,9 +20,7 @@ import YahooFinance from "yahoo-finance2";
 const yahooFinance = new YahooFinance({ suppressNotices: ["yahooSurvey", "ripHistorical"] });
 import { sendAndRecord } from "../src/utils/routineMessage.ts";
 import { GROUPS, validateGroup } from "../src/config/groups.ts";
-import { markdownToHtml } from "../src/utils/htmlFormat.ts";
-
-const USER_TIMEZONE = process.env.USER_TIMEZONE || "Asia/Singapore";
+import { USER_TIMEZONE } from "../src/config/userConfig.ts";
 
 // ── ETF Universe (~55 tickers) ────────────────────────────────────────────────
 
@@ -409,7 +407,7 @@ export function formatMessage(
   const total = breakouts.length + candidates.length;
   lines.push(`🔍 Screened: ${screened} ETFs · ${total} near-high · ${oversold.length} oversold`);
 
-  return markdownToHtml(lines.join("\n"));
+  return lines.join("\n");
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
@@ -418,9 +416,9 @@ async function main() {
   console.log("Running ETF 52-Week High Screener (with VIX + Volume + Triple RSI)...");
 
   if (!validateGroup("GENERAL")) {
-    console.error("Cannot run — GENERAL group not configured in .env");
-    console.error("Set GROUP_GENERAL_CHAT_ID in your .env file");
-    process.exit(1);
+    console.error("Cannot run — GENERAL group not configured");
+    console.error("Set chatId for the 'GENERAL' agent in config/agents.json");
+    process.exit(0); // graceful skip — PM2 will retry on next cron cycle
   }
 
   // 1. VIX regime
@@ -458,14 +456,21 @@ async function main() {
   await sendAndRecord(GROUPS.GENERAL.chatId, message, {
     routineName: "etf-52week-screener",
     agentId: "general-assistant",
-    parseMode: "HTML",
     topicId: GROUPS.GENERAL.topicId,
   });
 
   console.log("ETF 52-week screener sent to General group");
 }
 
-main().catch(err => {
-  console.error("ETF screener failed:", err);
-  process.exit(1);
-});
+// PM2's bun container uses require() internally, which sets import.meta.main = false.
+// Fall back to pm_exec_path to detect when PM2 is the entry runner.
+const _isEntry =
+  import.meta.main ||
+  process.env.pm_exec_path === import.meta.url?.replace("file://", "");
+
+if (_isEntry) {
+  main().catch(err => {
+    console.error("ETF screener failed:", err);
+    process.exit(0); // exit 0 so PM2 does not immediately restart — next run at scheduled cron time
+  });
+}

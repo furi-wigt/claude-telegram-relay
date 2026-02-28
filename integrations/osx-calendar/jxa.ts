@@ -26,14 +26,21 @@ export async function listCalendarsJXA(): Promise<RawCalendar[]> {
   return runJXAWithJSON<Record<string, never>, RawCalendar[]>(
     `
     const app = Application('Calendar');
-    JSON.stringify(app.calendars().map(c => ({
-      id: c.id(),
+    JSON.stringify(app.calendars().map((c, i) => ({
+      id: (function() { try { return c.id(); } catch (_) { return 'calendar-' + i; } })(),
       title: c.name(),
     })));
     `,
     {}
   );
 }
+
+/**
+ * Large synthetic calendars that contain thousands of auto-generated recurring
+ * events (OS-managed, read-only). Iterating them with cal.events() hangs JXA.
+ * Skip them unless explicitly requested via calendarNames.
+ */
+const SKIP_BY_DEFAULT = ["Birthdays", "Siri Suggestions", "Scheduled Reminders"];
 
 /** Get events in a date range, optionally filtered to specific calendar names. */
 export async function getEventsInRangeJXA(
@@ -42,7 +49,7 @@ export async function getEventsInRangeJXA(
   calendarNames?: string[]
 ): Promise<RawEvent[]> {
   return runJXAWithJSON<
-    { start: string; end: string; calendarNames?: string[] },
+    { start: string; end: string; calendarNames?: string[]; skipByDefault: string[] },
     RawEvent[]
   >(
     `
@@ -50,17 +57,28 @@ export async function getEventsInRangeJXA(
     const startDate = new Date(input.start);
     const endDate = new Date(input.end);
 
-    let calendars = app.calendars();
+    // Build the calendar list: explicit filter wins; otherwise skip large synthetic calendars.
+    let allCals = app.calendars();
+    let calendars;
     if (input.calendarNames && input.calendarNames.length > 0) {
-      calendars = calendars.filter(c => input.calendarNames.includes(c.name()));
+      calendars = allCals.filter(c => input.calendarNames.includes(c.name()));
+    } else {
+      calendars = allCals.filter(c => {
+        const name = c.name();
+        if (input.skipByDefault.includes(name)) return false;
+        if (name.startsWith('Holidays')) return false; // "Holidays in X" calendars
+        return true;
+      });
     }
 
     const events = [];
     for (const cal of calendars) {
-      const calEvents = cal.events().filter(evt => {
-        const s = evt.startDate();
-        return s >= startDate && s <= endDate;
-      });
+      // Use whose() so Calendar.app filters natively — avoids fetching all events
+      // into JS before date-filtering (which hangs on large/synced calendars).
+      const calEvents = cal.events.whose({ _and: [
+        { startDate: { _greaterThanEquals: startDate } },
+        { startDate: { _lessThanEquals: endDate } }
+      ]})();
       for (const evt of calEvents) {
         events.push({
           id: evt.uid(),
@@ -76,7 +94,7 @@ export async function getEventsInRangeJXA(
     }
     JSON.stringify(events);
     `,
-    { start: start.toISOString(), end: end.toISOString(), calendarNames }
+    { start: start.toISOString(), end: end.toISOString(), calendarNames, skipByDefault: SKIP_BY_DEFAULT }
   );
 }
 

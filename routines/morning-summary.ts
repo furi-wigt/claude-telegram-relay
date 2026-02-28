@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 /**
- * @routine enhanced-morning-summary
+ * @routine morning-summary
  * @description Daily morning briefing with news, weather, and goals summary
  * @schedule 0 7 * * *
  * @target Personal chat
@@ -18,37 +18,40 @@
  * 2. Yesterday's recap as a Claude Haiku narrative summary
  * 3. Daily devotional (stub — Gmail integration pending)
  * 4. Suggested tasks calendar-aware, slotted around Apple Calendar events
- * 5. HTML output via markdownToHtml, parseMode: "HTML"
+ * 5. Markdown output — sendAndRecord auto-converts to HTML
  *
- * Run manually: bun run routines/enhanced-morning-summary.ts
+ * Run manually: bun run routines/morning-summary.ts
  */
 
+import { join } from "path";
 import { createClient } from "@supabase/supabase-js";
 import { sendAndRecord } from "../src/utils/routineMessage.ts";
 import { GROUPS, validateGroup } from "../src/config/groups.ts";
-import { markdownToHtml } from "../src/utils/htmlFormat.ts";
 import { claudeText } from "../src/claude-process.ts";
 import { createWeatherClient } from "../integrations/weather/index.ts";
 import {
   createAppleCalendarClient,
   type AppleCalendarEvent,
 } from "../integrations/osx-calendar/index.ts";
+import { USER_NAME, USER_TIMEZONE } from "../src/config/userConfig.ts";
+import { shouldSkipToday, markRanToday } from "../src/routines/runOnceGuard.ts";
+
+const LAST_RUN_FILE = join(import.meta.dir, "../logs/morning-summary.lastrun");
 
 const SUPABASE_URL = process.env.SUPABASE_URL || "";
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || "";
-const USER_NAME = process.env.USER_NAME || "there";
-const USER_TIMEZONE = process.env.USER_TIMEZONE || "Asia/Singapore";
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
 
 // ── Area targets for 2-hour forecast ─────────────────────────────────────────
 // Matched against NEA area names using case-insensitive substring search.
+// Configure via WEATHER_AREAS env var (comma-separated, e.g. "Ang Mo Kio,Bedok,Tampines").
+// If unset, falls back to Singapore-wide forecast summary only.
 
-const FORECAST_AREA_TARGETS = [
-  { label: "Toa Payoh",  match: "toa payoh" },
-  { label: "Novena",     match: "novena" },
-  { label: "Punggol",   match: "punggol" },
-  { label: "Clementi",  match: "clementi" },
-];
+const FORECAST_AREA_TARGETS = (process.env.WEATHER_AREAS || "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean)
+  .map((label) => ({ label, match: label.toLowerCase() }));
 
 // ============================================================
 // TYPES
@@ -221,7 +224,7 @@ async function generateRecapNarrative(activity: YesterdayActivity): Promise<stri
     `Write a concise, specific narrative in past tense. Plain text only, no markdown, no bullet points.`;
 
   try {
-    const narrative = await claudeText(prompt, {
+    const narrative = await _deps.claudeText(prompt, {
       model: "claude-haiku-4-5-20251001",
       timeoutMs: 20_000,
     });
@@ -252,7 +255,7 @@ async function getActiveGoals(): Promise<Goal[]> {
       .eq("type", "goal")
       .is("completed", null)
       .order("created_at", { ascending: false })
-      .limit(10);
+      .limit(20);
 
     if (error || !data?.length) return [];
 
@@ -273,10 +276,26 @@ async function getActiveGoals(): Promise<Goal[]> {
 // ============================================================
 
 async function getTodayCalendarEvents(): Promise<AppleCalendarEvent[] | null> {
+  // checkCalendarAccess() (inside createAppleCalendarClient) takes ~1-3s.
+  // getTodayEvents() (JXA getEventsInRangeJXA with whose()) takes ~23s for GovTech.
+  // Use separate budgets to avoid conflating the two operations.
+  // Note: Furi's Personal is a slow CalDAV calendar — removed from APPLE_CALENDAR_NAMES.
+  const ACCESS_TIMEOUT_MS = 8_000;
+  const EVENTS_TIMEOUT_MS = 40_000;
+  const nullAfter = (ms: number): Promise<null> =>
+    new Promise(resolve => setTimeout(() => resolve(null), ms));
   try {
-    const cal = await createAppleCalendarClient();
-    if (!cal) return null;
-    return await cal.getTodayEvents();
+    const cal = await Promise.race([_deps.createAppleCalendarClient(), nullAfter(ACCESS_TIMEOUT_MS)]);
+    if (!cal) {
+      console.warn("Calendar unavailable (timeout or permission denied)");
+      return null;
+    }
+    const events = await Promise.race([cal.getTodayEvents(), nullAfter(EVENTS_TIMEOUT_MS)]);
+    if (events === null) {
+      console.warn("Calendar event fetch timed out");
+      return null;
+    }
+    return events;
   } catch (err) {
     console.warn("Calendar fetch failed:", err);
     return null;
@@ -344,7 +363,7 @@ async function suggestTasks(
     `No explanation, no markdown, just the JSON array.`;
 
   try {
-    const response = await claudeText(prompt, {
+    const response = await _deps.claudeText(prompt, {
       model: "claude-haiku-4-5-20251001",
       timeoutMs: 30_000,
     });
@@ -515,6 +534,9 @@ async function buildEnhancedBriefing(): Promise<{
       lines.push(`• ${formatCalendarEvent(e)}`);
     });
     lines.push("");
+  } else if (calendarEvents === null) {
+    lines.push(`📅 _Calendar unavailable — run \`bun run integrations/osx-calendar/grant-permission.ts\` and check PM2 logs_`);
+    lines.push("");
   }
 
   // ── Devotional ──────────────────────────────────────────────────────────────
@@ -537,8 +559,7 @@ async function buildEnhancedBriefing(): Promise<{
     lines.push(`_Reply "confirm" to set reminders, or "skip" to proceed._`);
   }
 
-  const htmlMessage = markdownToHtml(lines.join("\n"));
-  return { message: htmlMessage, tasks: suggestedTasks };
+  return { message: lines.join("\n"), tasks: suggestedTasks };
 }
 
 // ============================================================
@@ -580,25 +601,48 @@ async function scheduleTaskReminders(tasks: SuggestedTask[]): Promise<void> {
 }
 
 // ============================================================
+// DEPENDENCY INJECTION (for testing)
+// ============================================================
+
+/**
+ * Overrideable dependency references — allows tests to inject mocks without
+ * using mock.module() at module level (which pollutes bun's module cache and
+ * breaks other test files that need the real claude-process and osx-calendar).
+ *
+ * Usage in tests:
+ *   _deps.claudeText = async () => "[]";
+ *   _deps.createAppleCalendarClient = mockFn;
+ */
+export const _deps = {
+  claudeText: claudeText as typeof claudeText,
+  createAppleCalendarClient: createAppleCalendarClient as typeof createAppleCalendarClient,
+};
+
+// ============================================================
 // MAIN
 // ============================================================
 
 async function main() {
   console.log("Running Enhanced Morning Summary...");
 
+  if (shouldSkipToday(LAST_RUN_FILE)) {
+    console.log("[morning-summary] Already ran today, skipping.");
+    process.exit(0);
+  }
+
   if (!validateGroup("GENERAL")) {
-    console.error("Cannot run — GENERAL group not configured in .env");
-    console.error("Set GROUP_GENERAL_CHAT_ID in your .env file");
-    process.exit(1);
+    console.error("Cannot run — GENERAL group not configured");
+    console.error("Set chatId for the 'GENERAL' agent in config/agents.json");
+    process.exit(0); // graceful skip — PM2 will retry on next cron cycle
   }
 
   const { message, tasks } = await buildEnhancedBriefing();
   await sendAndRecord(GROUPS.GENERAL.chatId, message, {
     routineName: "morning-summary",
     agentId: "general-assistant",
-    parseMode: "HTML",
     topicId: GROUPS.GENERAL.topicId,
   });
+  markRanToday(LAST_RUN_FILE);
   console.log("Enhanced morning summary sent to General group");
 
   if (tasks.length > 0) {
@@ -606,10 +650,18 @@ async function main() {
   }
 }
 
-main().catch(error => {
-  console.error("Error running enhanced morning summary:", error);
-  process.exit(1);
-});
+// PM2's bun container uses require() internally, which sets import.meta.main = false.
+// Fall back to pm_exec_path to detect when PM2 is the entry runner.
+const _isEntry =
+  import.meta.main ||
+  process.env.pm_exec_path === import.meta.url?.replace("file://", "");
+
+if (_isEntry) {
+  main().catch(error => {
+    console.error("Error running enhanced morning summary:", error);
+    process.exit(0); // exit 0 so PM2 does not immediately restart — next run at scheduled cron time
+  });
+}
 
 // ============================================================
 // EXPORTS FOR TESTING

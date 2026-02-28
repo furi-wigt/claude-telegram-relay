@@ -347,8 +347,8 @@ const CWD = "/some/path";
 module.exports = {
   apps: [
     {
-      name: "enhanced-morning-summary",
-      script: "routines/enhanced-morning-summary.ts",
+      name: "morning-summary",
+      script: "routines/morning-summary.ts",
       cron_restart: "0 7 * * *",
     },
   ],
@@ -369,8 +369,8 @@ module.exports = {
 module.exports = {
   apps: [
     {
-      name: 'enhanced-morning-summary',
-      script: 'routines/enhanced-morning-summary.ts',
+      name: 'morning-summary',
+      script: 'routines/morning-summary.ts',
       cron_restart: '0 7 * * *',
     },
   ],
@@ -380,17 +380,17 @@ module.exports = {
 module.exports = {
   apps: [
     {
-      name: "enhanced-morning-summary-v2",
-      script: "routines/enhanced-morning-summary-v2.ts",
+      name: "morning-summary-v2",
+      script: "routines/morning-summary-v2.ts",
       cron_restart: "0 8 * * *",
     },
   ],
 };`;
 
   test("routine in ecosystem is marked as registered with correct cron", () => {
-    // Simulates: filesystem has routines/enhanced-morning-summary.ts
-    // and ecosystem contains name: "enhanced-morning-summary"
-    const name = "enhanced-morning-summary";
+    // Simulates: filesystem has routines/morning-summary.ts
+    // and ecosystem contains name: "morning-summary"
+    const name = "morning-summary";
     const isRegistered = isRegisteredInList(ECOSYSTEM_WITH_ROUTINE, name);
     const cron = extractCronFromEcosystem(ECOSYSTEM_WITH_ROUTINE, name);
 
@@ -412,7 +412,7 @@ module.exports = {
   test("registered detection is consistent with registerCodeRoutine duplicate check", () => {
     // Both functions must agree: if listCodeRoutines says registered: true,
     // then registerCodeRoutine must throw "already registered"
-    const name = "enhanced-morning-summary";
+    const name = "morning-summary";
 
     const listSaysRegistered = isRegisteredInList(ECOSYSTEM_WITH_ROUTINE, name);
     const registerWouldThrow = isRegisteredInEcosystem(ECOSYSTEM_WITH_ROUTINE, name);
@@ -424,7 +424,7 @@ module.exports = {
   });
 
   test("ecosystem uses single quotes — still detected as registered", () => {
-    const name = "enhanced-morning-summary";
+    const name = "morning-summary";
     const isRegistered = isRegisteredInList(ECOSYSTEM_WITH_SINGLE_QUOTES, name);
     const cron = extractCronFromEcosystem(ECOSYSTEM_WITH_SINGLE_QUOTES, name);
 
@@ -433,12 +433,12 @@ module.exports = {
   });
 
   test("partial name match does not cause false positive", () => {
-    // ecosystem has "enhanced-morning-summary-v2", NOT "enhanced-morning-summary"
-    const name = "enhanced-morning-summary";
+    // ecosystem has "morning-summary-v2", NOT "morning-summary"
+    const name = "morning-summary";
     const isRegistered = isRegisteredInList(ECOSYSTEM_WITH_PARTIAL_NAME, name);
 
-    // Regex uses word boundary via quotes: name: "enhanced-morning-summary"
-    // must match exactly — "enhanced-morning-summary-v2" should NOT match
+    // Regex uses word boundary via quotes: name: "morning-summary"
+    // must match exactly — "morning-summary-v2" should NOT match
     expect(isRegistered).toBe(false);
   });
 
@@ -452,11 +452,11 @@ module.exports = {
     expect(registerWouldThrow).toBe(false);
   });
 
-  test("real ecosystem has enhanced-morning-summary correctly detected as registered", async () => {
+  test("real ecosystem has morning-summary correctly detected as registered", async () => {
     // This integration test verifies the fix works against the real ecosystem file
     const { listCodeRoutines } = await import("./routineManager.ts");
     const routines = await listCodeRoutines();
-    const entry = routines.find((r) => r.name === "enhanced-morning-summary");
+    const entry = routines.find((r) => r.name === "morning-summary");
 
     if (entry) {
       // The bug was: this was false even though registerCodeRoutine would throw "already registered"

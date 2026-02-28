@@ -25,11 +25,11 @@ import { readFile, writeFile } from "fs/promises";
 import { createClient } from "@supabase/supabase-js";
 import { sendAndRecord } from "../src/utils/routineMessage.ts";
 import { GROUPS, validateGroup } from "../src/config/groups.ts";
+import { USER_NAME, USER_TIMEZONE } from "../src/config/userConfig.ts";
 
 const CLAUDE_PATH = process.env.CLAUDE_PATH || "claude";
 const SUPABASE_URL = process.env.SUPABASE_URL || "";
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || "";
-const USER_TIMEZONE = process.env.USER_TIMEZONE || "Asia/Singapore";
 const STATE_FILE = process.env.CHECKIN_STATE_FILE || "/tmp/group-checkin-state.json";
 
 // ============================================================
@@ -128,7 +128,8 @@ async function askClaudeToDecide(): Promise<{
     ? (now.getTime() - new Date(state.lastCheckinTime).getTime()) / (1000 * 60 * 60)
     : 999;
 
-  const prompt = `You are a proactive AI assistant deciding whether to check in with Furi via a Telegram group chat.
+  const userName = USER_NAME;
+  const prompt = `You are a proactive AI assistant deciding whether to check in with ${userName} via a Telegram group chat.
 
 CONTEXT:
 - Current time: ${now.toLocaleTimeString("en-US", { timeZone: USER_TIMEZONE })} (${timeContext})
@@ -188,9 +189,9 @@ async function main() {
   console.log("Running Smart Check-in...");
 
   if (!validateGroup("GENERAL")) {
-    console.error("Cannot run — GENERAL group not configured in .env");
-    console.error("Set GROUP_GENERAL_CHAT_ID in your .env file");
-    process.exit(1);
+    console.error("Cannot run — GENERAL group not configured");
+    console.error("Set chatId for the 'GENERAL' agent in config/agents.json");
+    process.exit(0); // graceful skip — PM2 will retry on next cron cycle
   }
 
   const { shouldCheckin, message } = await askClaudeToDecide();
@@ -209,7 +210,15 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error("Error running smart check-in:", error);
-  process.exit(1);
-});
+// PM2's bun container uses require() internally, which sets import.meta.main = false.
+// Fall back to pm_exec_path to detect when PM2 is the entry runner.
+const _isEntry =
+  import.meta.main ||
+  process.env.pm_exec_path === import.meta.url?.replace("file://", "");
+
+if (_isEntry) {
+  main().catch((error) => {
+    console.error("Error running smart check-in:", error);
+    process.exit(0); // exit 0 so PM2 does not immediately restart — next run at scheduled cron time
+  });
+}

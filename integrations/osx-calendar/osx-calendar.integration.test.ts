@@ -1,12 +1,24 @@
 /**
  * OSX Calendar Integration — integration tests (real Apple Calendar via JXA).
- * macOS-only. Run: RUN_INTEGRATION_TESTS=1 bun test integrations/osx-calendar/osx-calendar.integration.test.ts
+ * macOS-only. Requires APPLE_CALENDAR_NAMES to be set for event tests.
+ *
+ * WHY APPLE_CALENDAR_NAMES IS REQUIRED FOR EVENT TESTS:
+ * Large CalDAV/Google Calendar sync caches (e.g. Gmail) hang even with whose()
+ * predicate queries — their local SQLite caches are not indexed the same way as
+ * iCloud Core Data stores. Scoping to fast calendars (iCloud, local, Exchange)
+ * via APPLE_CALENDAR_NAMES is required.
+ *
+ * Run:
+ *   APPLE_CALENDAR_NAMES="GovTech" RUN_INTEGRATION_TESTS=1 \
+ *     bun test integrations/osx-calendar/osx-calendar.integration.test.ts
  */
 
 import { describe, test, expect, beforeAll } from "bun:test";
 import { createAppleCalendarClient, type AppleCalendarClient } from "./index.ts";
 
 const SKIP = !process.env.RUN_INTEGRATION_TESTS || process.platform !== "darwin";
+// Event tests require a scoped calendar to avoid hanging on large CalDAV caches.
+const SKIP_EVENTS = SKIP || !process.env.APPLE_CALENDAR_NAMES;
 
 describe.skipIf(SKIP)("osx-calendar integration", () => {
   let cal: AppleCalendarClient | null = null;
@@ -37,20 +49,20 @@ describe.skipIf(SKIP)("osx-calendar integration", () => {
     expect(calendars[0]).toHaveProperty("title");
   }, 10_000);
 
-  test("getTodayEvents() returns array", async () => {
+  test.skipIf(SKIP_EVENTS)("getTodayEvents() returns array", async () => {
     if (!cal) return; // permission denied — skip
     const events = await cal.getTodayEvents();
     expect(Array.isArray(events)).toBe(true);
     // Empty is ok — just checking it doesn't throw
-  }, 10_000);
+  }, 30_000);
 
-  test("getUpcomingEvents(7) returns array", async () => {
+  test.skipIf(SKIP_EVENTS)("getUpcomingEvents(7) returns array", async () => {
     if (!cal) return; // permission denied — skip
     const events = await cal.getUpcomingEvents(7);
     expect(Array.isArray(events)).toBe(true);
-  }, 10_000);
+  }, 30_000);
 
-  test("getUpcomingEvents(7) events have valid start, end, title", async () => {
+  test.skipIf(SKIP_EVENTS)("getUpcomingEvents(7) events have valid start, end, title", async () => {
     if (!cal) return; // permission denied — skip
     const events = await cal.getUpcomingEvents(7);
     for (const event of events) {
@@ -61,5 +73,5 @@ describe.skipIf(SKIP)("osx-calendar integration", () => {
       expect(event.end).toBeInstanceOf(Date);
       expect(typeof event.title).toBe("string");
     }
-  }, 10_000);
+  }, 30_000);
 });

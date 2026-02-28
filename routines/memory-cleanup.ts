@@ -33,7 +33,7 @@ import { GROUPS, validateGroup } from "../src/config/groups.ts";
 export interface MemoryItem {
   id: string;
   content: string;
-  type: "fact" | "goal" | "preference";
+  type: "fact" | "goal" | "preference" | "completed_goal";
   created_at: string;
   confidence: number;
   chat_id: number | null;
@@ -74,6 +74,7 @@ export interface CleanupResult {
   cappedAt?: number;
   demotionCandidates: number;
   demotionArchived: number;
+  completedGoalsArchived: number;
 }
 
 export interface CleanupConfig {
@@ -102,7 +103,7 @@ export function parseEnvConfig(): CleanupConfig {
     console.error(
       "Missing required env vars: SUPABASE_URL and SUPABASE_ANON_KEY must be set"
     );
-    process.exit(1);
+    process.exit(0); // graceful skip — retrying immediately won't fix missing config
   }
 
   return {
@@ -149,7 +150,10 @@ export function groupItems(
   const groups = new Map<string, MemoryItem[]>();
 
   for (const item of items) {
-    const key = `${item.type}::${item.chat_id ?? "null"}`;
+    // Provenance model: cluster by type only — chat_id is audit trail, not scope.
+    // Items from different groups with the same type land in the same cluster,
+    // enabling cross-group duplicate detection.
+    const key = item.type;
     const existing = groups.get(key);
     if (existing) {
       existing.push(item);
@@ -171,12 +175,13 @@ export async function searchSimilar(
   config: CleanupConfig
 ): Promise<SearchMatch[]> {
   try {
+    // Provenance model: semantic similarity search is globally scoped.
+    // chat_id is audit trail only — omit from search body to find cross-group duplicates.
     const body: Record<string, unknown> = {
       query: item.content,
       table: "memory",
       match_count: 10,
       match_threshold: config.similarityThreshold,
-      ...(item.chat_id != null && { chat_id: item.chat_id }),
     };
 
     const result = await Promise.race([
@@ -352,6 +357,9 @@ export function buildReport(result: CleanupResult): string {
   lines.push(`  Candidates (>30d old): ${result.demotionCandidates}`);
   lines.push(`  Archived:              ${result.demotionArchived}`);
 
+  lines.push("");
+  lines.push(`Completed goals archived: ${result.completedGoalsArchived}`);
+
   return lines.join("\n");
 }
 
@@ -396,7 +404,54 @@ export function buildTelegramMessage(result: CleanupResult): string {
     lines.push(`Demotion: ${result.demotionArchived} archived of ${result.demotionCandidates} stale candidates`);
   }
 
+  if (result.completedGoalsArchived > 0) {
+    lines.push(`Completed goals archived: ${result.completedGoalsArchived}`);
+  }
+
   return lines.join("\n");
+}
+
+// ============================================================
+// COMPLETED GOAL ARCHIVAL
+// ============================================================
+
+/**
+ * Archive all active completed_goal items immediately.
+ * Completed goals don't need deduplication — they should be archived as soon
+ * as cleanup runs so they don't accumulate indefinitely.
+ */
+export async function archiveCompletedGoals(
+  supabase: SupabaseClient,
+  dryRun: boolean
+): Promise<number> {
+  const { data: items, error } = await supabase
+    .from("memory")
+    .select("id")
+    .eq("type", "completed_goal")
+    .eq("status", "active");
+
+  if (error || !items?.length) {
+    return 0;
+  }
+
+  const ids = (items as Array<{ id: string }>).map((i) => i.id);
+
+  if (dryRun) {
+    console.log(`[DRY RUN] Would archive ${ids.length} completed_goal items`);
+    return ids.length;
+  }
+
+  const { error: archiveError } = await supabase
+    .from("memory")
+    .update({ status: "archived" })
+    .in("id", ids);
+
+  if (archiveError) {
+    console.error("archiveCompletedGoals: error:", archiveError);
+    return 0;
+  }
+
+  return ids.length;
 }
 
 // ============================================================
@@ -417,6 +472,10 @@ export async function runCleanup(
   console.log(
     `Starting memory cleanup (dryRun=${config.dryRun}, threshold=${config.similarityThreshold}, maxDeletes=${config.maxDeletes})`
   );
+
+  // Archive completed goals first — they don't need dedup, just immediate archival
+  const completedGoalsArchived = await archiveCompletedGoals(supabase, config.dryRun);
+  console.log(`Completed goals archived: ${completedGoalsArchived}`);
 
   const items = await fetchActiveItems(supabase);
   console.log(`Fetched ${items.length} active memory items`);
@@ -501,6 +560,7 @@ export async function runCleanup(
     deletions,
     demotionCandidates: demotionResult.candidates,
     demotionArchived: demotionResult.archived,
+    completedGoalsArchived,
     ...(skipped > 0 && { cappedAt: config.maxDeletes }),
   };
 
@@ -605,7 +665,15 @@ async function main(): Promise<void> {
   process.exit(0);
 }
 
-main().catch((error) => {
-  console.error("Error running memory cleanup:", error);
-  process.exit(1);
-});
+// PM2's bun container uses require() internally, which sets import.meta.main = false.
+// Fall back to pm_exec_path to detect when PM2 is the entry runner.
+const _isEntry =
+  import.meta.main ||
+  process.env.pm_exec_path === import.meta.url?.replace("file://", "");
+
+if (_isEntry) {
+  main().catch((error) => {
+    console.error("Error running memory cleanup:", error);
+    process.exit(0); // exit 0 so PM2 does not immediately restart — next run at scheduled cron time
+  });
+}

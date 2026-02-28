@@ -31,8 +31,9 @@ mock.module("./routineManager.ts", () => ({
   triggerCodeRoutine: mockTriggerCodeRoutine,
 }));
 
-// Import handler after mocks are set up
+// Import handler and intent extractor after mocks are set up
 const { handleRoutinesCommand, detectAndHandle } = await import("./routineHandler.ts");
+const { detectRunRoutineIntent } = await import("./intentExtractor.ts");
 
 // ============================================================
 // Context factory
@@ -442,5 +443,161 @@ describe("detectAndHandle() — pending registration flow", () => {
     const result = await detectAndHandle(ctx, "0 9 * * *");
 
     expect(result).toBe(false); // Not intercepted — let Claude handle
+  });
+});
+
+// ============================================================
+// detectRunRoutineIntent() — unit tests
+// ============================================================
+
+describe("detectRunRoutineIntent()", () => {
+  test("detects 'run night summary routine now'", () => {
+    const result = detectRunRoutineIntent("run night summary routine now");
+    expect(result).not.toBeNull();
+    expect(result!.toLowerCase()).toContain("night summary");
+  });
+
+  test("detects 'trigger the morning briefing routine'", () => {
+    const result = detectRunRoutineIntent("trigger the morning briefing routine");
+    expect(result).not.toBeNull();
+  });
+
+  test("detects 'execute watchdog routine immediately'", () => {
+    const result = detectRunRoutineIntent("execute watchdog routine immediately");
+    expect(result).not.toBeNull();
+    expect(result!.toLowerCase()).toContain("watchdog");
+  });
+
+  test("detects 'start the etf routine now'", () => {
+    const result = detectRunRoutineIntent("start the etf routine now");
+    expect(result).not.toBeNull();
+  });
+
+  test("returns null for unrelated messages", () => {
+    expect(detectRunRoutineIntent("what's the weather today?")).toBeNull();
+    expect(detectRunRoutineIntent("hello")).toBeNull();
+    expect(detectRunRoutineIntent("tell me about routines")).toBeNull();
+  });
+
+  test("returns null for creation intent", () => {
+    // "run every day" matches ROUTINE_INTENT_PATTERNS (creation), not run-intent
+    expect(detectRunRoutineIntent("create a routine that runs every day")).toBeNull();
+  });
+});
+
+// ============================================================
+// detectAndHandle() — run-intent flow
+// ============================================================
+
+describe("detectAndHandle() — run-intent flow", () => {
+  const BASE_ID = 60000;
+
+  test("run intent with single match triggers the routine", async () => {
+    const chatId = BASE_ID + 1;
+    mockListCodeRoutines.mockReturnValue(
+      Promise.resolve([
+        { name: "night-summary", scriptPath: "routines/night-summary.ts", cron: "0 23 * * *", registered: true, pm2Status: "online" },
+        { name: "morning-briefing", scriptPath: "routines/morning-briefing.ts", cron: "0 7 * * *", registered: true, pm2Status: "online" },
+      ])
+    );
+    mockTriggerCodeRoutine.mockReset();
+    mockTriggerCodeRoutine.mockReturnValue(Promise.resolve());
+
+    const ctx = mockCtx({ chat: { id: chatId } });
+    const result = await detectAndHandle(ctx, "run night summary routine now");
+
+    expect(result).toBe(true);
+    expect(mockTriggerCodeRoutine).toHaveBeenCalledWith("night-summary");
+    const replyText = (ctx.reply as ReturnType<typeof mock>).mock.calls[0][0] as string;
+    expect(replyText).toContain("night-summary");
+    expect(replyText).toContain("Done");
+  });
+
+  test("run intent with no match replies with not found", async () => {
+    const chatId = BASE_ID + 2;
+    mockListCodeRoutines.mockReturnValue(
+      Promise.resolve([
+        { name: "night-summary", scriptPath: "routines/night-summary.ts", cron: "0 23 * * *", registered: true, pm2Status: "online" },
+      ])
+    );
+
+    const ctx = mockCtx({ chat: { id: chatId } });
+    const result = await detectAndHandle(ctx, "run banana routine now");
+
+    expect(result).toBe(true);
+    expect(mockTriggerCodeRoutine).not.toHaveBeenCalled();
+    const replyText = (ctx.reply as ReturnType<typeof mock>).mock.calls[0][0] as string;
+    expect(replyText).toContain("No routine found");
+    expect(replyText).toContain("/routines list");
+  });
+
+  test("run intent with trigger error replies with error message", async () => {
+    const chatId = BASE_ID + 3;
+    mockListCodeRoutines.mockReturnValue(
+      Promise.resolve([
+        { name: "night-summary", scriptPath: "routines/night-summary.ts", cron: "0 23 * * *", registered: true, pm2Status: "online" },
+      ])
+    );
+    mockTriggerCodeRoutine.mockReset();
+    mockTriggerCodeRoutine.mockReturnValue(Promise.reject(new Error("PM2 crashed")));
+
+    const ctx = mockCtx({ chat: { id: chatId } });
+    const result = await detectAndHandle(ctx, "run night summary routine now");
+
+    expect(result).toBe(true);
+    const replyText = (ctx.reply as ReturnType<typeof mock>).mock.calls[0][0] as string;
+    expect(replyText).toContain("PM2 crashed");
+  });
+
+  test("non-run-intent message falls through", async () => {
+    const chatId = BASE_ID + 4;
+    const ctx = mockCtx({ chat: { id: chatId } });
+    const result = await detectAndHandle(ctx, "what's the weather today?");
+
+    expect(result).toBe(false);
+  });
+
+  test("test-named routines are excluded and do not cause false ambiguity", async () => {
+    // Simulates listCodeRoutines() already filtering out .test.ts files at source,
+    // so the mock should only return non-test entries. This test verifies the
+    // handler resolves to a single match (no false ambiguity) even when a
+    // .test entry would otherwise share the same prefix.
+    const chatId = BASE_ID + 6;
+    mockListCodeRoutines.mockReturnValue(
+      Promise.resolve([
+        // Only the real routine — .test variant filtered at source by routineManager
+        { name: "night-summary", scriptPath: "routines/night-summary.ts", cron: "0 23 * * *", registered: true, pm2Status: "online" },
+      ])
+    );
+    mockTriggerCodeRoutine.mockReset();
+    mockTriggerCodeRoutine.mockReturnValue(Promise.resolve());
+
+    const ctx = mockCtx({ chat: { id: chatId } });
+    const result = await detectAndHandle(ctx, "run night summary routine now");
+
+    expect(result).toBe(true);
+    // Must trigger exactly the real routine — no ambiguity from night-summary.test
+    expect(mockTriggerCodeRoutine).toHaveBeenCalledWith("night-summary");
+    const replyText = (ctx.reply as ReturnType<typeof mock>).mock.calls[0][0] as string;
+    expect(replyText).not.toContain("Multiple routines");
+    expect(replyText).toContain("Done");
+  });
+
+  test("run intent with multiple matches replies with disambiguation", async () => {
+    const chatId = BASE_ID + 5;
+    mockListCodeRoutines.mockReturnValue(
+      Promise.resolve([
+        { name: "night-summary", scriptPath: "routines/night-summary.ts", cron: "0 23 * * *", registered: true, pm2Status: "online" },
+        { name: "night-checkin", scriptPath: "routines/night-checkin.ts", cron: "0 22 * * *", registered: true, pm2Status: "online" },
+      ])
+    );
+
+    const ctx = mockCtx({ chat: { id: chatId } });
+    const result = await detectAndHandle(ctx, "run night routine now");
+
+    expect(result).toBe(true);
+    expect(mockTriggerCodeRoutine).not.toHaveBeenCalled();
+    const replyText = (ctx.reply as ReturnType<typeof mock>).mock.calls[0][0] as string;
+    expect(replyText).toContain("Multiple routines");
   });
 });

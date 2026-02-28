@@ -16,6 +16,7 @@
 
 import { supabase } from "./supabase.ts";
 import { sendToGroup } from "./sendToGroup.ts";
+import { markdownToHtml } from "./htmlFormat.ts";
 import { callOllamaGenerate } from "../ollama.ts";
 
 export interface RoutineMessageOptions {
@@ -56,6 +57,10 @@ export async function summarizeRoutineMessage(
  * The message is saved with role='assistant', metadata.source='routine'
  * so the short-term memory module can display it in the rolling window
  * using the pre-computed summary instead of the full content.
+ *
+ * parseMode defaults to "HTML" with automatic markdown→HTML conversion.
+ * Callers that explicitly set parseMode:"HTML" must pre-format their content.
+ * Callers that set parseMode:"Markdown" use Telegram's legacy Markdown mode.
  */
 export async function sendAndRecord(
   chatId: number,
@@ -64,8 +69,13 @@ export async function sendAndRecord(
 ): Promise<void> {
   const sentAt = new Date();
 
+  // Default: auto-convert markdown → HTML so LLM output renders correctly.
+  // Explicit parseMode means caller is responsible for content format.
+  const resolvedParseMode = options.parseMode ?? "HTML";
+  const formattedMessage = options.parseMode ? message : markdownToHtml(message);
+
   // 1. Send to Telegram first (don't block on Supabase)
-  await sendToGroup(chatId, message, { parseMode: options.parseMode, topicId: options.topicId });
+  await sendToGroup(chatId, formattedMessage, { parseMode: resolvedParseMode, topicId: options.topicId });
 
   // 2. Generate summary at insert time (async — routine already fired)
   const summary = await summarizeRoutineMessage(message, options.routineName);

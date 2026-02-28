@@ -63,7 +63,7 @@ export interface AppleCalendarClient {
   deleteEvent(eventId: string): Promise<void>;
 }
 
-function rawToEvent(raw: RawEvent): AppleCalendarEvent {
+export function rawToEvent(raw: RawEvent): AppleCalendarEvent {
   return {
     id: raw.id,
     title: raw.title,
@@ -76,7 +76,7 @@ function rawToEvent(raw: RawEvent): AppleCalendarEvent {
   };
 }
 
-function rawToCalendarInfo(raw: RawCalendar): CalendarInfo {
+export function rawToCalendarInfo(raw: RawCalendar): CalendarInfo {
   return {
     id: raw.id,
     title: raw.title,
@@ -85,22 +85,40 @@ function rawToCalendarInfo(raw: RawCalendar): CalendarInfo {
   };
 }
 
-function getFilteredCalendarNames(): string[] | undefined {
+export function getFilteredCalendarNames(): string[] | undefined {
   const env = process.env.APPLE_CALENDAR_NAMES;
   if (!env) return undefined;
   return env.split(",").map(s => s.trim()).filter(Boolean);
 }
 
-function startOfDay(d: Date): Date {
-  const r = new Date(d);
-  r.setHours(0, 0, 0, 0);
-  return r;
+export function getUserTimezone(): string {
+  return process.env.USER_TIMEZONE || Intl.DateTimeFormat().resolvedOptions().timeZone;
 }
 
-function endOfDay(d: Date): Date {
-  const r = new Date(d);
-  r.setHours(23, 59, 59, 999);
-  return r;
+/**
+ * Compute midnight in the user's timezone as a UTC Date.
+ * Using toLocaleDateString avoids DST edge-cases from setHours().
+ */
+export function tzMidnight(d: Date): Date {
+  const tz = getUserTimezone();
+  const dateStr = d.toLocaleDateString("en-CA", { timeZone: tz }); // "YYYY-MM-DD"
+  const [year, month, day] = dateStr.split("-").map(Number);
+  const utcBase = new Date(Date.UTC(year, month - 1, day));
+  // Determine the offset: tz-local time minus UTC time at utcBase
+  const tzStr = utcBase.toLocaleString("en-US", { timeZone: tz });
+  const utcStr = utcBase.toLocaleString("en-US", { timeZone: "UTC" });
+  const offsetMs = new Date(tzStr).getTime() - new Date(utcStr).getTime();
+  return new Date(utcBase.getTime() - offsetMs);
+}
+
+export function startOfDay(d: Date): Date {
+  return tzMidnight(d);
+}
+
+export function endOfDay(d: Date): Date {
+  // Next-day midnight minus 1 ms — correct across DST transitions
+  const nextDay = new Date(d.getTime() + 24 * 60 * 60 * 1000);
+  return new Date(tzMidnight(nextDay).getTime() - 1);
 }
 
 /**

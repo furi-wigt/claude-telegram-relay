@@ -57,7 +57,7 @@ function loadMonitoredProcesses(): MonitoredProcess[] {
     console.error("Failed to load ecosystem config, using fallback list:", error);
     return [
       { name: "telegram-relay", alwaysOn: true },
-      { name: "enhanced-morning-summary", alwaysOn: false },
+      { name: "morning-summary", alwaysOn: false },
       { name: "smart-checkin", alwaysOn: false },
       { name: "night-summary", alwaysOn: false },
       { name: "weekly-etf", alwaysOn: false },
@@ -296,9 +296,9 @@ async function main() {
   console.log("Running Watchdog...");
 
   if (!validateGroup("GENERAL")) {
-    console.error("Cannot run — GENERAL group not configured in .env");
-    console.error("Set GROUP_GENERAL_CHAT_ID in your .env file");
-    process.exit(1);
+    console.error("Cannot run — GENERAL group not configured");
+    console.error("Set chatId for the 'GENERAL' agent in config/agents.json");
+    process.exit(0); // graceful skip — PM2 will retry on next cron cycle
   }
 
   const processes = await getPM2Processes();
@@ -329,7 +329,15 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error("Error running watchdog:", error);
-  process.exit(1);
-});
+// PM2's bun container uses require() internally, which sets import.meta.main = false.
+// Fall back to pm_exec_path to detect when PM2 is the entry runner.
+const _isEntry =
+  import.meta.main ||
+  process.env.pm_exec_path === import.meta.url?.replace("file://", "");
+
+if (_isEntry) {
+  main().catch((error) => {
+    console.error("Error running watchdog:", error);
+    process.exit(0); // exit 0 so PM2 does not immediately restart — next run at scheduled cron time
+  });
+}

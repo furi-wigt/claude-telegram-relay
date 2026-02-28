@@ -246,6 +246,11 @@ Pending states also expire automatically after 5 minutes.
 
 ## 3. Code-Based Routine Journey
 
+> **Before writing any code:** read `routines/CLAUDE.md` — it defines the
+> required code template, PM2/bun `_isEntry` compatibility guard, error
+> handling rules, deployment safety rules, and a pre-commit checklist.
+> The patterns below reflect those requirements.
+
 ### Step 1 — Write the TypeScript File
 
 Place your routine at `routines/<name>.ts`. The file should:
@@ -255,6 +260,8 @@ Place your routine at `routines/<name>.ts`. The file should:
 - Be executable with `bun run routines/<name>.ts`
 - Use `sendToGroup` or `sendAndRecord` from `src/utils/` to deliver output
 - Use `validateGroup` to fail gracefully when a required group is not configured
+- Use the `_isEntry` guard (not `if (import.meta.main)`) — required for PM2/bun compatibility
+- Use `process.exit(0)` in the catch block — `exit(1)` causes a PM2 restart loop
 
 **Example file header:**
 
@@ -278,7 +285,7 @@ import { GROUPS, validateGroup } from "../src/config/groups.ts";
 async function main() {
   if (!validateGroup("AWS_ARCHITECT")) {
     console.error("Cannot run — AWS_ARCHITECT group not configured in .env");
-    process.exit(1);
+    process.exit(0); // graceful skip — PM2 retries at next cron cycle
   }
 
   const data = await fetchData();
@@ -290,10 +297,18 @@ async function main() {
   });
 }
 
-main().catch((error) => {
-  console.error("Error:", error);
-  process.exit(1);
-});
+// PM2's bun container loads scripts via require(), which sets import.meta.main = false.
+// Use _isEntry to detect both direct execution AND PM2 invocation.
+const _isEntry =
+  import.meta.main ||
+  process.env.pm_exec_path === import.meta.url?.replace("file://", "");
+
+if (_isEntry) {
+  main().catch((error) => {
+    console.error("Error:", error);
+    process.exit(0); // always exit 0 — exit 1 triggers PM2 restart loop
+  });
+}
 ```
 
 **Testing manually:**
@@ -351,28 +366,20 @@ Add an entry to the `apps` array before the closing `],`:
 {
   name: "aws-daily-cost",
   script: "routines/aws-daily-cost.ts",
-  interpreter: "/Users/furi/.bun/bin/bun",
-  exec_mode: "fork",
-  cwd: "/path/to/project",
-  instances: 1,
+  interpreter: "bun",
+  cron_restart: "0 9 * * *",
   autorestart: false,
   watch: false,
-  cron_restart: "0 9 * * *",
-  env: {
-    NODE_ENV: "production",
-    PATH: "/Users/furi/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
-    HOME: "/Users/furi",
-  },
-  error_file: "/path/to/project/logs/aws-daily-cost-error.log",
-  out_file: "/path/to/project/logs/aws-daily-cost.log",
-  log_date_format: "YYYY-MM-DD HH:mm:ss Z",
 },
 ```
 
-Then reload PM2:
+> Use `interpreter: "bun"` (not an absolute path). Never change existing entries.
+> See `routines/CLAUDE.md` for the full entry format and safety rules.
+
+Then start only the new service:
 
 ```bash
-npx pm2 reload ecosystem.config.cjs --only aws-daily-cost
+npx pm2 start ecosystem.config.cjs --only aws-daily-cost
 npx pm2 save
 ```
 
@@ -402,15 +409,22 @@ Logs are written to `logs/<name>.log` and `logs/<name>-error.log`.
 
 **Existing code-based routines and their schedules:**
 
-| Routine | Schedule | Target |
-|---|---|---|
-| `enhanced-morning-summary` | `0 7 * * *` — 7:00 AM daily | General group |
-| `smart-checkin` | `*/30 * * * *` — every 30 min | Personal chat |
-| `night-summary` | `0 23 * * *` — 11:00 PM daily | General group |
-| `aws-daily-cost` | `0 9 * * *` — 9:00 AM daily | AWS Architect group |
-| `security-daily-scan` | `0 8 * * *` — 8:00 AM daily | Security group |
-| `weekly-etf` | `0 17 * * 5` — Friday 5:00 PM | General group |
-| `watchdog` | `0 */2 * * *` — every 2 hours | General group |
+| Routine | Schedule | Target | autorestart |
+|---|---|---|---|
+| `enhanced-morning-summary` | `0 7 * * *` — 7:00 AM daily | General group | `false` (one-shot) |
+| `smart-checkin` | `*/30 * * * *` — every 30 min | Personal chat | `false` |
+| `night-summary` | `0 23 * * *` — 11:00 PM daily | General group | `false` (one-shot) |
+| `watchdog` | `0 */2 * * *` — every 2 hours | General group | `false` |
+| `orphan-gc` | `0 3 * * *` — 3:00 AM daily | — (maintenance) | `false` |
+| `log-cleanup` | `0 4 * * 0` — Sunday 4:00 AM | — (maintenance) | `false` |
+| `memory-cleanup` | `0 2 * * *` — 2:00 AM daily | — (maintenance) | `false` |
+| `memory-dedup-review` | `0 5 * * 1` — Monday 5:00 AM | — (maintenance) | `false` |
+| `aws-daily-cost` | `0 9 * * *` — 9:00 AM daily | AWS Architect group | `false` |
+| `weekly-etf` | `0 17 * * 5` — Friday 5:00 PM | General group | `false` |
+
+> One-shot cron routines (`morning-summary`, `night-summary`) exit after running.
+> `autorestart: false` is required for all routines — without it PM2 restarts on
+> every clean exit, burning through `max_restarts` and entering an errored state.
 
 ---
 
@@ -892,4 +906,5 @@ Common causes:
 - Missing environment variables (check `.env`)
 - External API unreachable
 - TypeScript import path wrong (use `../src/...` not `./src/...`)
-- `validateGroup` exits with code 1 because the group is not configured
+- `validateGroup` exits with code 0 because the group is not configured — this is intentional (graceful skip). Check that `GROUP_*_CHAT_ID` is set in `.env`
+- `if (import.meta.main)` guard used instead of `_isEntry` — `main()` never fires under PM2 bun (see `routines/CLAUDE.md`)

@@ -12,11 +12,13 @@
 import { describe, it, expect } from "bun:test";
 import {
   buildReflectionPrompt,
+  buildDayTimeline,
   formatSummary,
   analyzeWithProviders,
   type DayMessage,
   type DayFact,
   type DayGoal,
+  type DaySummary,
 } from "./night-summary.ts";
 
 // ============================================================
@@ -45,6 +47,17 @@ function makeGoal(overrides: Partial<DayGoal> = {}): DayGoal {
     content: "Launch MVP by end of Q1",
     deadline: "2025-03-31",
     completed: false,
+    ...overrides,
+  };
+}
+
+function makeSummary(overrides: Partial<DaySummary> = {}): DaySummary {
+  return {
+    summary: "Discussed AWS architecture options for the relay bot.",
+    message_count: 20,
+    from_timestamp: "2025-02-21T09:00:00Z",
+    to_timestamp: "2025-02-21T10:30:00Z",
+    chat_id: null,
     ...overrides,
   };
 }
@@ -125,16 +138,33 @@ describe("buildReflectionPrompt()", () => {
     expect(prompt).toContain("400");
   });
 
-  it("truncates to last 30 messages when more are provided", () => {
-    // 35 messages: slice(-30) includes items 6–35, excludes items 1–5
+  it("includes all messages when no summaries are provided (no arbitrary cap)", () => {
+    // 35 messages: all should appear — no slice(-30) cap anymore
     const messages = Array.from({ length: 35 }, (_, i) =>
       makeMessage({ content: `Unique content item ${i + 1}` })
     );
     const prompt = buildReflectionPrompt(messages, [], []);
 
-    expect(prompt).toContain("Unique content item 35"); // last — always included
-    expect(prompt).toContain("Unique content item 6"); // first of last-30 window
-    expect(prompt).not.toContain("Unique content item 5"); // outside window
+    expect(prompt).toContain("Unique content item 35"); // last — included
+    expect(prompt).toContain("Unique content item 1"); // first — now also included
+    expect(prompt).toContain("Unique content item 5"); // was previously excluded
+  });
+
+  it("includes conversation summaries in the prompt when provided", () => {
+    const summaries = [
+      makeSummary({ summary: "Resolved the authentication bug in relay module." }),
+    ];
+    const prompt = buildReflectionPrompt([], [], [], "Furi", summaries);
+    expect(prompt).toContain("Resolved the authentication bug in relay module.");
+  });
+
+  it("uses timeline structure with summaries and messages", () => {
+    const summaries = [makeSummary()];
+    const messages = [makeMessage({ created_at: "2025-02-21T19:00:00Z" })];
+    const prompt = buildReflectionPrompt(messages, [], [], undefined, summaries);
+    // Should have a section for earlier (summarised) and recent (verbatim)
+    const hasEarlier = prompt.includes("Earlier Today") || prompt.includes("Summarised") || prompt.includes("Summarized");
+    expect(hasEarlier).toBe(true);
   });
 
   it("shows message count in the prompt context", () => {
@@ -306,5 +336,95 @@ describe("analyzeWithProviders()", () => {
     });
 
     expect(capturedPrompt).toBe("my exact prompt text");
+  });
+});
+
+// ============================================================
+// buildDayTimeline() — pure function (NEW)
+// ============================================================
+
+describe("buildDayTimeline()", () => {
+  it("returns a string", () => {
+    const result = buildDayTimeline([], []);
+    expect(typeof result).toBe("string");
+  });
+
+  it("shows 'No conversations today' when both inputs are empty", () => {
+    const result = buildDayTimeline([], []);
+    expect(result).toContain("No conversations today");
+  });
+
+  it("includes summary text in the output", () => {
+    const summaries = [makeSummary({ summary: "Resolved the auth bug with JWT tokens." })];
+    const result = buildDayTimeline([], summaries);
+    expect(result).toContain("Resolved the auth bug with JWT tokens.");
+  });
+
+  it("shows an 'Earlier Today' section when summaries are present", () => {
+    const summaries = [makeSummary()];
+    const result = buildDayTimeline([], summaries);
+    expect(result).toContain("Earlier Today");
+  });
+
+  it("formats summary timestamp range as HH:mm–HH:mm", () => {
+    const summaries = [
+      makeSummary({
+        from_timestamp: "2025-02-21T09:15:00Z",
+        to_timestamp: "2025-02-21T10:30:00Z",
+      }),
+    ];
+    const result = buildDayTimeline([], summaries);
+    // Should show a time range from the timestamps
+    expect(result).toMatch(/\d{2}:\d{2}/); // at least one time present
+  });
+
+  it("includes all messages — no 30-message cap", () => {
+    const messages = Array.from({ length: 50 }, (_, i) =>
+      makeMessage({ content: `Message number ${i + 1}` })
+    );
+    const result = buildDayTimeline(messages, []);
+    expect(result).toContain("Message number 1");
+    expect(result).toContain("Message number 50");
+  });
+
+  it("includes agent_id label when present on a message", () => {
+    const messages = [
+      makeMessage({ content: "Hello", agent_id: "aws-architect" }),
+    ];
+    const result = buildDayTimeline(messages, []);
+    expect(result).toContain("aws-architect");
+  });
+
+  it("still works when agent_id is undefined", () => {
+    const messages = [makeMessage({ content: "No agent id here" })];
+    const result = buildDayTimeline(messages, []);
+    expect(result).toContain("No agent id here");
+  });
+
+  it("includes message content in output", () => {
+    const messages = [makeMessage({ content: "Unique message alpha" })];
+    const result = buildDayTimeline(messages, []);
+    expect(result).toContain("Unique message alpha");
+  });
+
+  it("shows multiple summaries in order", () => {
+    const summaries = [
+      makeSummary({ summary: "Morning topic alpha", from_timestamp: "2025-02-21T09:00:00Z", to_timestamp: "2025-02-21T10:00:00Z" }),
+      makeSummary({ summary: "Afternoon topic beta", from_timestamp: "2025-02-21T13:00:00Z", to_timestamp: "2025-02-21T14:00:00Z" }),
+    ];
+    const result = buildDayTimeline([], summaries);
+    const idxAlpha = result.indexOf("Morning topic alpha");
+    const idxBeta = result.indexOf("Afternoon topic beta");
+    expect(idxAlpha).toBeGreaterThanOrEqual(0);
+    expect(idxBeta).toBeGreaterThanOrEqual(0);
+    expect(idxAlpha).toBeLessThan(idxBeta); // alpha comes before beta
+  });
+
+  it("shows both summary section and messages section when both provided", () => {
+    const summaries = [makeSummary({ summary: "Morning session summary" })];
+    const messages = [makeMessage({ content: "Evening question" })];
+    const result = buildDayTimeline(messages, summaries);
+    expect(result).toContain("Morning session summary");
+    expect(result).toContain("Evening question");
   });
 });
