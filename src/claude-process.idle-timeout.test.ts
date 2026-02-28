@@ -14,7 +14,7 @@
  * Run: bun test src/claude-process.idle-timeout.test.ts
  */
 
-import { describe, test, expect, mock, beforeEach } from "bun:test";
+import { describe, test, expect, mock, beforeEach, afterAll } from "bun:test";
 
 // ── Timer durations for tests (set BEFORE import) ─────────────────────────────
 // IDLE  = 150ms  — fires if no chunk arrives for 150ms
@@ -129,6 +129,11 @@ beforeEach(() => {
   spawnMock.mockReset();
 });
 
+// Restore module mocks after this file so subsequent test files see the real spawn.
+afterAll(() => {
+  mock.restore();
+});
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /** Wait for ms milliseconds. */
@@ -206,7 +211,7 @@ describe("claudeStream — chunks reset idle timer", () => {
     let closed = false;
 
     spawnMock.mockImplementation(() =>
-      mockProc({ stdout: cs, exitCode: 0, exitDelay: 5000 })
+      mockProc({ stdout: cs, exitCode: 0, exitDelay: 500 })
     );
 
     // Schedule chunks at 60ms intervals, then close at ~300ms

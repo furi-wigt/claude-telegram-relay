@@ -558,4 +558,38 @@ describe("ProgressIndicator", () => {
     const finishCall = calls[calls.length - 1];
     expect(finishCall[3]).toBeUndefined();
   });
+
+  // -----------------------------------------------------------------------
+  // Race condition: finish() called while sendInitialMessage's sendMessage is in-flight
+  // -----------------------------------------------------------------------
+
+  test("orphan cleanup: deleteMessage called when finish() races with slow sendMessage", async () => {
+    // Make sendMessage artificially slow (resolves after two real microtask ticks)
+    let resolveSend!: (v: { message_id: number }) => void;
+    (mockBot.api.sendMessage as any).mockImplementation(
+      () => new Promise<{ message_id: number }>((r) => { resolveSend = r; })
+    );
+
+    await indicator.start(CHAT_ID, mockBot as any);
+
+    // Advance past the delay — sendInitialMessage is now awaiting the slow sendMessage
+    await advanceTime(8001);
+    expect(mockBot.api.sendMessage).toHaveBeenCalledTimes(1);
+
+    // finish() is called while sendMessage is still in-flight (messageId is null)
+    await indicator.finish(true);
+
+    // messageId is null at this point — edit and regular delete were NOT scheduled
+    expect(mockBot.api.editMessageText).not.toHaveBeenCalled();
+    expect(mockBot.api.deleteMessage).not.toHaveBeenCalled();
+
+    // Now sendMessage resolves — orphan guard should trigger immediate deleteMessage
+    resolveSend({ message_id: 42 });
+    await new Promise<void>((r) => realSetTimeout(r, 0)); // flush microtasks
+
+    expect(mockBot.api.deleteMessage).toHaveBeenCalledTimes(1);
+    const [deletedChatId, deletedMsgId] = (mockBot.api.deleteMessage as any).mock.calls[0];
+    expect(deletedChatId).toBe(CHAT_ID);
+    expect(deletedMsgId).toBe(42);
+  });
 });

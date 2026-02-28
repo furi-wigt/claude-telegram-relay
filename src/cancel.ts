@@ -40,6 +40,27 @@ export function streamKey(chatId: number, threadId: number | null): string {
   return `${chatId}:${threadId ?? ""}`;
 }
 
+/**
+ * Parse chatId and threadId out of a `cancel:<key>` callback_data string.
+ *
+ * The key portion is the output of streamKey(), so it has the form
+ * `"<chatId>:"` (no thread) or `"<chatId>:<threadId>"` (with thread).
+ * Parsing from the data avoids relying on `ctx.chat?.id` which may be
+ * undefined in some Grammy edge cases.
+ */
+export function parseCancelKey(data: string): { chatId: number; threadId: number | null } {
+  const key = data.slice("cancel:".length); // e.g. "12345:" or "12345:7"
+  const colonIdx = key.indexOf(":");
+  if (colonIdx === -1) {
+    // Shouldn't happen with well-formed data, but handle gracefully
+    return { chatId: parseInt(key, 10), threadId: null };
+  }
+  const chatId = parseInt(key.slice(0, colonIdx), 10);
+  const threadStr = key.slice(colonIdx + 1);
+  const threadId = threadStr ? parseInt(threadStr, 10) : null;
+  return { chatId, threadId };
+}
+
 // ── Cancel handlers ──────────────────────────────────────────────────────────
 
 /**

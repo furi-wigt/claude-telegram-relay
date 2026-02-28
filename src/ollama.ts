@@ -3,8 +3,7 @@
  * Connects to Ollama at http://localhost:11434 (default).
  */
 
-const OLLAMA_BASE_URL = process.env.OLLAMA_URL ?? "http://localhost:11434";
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL ?? "gemma3:4b";
+// Note: OLLAMA_TIMEOUT_MS is a compile-time constant (no env var) — kept at module level.
 const OLLAMA_TIMEOUT_MS = 10_000;
 
 /**
@@ -14,6 +13,10 @@ const OLLAMA_TIMEOUT_MS = 10_000;
  * @param options  Optional overrides for model, base URL, and timeout.
  * @returns        The raw text from Ollama's `response` field.
  * @throws         On network error, non-2xx status, or abort (timeout).
+ *
+ * Implementation note: OLLAMA_URL and OLLAMA_MODEL are read inside this function
+ * (not at module level) so that tests can set process.env before calling and
+ * get the correct value without module caching causing stale reads.
  */
 export async function callOllamaGenerate(
   prompt: string,
@@ -23,6 +26,10 @@ export async function callOllamaGenerate(
     timeoutMs?: number;
   }
 ): Promise<string> {
+  // Read env vars per-call so process.env overrides set in tests take effect.
+  const OLLAMA_BASE_URL = process.env.OLLAMA_URL ?? "http://localhost:11434";
+  const OLLAMA_MODEL = process.env.OLLAMA_MODEL ?? "gemma3:4b";
+
   const model = options?.model ?? OLLAMA_MODEL;
   const baseUrl = options?.baseUrl ?? OLLAMA_BASE_URL;
   const timeoutMs = options?.timeoutMs ?? OLLAMA_TIMEOUT_MS;

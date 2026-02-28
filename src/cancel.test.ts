@@ -8,7 +8,7 @@
  */
 
 import { describe, test, expect, mock, beforeEach } from "bun:test";
-import { streamKey, handleCancelCallback, handleCancelCommand, activeStreams } from "./cancel.ts";
+import { streamKey, parseCancelKey, handleCancelCallback, handleCancelCommand, activeStreams } from "./cancel.ts";
 
 // ── Mock Telegram API ─────────────────────────────────────────────────────────
 
@@ -36,7 +36,7 @@ beforeEach(() => {
 });
 
 // ═══════════════════════════════════════════════════════════════
-// Suite A: streamKey
+// Suite A: streamKey / parseCancelKey
 // ═══════════════════════════════════════════════════════════════
 
 describe("streamKey()", () => {
@@ -58,6 +58,49 @@ describe("streamKey()", () => {
 
   test("threadId null vs 0 → different keys", () => {
     expect(streamKey(1, null)).not.toBe(streamKey(1, 0));
+  });
+});
+
+describe("parseCancelKey()", () => {
+  test("no thread → chatId extracted, threadId null", () => {
+    const result = parseCancelKey("cancel:12345:");
+    expect(result.chatId).toBe(12345);
+    expect(result.threadId).toBeNull();
+  });
+
+  test("with thread → both extracted correctly", () => {
+    const result = parseCancelKey("cancel:12345:7");
+    expect(result.chatId).toBe(12345);
+    expect(result.threadId).toBe(7);
+  });
+
+  test("negative chatId (groups) → parsed correctly", () => {
+    const result = parseCancelKey("cancel:-100123456789:");
+    expect(result.chatId).toBe(-100123456789);
+    expect(result.threadId).toBeNull();
+  });
+
+  test("negative chatId + thread → both extracted", () => {
+    const result = parseCancelKey("cancel:-100123456789:42");
+    expect(result.chatId).toBe(-100123456789);
+    expect(result.threadId).toBe(42);
+  });
+
+  test("round-trips with streamKey (no thread)", () => {
+    const chatId = 99999;
+    const data = `cancel:${streamKey(chatId, null)}`;
+    const result = parseCancelKey(data);
+    expect(result.chatId).toBe(chatId);
+    expect(result.threadId).toBeNull();
+  });
+
+  test("round-trips with streamKey (with thread)", () => {
+    const chatId = 99999;
+    const threadId = 5;
+    const data = `cancel:${streamKey(chatId, threadId)}`;
+    const result = parseCancelKey(data);
+    expect(result.chatId).toBe(chatId);
+    expect(result.threadId).toBe(threadId);
   });
 });
 

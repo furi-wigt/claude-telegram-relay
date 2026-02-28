@@ -17,7 +17,9 @@
     "setup:services": "bun run setup/configure-services.ts",
     "setup:pm2": "bun run setup/configure-pm2.ts",
     "setup:routines": "bun run setup/configure-routines.ts",
-    "setup:verify": "bun run setup/verify.ts"
+    "setup:verify": "bun run setup/verify.ts",
+    "docs:ingest": "bun run scripts/ingest-documents.ts",
+    "docs:list": "bun run scripts/ingest-documents.ts --list"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.74.0",

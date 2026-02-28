@@ -15,29 +15,9 @@
 
 import type { Bot } from "grammy";
 
-const INDICATOR_DELAY_MS = parseInt(
-  process.env.PROGRESS_INDICATOR_DELAY_MS || "2000",
-  10,
-);
-const UPDATE_INTERVAL_MS = parseInt(
-  process.env.PROGRESS_UPDATE_INTERVAL_MS || "60000",
-  10,
-);
-/** Minimum gap between immediate edits to avoid Telegram rate limits (~1 edit/s; 3s is conservative). */
-const IMMEDIATE_DEBOUNCE_MS = parseInt(
-  process.env.PROGRESS_IMMEDIATE_DEBOUNCE_MS || "3000",
-  10,
-);
-/** Maximum number of recent events shown in the indicator message. */
-const EVENT_BUFFER_SIZE = parseInt(
-  process.env.PROGRESS_EVENT_BUFFER_SIZE || "10",
-  10,
-);
-/** Maximum character length per event line before truncation. */
-const EVENT_LINE_MAX_CHARS = parseInt(
-  process.env.PROGRESS_EVENT_LINE_MAX_CHARS || "80",
-  10,
-);
+// NOTE: All PROGRESS_* env vars are read at call-time (not module load time) to
+// allow test files to override them via process.env before importing this module
+// in the same Bun process. See the corresponding test file for details.
 
 /** Format milliseconds into a human-readable elapsed string. */
 function formatElapsed(ms: number): string {
@@ -115,11 +95,15 @@ export class ProgressIndicator {
     this.cancelKey = options?.cancelKey ?? null;
     this.onMessageId = options?.onMessageId ?? null;
 
+    const indicatorDelayMs = parseInt(
+      process.env.PROGRESS_INDICATOR_DELAY_MS || "2000",
+      10,
+    );
     this.delayTimer = setTimeout(async () => {
       if (this.finished) return;
       await this.sendInitialMessage();
       this.startEditLoop();
-    }, INDICATOR_DELAY_MS);
+    }, indicatorDelayMs);
   }
 
   /**
@@ -137,10 +121,15 @@ export class ProgressIndicator {
    */
   async update(summary: string, options?: { immediate?: boolean }): Promise<void> {
     this.pushEvent(summary);
+    console.debug(`[indicator] update summary="${summary.slice(0, 60)}" messageId=${this.messageId} finished=${this.finished}`);
 
     if (options?.immediate && this.messageId !== null && !this.finished) {
       const now = Date.now();
-      if (now - this.lastImmediateEdit >= IMMEDIATE_DEBOUNCE_MS) {
+      const immediateDebounceMs = parseInt(
+        process.env.PROGRESS_IMMEDIATE_DEBOUNCE_MS || "3000",
+        10,
+      );
+      if (now - this.lastImmediateEdit >= immediateDebounceMs) {
         this.lastImmediateEdit = now;
         await this.editMessage();
       }
@@ -182,8 +171,14 @@ export class ProgressIndicator {
       setTimeout(async () => {
         try {
           await botRef.api.deleteMessage(chatId, msgId);
-        } catch {
-          // Already deleted or permission denied — fine
+          console.debug(`[indicator] deleted msgId=${msgId}`);
+        } catch (err: unknown) {
+          // Log non-trivial errors — "message to delete not found" means it was already
+          // deleted (e.g. by the user), which is fine. Other errors are surfaced.
+          const msg = err instanceof Error ? err.message : String(err);
+          if (!msg.includes("message to delete not found")) {
+            console.warn(`[indicator] deleteMessage failed for msgId=${msgId}: ${msg}`);
+          }
         }
       }, 5000);
     }
@@ -210,7 +205,11 @@ export class ProgressIndicator {
     if (this.lastRawEvent === summary) return; // consecutive duplicate — skip
     this.lastRawEvent = summary;
     this.eventBuffer.push(`[${formatTimestamp()} ${this.modelLabel}] ${summary}`);
-    if (this.eventBuffer.length > EVENT_BUFFER_SIZE) {
+    const eventBufferSize = parseInt(
+      process.env.PROGRESS_EVENT_BUFFER_SIZE || "10",
+      10,
+    );
+    if (this.eventBuffer.length > eventBufferSize) {
       this.eventBuffer.shift();
     }
   }
@@ -218,9 +217,15 @@ export class ProgressIndicator {
   private async sendInitialMessage(): Promise<void> {
     if (this.finished || !this.chatId || !this.bot) return;
 
+    // Capture references before the async sendMessage call so they remain valid
+    // even if finish() → reset() is called while the API request is in-flight.
+    const sendBot = this.bot;
+    const sendChatId = this.chatId;
+
+    console.debug(`[indicator] sendInitialMessage chatId=${sendChatId} threadId=${this.threadId}`);
     const text = this.buildText();
     try {
-      const msg = await this.bot.api.sendMessage(this.chatId, text, {
+      const msg = await sendBot.api.sendMessage(sendChatId, text, {
         ...(this.threadId != null && { message_thread_id: this.threadId }),
         ...(this.cancelKey != null && {
           reply_markup: {
@@ -231,20 +236,36 @@ export class ProgressIndicator {
         }),
       });
       this.messageId = msg.message_id;
+      console.debug(`[indicator] messageId set: ${this.messageId}`);
       this.onMessageId?.(msg.message_id);
-    } catch {
+
+      // Race condition guard: finish() may have been called while sendMessage was
+      // in-flight. In that case messageId was null when finish() ran, so no delete
+      // was scheduled — the message would be orphaned. Clean it up immediately.
+      if (this.finished) {
+        console.debug(`[indicator] orphan cleanup: deleting msgId=${msg.message_id} (finish already called)`);
+        sendBot.api.deleteMessage(sendChatId, msg.message_id).catch((err: unknown) => {
+          console.warn(`[indicator] orphan cleanup deleteMessage failed: ${err instanceof Error ? err.message : String(err)}`);
+        });
+      }
+    } catch (err) {
       // Failed to send — maybe chat is unavailable. Give up silently.
+      console.debug(`[indicator] sendInitialMessage failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
   private startEditLoop(): void {
+    const updateIntervalMs = parseInt(
+      process.env.PROGRESS_UPDATE_INTERVAL_MS || "60000",
+      10,
+    );
     this.editInterval = setInterval(async () => {
       if (this.finished) {
         this.clearTimers();
         return;
       }
       await this.editMessage();
-    }, UPDATE_INTERVAL_MS);
+    }, updateIntervalMs);
   }
 
   /**
@@ -289,8 +310,12 @@ export class ProgressIndicator {
       return `${header}\nThinking...`;
     }
 
+    const eventLineMaxChars = parseInt(
+      process.env.PROGRESS_EVENT_LINE_MAX_CHARS || "80",
+      10,
+    );
     const lines = this.eventBuffer
-      .map((e) => truncate(e, EVENT_LINE_MAX_CHARS))
+      .map((e) => truncate(e, eventLineMaxChars))
       .join("\n");
     return `${header}\n${lines}`;
   }
