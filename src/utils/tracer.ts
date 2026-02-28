@@ -1,20 +1,24 @@
 /**
  * Structured JSONL tracer for observability.
  *
- * Writes fire-and-forget JSON Lines to ~/.claude-relay/logs/YYYY-MM-DD.jsonl.
+ * Writes fire-and-forget JSON Lines to the configured log directory
+ * (default: ~/.claude-relay/logs/YYYY-MM-DD.jsonl).
+ *
  * Disabled by default — enable with OBSERVABILITY_ENABLED=1 in .env.
- * Cleans up log files older than 30 days on first write.
+ * Cleans up log files older than the configured retention period on first write.
+ *
+ * Log path and retention are configured via config/observability.ts so they
+ * can be changed without touching this file.
  */
 
 import { appendFile, mkdir, readdir, stat, unlink } from "fs/promises";
 import { join } from "path";
+import { getObservabilityConfig } from "../../config/observability.ts";
 
-const RELAY_DIR = process.env.RELAY_DIR || join(process.env.HOME || "~", ".claude-relay");
-const LOG_DIR = join(RELAY_DIR, "logs");
-const RETENTION_DAYS = 30;
-const enabled = ["1", "true"].includes(
-  (process.env.OBSERVABILITY_ENABLED || "").toLowerCase()
-);
+const config = getObservabilityConfig();
+const LOG_DIR = config.logDir;
+const RETENTION_DAYS = config.retentionDays;
+const enabled = config.enabled;
 
 let initialized = false;
 
