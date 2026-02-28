@@ -20,12 +20,13 @@ export async function checkSemanticDuplicate(
   threshold = 0.80
 ): Promise<DuplicateCheckResult> {
   try {
+    // Provenance model: duplicate detection is globally scoped — no chat_id filter.
+    // The chatId parameter is retained for API compatibility but intentionally unused.
     const body: Record<string, unknown> = {
       query: content,
       table: "memory",
       match_count: 3,
       match_threshold: threshold,
-      ...(chatId != null && { chat_id: chatId }),
     };
 
     // 5-second timeout via Promise.race

@@ -20,6 +20,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { checkSemanticDuplicate } from "./utils/semanticDuplicateChecker.ts";
+import { isTextDuplicateGoal } from "./utils/goalDuplicateChecker.ts";
 
 /**
  * Detect the appropriate category for a fact stored via [REMEMBER:] tag.
@@ -88,7 +89,7 @@ export async function processMemoryIntents(
     await supabase.from("memory").insert({
       type: "fact",
       content: match[1],
-      chat_id: null,  // null = global, visible to all groups
+      chat_id: chatId ?? null,  // provenance: store originating chat (null = CLI/DM)
       category: detectMemoryCategory(match[1]),
     });
     clean = clean.replace(match[0], "");
@@ -98,6 +99,20 @@ export async function processMemoryIntents(
   for (const match of response.matchAll(
     /\[GOAL:\s*(.+?)(?:\s*\|\s*DEADLINE:\s*(.+?))?\]/gi
   )) {
+    // Text pre-check: query existing goals and run synchronous duplicate detection.
+    // This catches duplicates even when vector embeddings haven't been generated yet
+    // (async Supabase webhook delay) — the race condition that causes double-inserts.
+    const { data: existingGoals } = await supabase
+      .from("memory")
+      .select("id, content")
+      .eq("type", "goal")
+      .limit(100);
+    if (isTextDuplicateGoal(match[1], (existingGoals ?? []) as { id: string; content: string }[])) {
+      console.log(`[memory] Skipping duplicate [GOAL:] (text match): "${match[1]}"`);
+      clean = clean.replace(match[0], "");
+      continue;
+    }
+
     const dupCheck = await checkSemanticDuplicate(supabase, match[1], "goal", chatId ?? null);
     if (dupCheck.isDuplicate) {
       console.log(`[memory] Skipping duplicate goal: "${match[1]}" (similar: "${dupCheck.match?.content}")`);
@@ -108,7 +123,7 @@ export async function processMemoryIntents(
       type: "goal",
       content: match[1],
       deadline: match[2] || null,
-      chat_id: chatId ?? null,
+      chat_id: chatId ?? null,  // provenance: store originating chat; reads are globally scoped
       category: "goal",
     });
     clean = clean.replace(match[0], "");
@@ -169,8 +184,12 @@ export async function getMemoryContext(
       .limit(20);
 
     if (chatId) {
-      factsQuery = factsQuery.or(`chat_id.eq.${chatId},chat_id.is.null`);
-      goalsQuery = goalsQuery.or(`chat_id.eq.${chatId},chat_id.is.null`);
+      // Provenance model: facts are globally visible (chat_id is audit-only).
+      // Exception: date/reminder facts are chat-scoped to avoid cross-group noise in AI context.
+      // Goals are globally scoped: no chat_id filter (unchanged).
+      factsQuery = (factsQuery as any).or(
+        `category.neq.date,category.is.null,and(category.eq.date,chat_id.eq.${chatId})`
+      );
     }
 
     const [factsResult, goalsResult] = await Promise.all([
@@ -263,8 +282,10 @@ export async function getMemoryContextRaw(
       .limit(20);
 
     if (chatId) {
-      factsQuery = factsQuery.or(`chat_id.eq.${chatId},chat_id.is.null`);
-      goalsQuery = goalsQuery.or(`chat_id.eq.${chatId},chat_id.is.null`);
+      // Provenance model: non-date facts globally visible; date facts chat-scoped.
+      factsQuery = (factsQuery as any).or(
+        `category.neq.date,category.is.null,and(category.eq.date,chat_id.eq.${chatId})`
+      );
     }
 
     const [factsResult, goalsResult] = await Promise.all([
@@ -328,10 +349,8 @@ export async function getMemoryFull(
       content.trim().length < 4 ||
       /^[\[\]`\/|,\s\-\.]+$/.test(content.trim());
 
-    const scope = chatId
-      ? `chat_id.eq.${chatId},chat_id.is.null`
-      : undefined;
-
+    // Provenance model: all memory types are globally visible via /memory command.
+    // chat_id is audit trail only — no scope filter applied here.
     const makeQuery = (type: string, filterActive = true) => {
       let q = supabase
         .from("memory")
@@ -339,7 +358,6 @@ export async function getMemoryFull(
         .eq("type", type)
         .order("created_at", { ascending: false });
       if (filterActive) q = q.eq("status", "active");
-      if (scope) q = q.or(scope);
       return q;
     };
 
@@ -429,7 +447,7 @@ export async function getRelevantContext(
           match_count: 3,
           match_threshold: 0.7,
           table: "memory",
-          chat_id: chatId ?? null,
+          // Provenance model: memory search is globally scoped — no chat_id filter.
         },
       }),
     ]);

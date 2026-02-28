@@ -11,12 +11,34 @@
  */
 
 import { describe, test, expect, mock, beforeEach } from "bun:test";
-import {
-  extractAndStore,
-  storeExtractedMemories,
-  type ExtractedMemories,
-} from "./longTermExtractor.ts";
-import {
+
+// ============================================================
+// Module mocks — must be declared before any imports of the
+// modules under test so Bun registers them in the module cache.
+// This is the same pattern used in longTermExtractor.e2e.test.ts.
+// Declaring mocks here also prevents bleed-in from other test
+// files (e.g. longTermExtractor.test.ts) that register their own
+// mock.module("../claude-process.ts") in the shared Bun process.
+// ============================================================
+
+const claudeTextMock = mock(async (_prompt: string, _options?: unknown): Promise<string> => "{}");
+const callOllamaGenerateMock = mock(async (_prompt: string, _options?: unknown): Promise<string> => "{}");
+
+mock.module("../claude-process.ts", () => ({
+  claudeText: claudeTextMock,
+}));
+
+mock.module("../ollama.ts", () => ({
+  callOllamaGenerate: callOllamaGenerateMock,
+}));
+
+
+// Import AFTER mocking so the cached module picks up our mocks.
+// memoryConfirm.ts only imports storeExtractedMemories from longTermExtractor.ts,
+// so importing it after the mock.module calls ensures it also gets the mocked version.
+const { extractAndStore, storeExtractedMemories } =
+  await import("./longTermExtractor.ts");
+const {
   setPendingConfirmation,
   hasPendingConfirmation,
   clearPendingConfirmation,
@@ -24,7 +46,10 @@ import {
   handleMemoryConfirmCallback,
   buildMemoryConfirmMessage,
   sendMemoryConfirmation,
-} from "./memoryConfirm.ts";
+} = await import("./memoryConfirm.ts");
+
+// Type-only import — does not affect module caching
+import type { ExtractedMemories } from "./longTermExtractor.ts";
 
 // ============================================================
 // Shared mocks
@@ -47,43 +72,32 @@ function mockSupabase(insertFn?: ReturnType<typeof mock>) {
 
 describe("E2E-1: extractAndStore — user message only, no assistant response", () => {
   let capturedPrompt: string | null = null;
-  const origFetch = globalThis.fetch;
 
   beforeEach(() => {
     capturedPrompt = null;
-    // Mock Ollama to capture the prompt and return a valid extraction
-    globalThis.fetch = mock((url: string, init?: RequestInit) => {
-      const body = JSON.parse(init?.body as string ?? "{}");
-      capturedPrompt = body.prompt ?? null;
-      return Promise.resolve({
-        ok: true,
-        json: () =>
-          Promise.resolve({
-            response: JSON.stringify({
-              certain: { facts: ["Works at GovTech"] },
-              uncertain: {},
-            }),
-          }),
-      });
-    }) as any;
-  });
+    claudeTextMock.mockReset();
+    callOllamaGenerateMock.mockReset();
 
-  test("restores fetch", () => {
-    globalThis.fetch = origFetch;
+    // Mock claudeText to capture the prompt and return a valid extraction
+    claudeTextMock.mockImplementation(async (prompt: string) => {
+      capturedPrompt = prompt;
+      return JSON.stringify({
+        certain: { facts: ["Works at GovTech"] },
+        uncertain: {},
+      });
+    });
   });
 
   test("extraction prompt contains user message", async () => {
     const sb = mockSupabase();
     await extractAndStore(sb, CHAT_ID, USER_ID, "I work at GovTech");
     expect(capturedPrompt).toContain("I work at GovTech");
-    globalThis.fetch = origFetch;
   });
 
   test("extraction prompt does NOT contain 'Assistant:' label", async () => {
     const sb = mockSupabase();
     await extractAndStore(sb, CHAT_ID, USER_ID, "I work at GovTech");
     expect(capturedPrompt).not.toContain("Assistant:");
-    globalThis.fetch = origFetch;
   });
 
   test("certain items are stored immediately without user confirmation", async () => {
@@ -95,42 +109,28 @@ describe("E2E-1: extractAndStore — user message only, no assistant response", 
     expect(insertFn).toHaveBeenCalledTimes(1);
     const rows = insertFn.mock.calls[0][0];
     expect(rows[0].content).toBe("Works at GovTech");
-    globalThis.fetch = origFetch;
   });
 
   test("returns uncertain items for caller to handle", async () => {
-    globalThis.fetch = mock(() =>
-      Promise.resolve({
-        ok: true,
-        json: () =>
-          Promise.resolve({
-            response: JSON.stringify({
-              certain: {},
-              uncertain: { goals: ["Might want to get fit"] },
-            }),
-          }),
+    claudeTextMock.mockImplementation(async () =>
+      JSON.stringify({
+        certain: {},
+        uncertain: { goals: ["Might want to get fit"] },
       })
-    ) as any;
+    );
 
     const sb = mockSupabase();
     const result = await extractAndStore(sb, CHAT_ID, USER_ID, "maybe I should exercise more");
 
     expect(result.uncertain.goals).toEqual(["Might want to get fit"]);
-    globalThis.fetch = origFetch;
   });
 
   test("returns empty object when extraction yields nothing", async () => {
-    globalThis.fetch = mock(() =>
-      Promise.resolve({
-        ok: true,
-        json: () => Promise.resolve({ response: "{}" }),
-      })
-    ) as any;
+    claudeTextMock.mockImplementation(async () => "{}");
 
     const sb = mockSupabase();
     const result = await extractAndStore(sb, CHAT_ID, USER_ID, "hi there");
     expect(result.uncertain).toEqual({});
-    globalThis.fetch = origFetch;
   });
 });
 
@@ -141,6 +141,8 @@ describe("E2E-1: extractAndStore — user message only, no assistant response", 
 describe("E2E-2: uncertain items require user confirmation before storage", () => {
   beforeEach(() => {
     clearPendingConfirmation(CHAT_ID);
+    claudeTextMock.mockReset();
+    callOllamaGenerateMock.mockReset();
   });
 
   test("uncertain items are NOT stored without confirmation", async () => {
@@ -230,19 +232,13 @@ describe("E2E-2: uncertain items require user confirmation before storage", () =
 
 describe("E2E-3: no confirmation needed for explicit (certain) facts", () => {
   test("certain items stored directly without confirmation message", async () => {
-    const origFetch = globalThis.fetch;
-    globalThis.fetch = mock(() =>
-      Promise.resolve({
-        ok: true,
-        json: () =>
-          Promise.resolve({
-            response: JSON.stringify({
-              certain: { facts: ["Name is John"] },
-              uncertain: {},
-            }),
-          }),
+    claudeTextMock.mockReset();
+    claudeTextMock.mockImplementation(async () =>
+      JSON.stringify({
+        certain: { facts: ["Name is John"] },
+        uncertain: {},
       })
-    ) as any;
+    );
 
     const insertFn = mock(() => Promise.resolve({ data: null, error: null }));
     const sb = mockSupabase(insertFn);
@@ -253,8 +249,6 @@ describe("E2E-3: no confirmation needed for explicit (certain) facts", () => {
     expect(insertFn).toHaveBeenCalledTimes(1);
     // No uncertain items returned
     expect(result.uncertain).toEqual({});
-
-    globalThis.fetch = origFetch;
   });
 });
 

@@ -30,10 +30,6 @@ mock.module("../ollama.ts", () => ({
   callOllamaGenerate: callOllamaGenerateMock,
 }));
 
-// Stub tracer to avoid side effects
-mock.module("../utils/tracer.ts", () => ({
-  trace: () => {},
-}));
 
 // Import AFTER mocking so the module picks up our mocks
 const { extractMemoriesFromExchange } = await import("./longTermExtractor.ts");

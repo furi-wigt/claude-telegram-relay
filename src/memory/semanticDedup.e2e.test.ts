@@ -151,7 +151,8 @@ describe("checkSemanticDuplicate", () => {
     expect(result.match!.similarity).toBe(0.88);
   });
 
-  it("respects chatId scoping — passes chat_id to search body", async () => {
+  it("does not pass chat_id to search body (provenance model: globally scoped)", async () => {
+    // S2: Provenance model — duplicate detection is globally scoped, no chat_id filter.
     const sb = mockSupabaseSearch([], null);
 
     await checkSemanticDuplicate(sb, "test", "fact", 12345);
@@ -160,7 +161,7 @@ describe("checkSemanticDuplicate", () => {
     const callArgs = sb.functions.invoke.mock.calls[0];
     expect(callArgs[0]).toBe("search");
     const body = callArgs[1]?.body;
-    expect(body.chat_id).toBe(12345);
+    expect(body).not.toHaveProperty("chat_id");
   });
 
   it("omits chat_id from search body when chatId is null/undefined", async () => {
@@ -262,8 +263,16 @@ describe("processMemoryIntents with semantic dedup", () => {
     const { processMemoryIntents } = await import("../memory.ts");
 
     const insertFn = mock(() => Promise.resolve({ data: null, error: null }));
+    // Chain must support both select (text pre-check) and insert paths.
+    // Empty existing goals so text pre-check passes through to semantic check.
+    const chain: any = {
+      select: mock(() => chain),
+      eq:     mock(() => chain),
+      limit:  mock(() => Promise.resolve({ data: [], error: null })),
+      insert: insertFn,
+    };
     const sb = {
-      from: mock(() => ({ insert: insertFn })),
+      from: mock(() => chain),
       functions: {
         invoke: mock(async () => ({
           data: [{ id: "dup-goal", content: "Ship API v2", type: "goal", similarity: 0.90 }],
@@ -284,8 +293,16 @@ describe("processMemoryIntents with semantic dedup", () => {
     const { processMemoryIntents } = await import("../memory.ts");
 
     const insertFn = mock(() => Promise.resolve({ data: null, error: null }));
+    // Chain must support both select (text pre-check) and insert paths.
+    // Empty existing goals so text pre-check passes through to semantic check.
+    const chain: any = {
+      select: mock(() => chain),
+      eq:     mock(() => chain),
+      limit:  mock(() => Promise.resolve({ data: [], error: null })),
+      insert: insertFn,
+    };
     const sb = {
-      from: mock(() => ({ insert: insertFn })),
+      from: mock(() => chain),
       functions: {
         invoke: mock(async () => {
           throw new Error("Edge Function down");
