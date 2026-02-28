@@ -1,18 +1,25 @@
 /**
- * Run-once-per-day guard for scheduled routines.
+ * Run-once guard for scheduled routines.
  *
- * Prevents a routine from running more than once per calendar day, which
- * is necessary when autorestart:true is set in PM2 — on crash, PM2 restarts
- * the process immediately, but we only want the routine to send once per day.
+ * Two guard strategies:
+ *
+ * shouldSkipToday(file) — calendar-day guard.
+ *   Blocks if the routine already ran today (same YYYY-MM-DD in local timezone).
+ *   Use for morning-summary: safe because it is never triggered manually.
+ *
+ * shouldSkipRecently(file, cooldownHours) — time-based cooldown.
+ *   Blocks only if the routine ran within the last N hours.
+ *   Use for night-summary: allows a daytime manual run without blocking
+ *   the scheduled 11 PM cron run (2h cooldown clears well before 23:00).
  *
  * Usage:
- *   const LAST_RUN_FILE = join(import.meta.dir, "../../logs/morning-summary.lastrun");
- *   if (shouldSkipToday(LAST_RUN_FILE)) { process.exit(0); }
+ *   const LAST_RUN_FILE = join(import.meta.dir, "../../logs/night-summary.lastrun");
+ *   if (shouldSkipRecently(LAST_RUN_FILE, 2)) { process.exit(0); }
  *   // ... run the routine ...
  *   markRanToday(LAST_RUN_FILE);
  */
 
-import { readFileSync, writeFileSync } from "fs";
+import { readFileSync, statSync, writeFileSync } from "fs";
 
 /**
  * YYYY-MM-DD string for the current day in the configured local timezone.
@@ -39,6 +46,26 @@ export function shouldSkipToday(lastRunFile: string): boolean {
     return lastRun === todayDate();
   } catch {
     // File doesn't exist — first run of the day, proceed
+    return false;
+  }
+}
+
+/**
+ * Returns true if the routine ran within the last `cooldownHours` hours.
+ * Returns false if the lastrun file does not exist or is older than the cooldown.
+ *
+ * Use instead of shouldSkipToday() for routines that have a fixed schedule
+ * but may also be triggered manually (e.g. night-summary at 23:00).
+ * A 2-hour cooldown prevents PM2 crash-restart duplicates while allowing
+ * a 3 PM manual run to not block the 11 PM scheduled cron.
+ */
+export function shouldSkipRecently(lastRunFile: string, cooldownHours: number): boolean {
+  try {
+    const { mtimeMs } = statSync(lastRunFile);
+    const ageMs = Date.now() - mtimeMs;
+    return ageMs < cooldownHours * 60 * 60 * 1000;
+  } catch {
+    // File doesn't exist — first run, proceed
     return false;
   }
 }

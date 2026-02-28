@@ -28,7 +28,7 @@ import { callOllama } from "../src/fallback.ts";
 import { sendAndRecord } from "../src/utils/routineMessage.ts";
 import { GROUPS, validateGroup } from "../src/config/groups.ts";
 import { USER_NAME, USER_TIMEZONE } from "../src/config/userConfig.ts";
-import { shouldSkipToday, markRanToday } from "../src/routines/runOnceGuard.ts";
+import { shouldSkipRecently, markRanToday } from "../src/routines/runOnceGuard.ts";
 
 const LAST_RUN_FILE = join(import.meta.dir, "../logs/night-summary.lastrun");
 
@@ -427,8 +427,8 @@ async function buildSummary(): Promise<{ summary: string; provider: "claude" | "
 async function main() {
   console.log("Running Night Summary (Claude Haiku, Ollama fallback)...");
 
-  if (shouldSkipToday(LAST_RUN_FILE)) {
-    console.log("[night-summary] Already ran today, skipping.");
+  if (shouldSkipRecently(LAST_RUN_FILE, 2)) {
+    console.log("[night-summary] Already ran within the last 2 hours, skipping.");
     process.exit(0);
   }
 
