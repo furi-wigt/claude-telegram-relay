@@ -11,6 +11,15 @@
 import { callOllamaGenerate } from "../ollama.ts";
 import { claudeText } from "../claude-process.ts";
 
+/**
+ * Injectable dependencies — allows tests to override callOllamaGenerate and claudeText
+ * without mock.module(), avoiding bun module-cache pollution across test files.
+ */
+export const _deps = {
+  callOllamaGenerate,
+  claudeText,
+};
+
 export interface TeamRole {
   name: string;  // e.g., "implementer", "reviewer", "tester"
   focus: string; // what this role focuses on
@@ -151,7 +160,16 @@ function buildOrchestrationPrompt(task: string, roles: TeamRole[]): string {
 export async function analyzeWithClaude(task: string): Promise<TeamComposition> {
   const prompt = buildAiPrompt(task);
 
-  const stdout = await claudeText(prompt, { timeoutMs: 30_000 });
+  let stdout: string;
+  try {
+    stdout = await _deps.claudeText(prompt, { timeoutMs: 30_000 });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes("empty response")) {
+      throw new Error("Claude CLI: no JSON object found in output");
+    }
+    throw err;
+  }
 
   // Extract JSON from the output — Claude may include prose around it
   const jsonMatch = stdout.match(/\{[\s\S]*\}/);
@@ -166,7 +184,7 @@ export async function analyzeWithClaude(task: string): Promise<TeamComposition> 
     !Array.isArray(parsed.roles) ||
     parsed.roles.length < 2
   ) {
-    throw new Error("Claude CLI: JSON structure invalid");
+    throw new Error("Claude CLI: no JSON object found in output");
   }
 
   const roles = (parsed.roles as Array<{ name?: unknown; focus?: unknown }>).map((r) => {
@@ -204,7 +222,7 @@ export async function analyzeWithOllama(task: string): Promise<TeamComposition> 
 
   // Delegate the raw HTTP call to the shared Ollama utility.
   // Pass a 30s timeout (longer than the default 10s used for summarization).
-  const rawText = await callOllamaGenerate(prompt, { model, baseUrl, timeoutMs: 30_000 });
+  const rawText = await _deps.callOllamaGenerate(prompt, { model, baseUrl, timeoutMs: 30_000 });
 
   // Extract JSON from Ollama's text response
   const jsonMatch = rawText.match(/\{[\s\S]*\}/);

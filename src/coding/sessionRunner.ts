@@ -182,6 +182,24 @@ export class SessionRunner {
     // Read stderr in background
     this.drainStderr(proc);
 
+    // ── Idle timer ───────────────────────────────────────────────────────────
+    // Kills the session if no stdout arrives for CLAUDE_IDLE_TIMEOUT_MS.
+    // Also reset explicitly on tool_use events so tool execution time doesn't
+    // count against the window.
+    // Read at call time (not module level) so test env-var overrides work.
+    const CLAUDE_IDLE_TIMEOUT_MS = parseInt(process.env.CLAUDE_IDLE_TIMEOUT_MS || "300000", 10);
+    let idleTimerId: ReturnType<typeof setTimeout> | undefined;
+
+    const resetIdleTimer = (): void => {
+      clearTimeout(idleTimerId);
+      idleTimerId = setTimeout(() => {
+        this.kill();
+        callbacks.onError?.(new Error(`sessionRunner: idle timeout after ${CLAUDE_IDLE_TIMEOUT_MS}ms`));
+      }, CLAUDE_IDLE_TIMEOUT_MS);
+    };
+
+    resetIdleTimer(); // Start immediately on process spawn
+
     // Parse stdout NDJSON stream line by line
     try {
       const reader = proc.stdout.getReader();
@@ -190,7 +208,11 @@ export class SessionRunner {
 
       while (true) {
         const { done, value } = await reader.read();
-        if (done) break;
+        if (done) {
+          clearTimeout(idleTimerId); // stdout closed — don't fire while waiting for proc.exited
+          break;
+        }
+        resetIdleTimer(); // Reset on every raw stdout chunk — genuine activity proof
 
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split("\n");
@@ -256,6 +278,9 @@ export class SessionRunner {
               }
             },
           };
+          if (event.type === "tool_use") {
+            resetIdleTimer(); // Tool invocation — reset idle window so execution time doesn't count
+          }
           SessionRunner.handleEvent(event, ctx);
         }
       }
@@ -284,10 +309,13 @@ export class SessionRunner {
         }
       }
     } catch (err) {
+      clearTimeout(idleTimerId);
       if (!this.killed) {
         callbacks.onError?.(err instanceof Error ? err : new Error(String(err)));
         return;
       }
+    } finally {
+      clearTimeout(idleTimerId);
     }
 
     // Stop inbox polling before waiting for process exit
@@ -382,19 +410,34 @@ export class SessionRunner {
             filesChanged: [...new Set(filesChanged)],
           });
         }
-        // TeamCreate is emitted as a tool_use block INSIDE an assistant message,
-        // not as a top-level tool_use event. Scan content blocks for it.
-        if (ctx.useAgentTeam && ctx.setTeamName) {
-          const message = event.message as { content?: Array<Record<string, unknown>> } | undefined;
-          const blocks = message?.content ?? [];
-          for (const block of blocks) {
-            if (block.type === "tool_use" && block.name === "TeamCreate") {
-              const input = (block.input as Record<string, unknown>) || {};
-              const teamNameInput = (input.team_name as string) || "";
-              if (teamNameInput) {
-                ctx.setTeamName(teamNameInput);
-              }
-              break;
+        // Tool-use blocks are embedded inside assistant.message.content in
+        // stream-json mode (-p flag). Scan content blocks for AskUserQuestion
+        // and TeamCreate — top-level tool_use events never fire for these.
+        const message = event.message as { content?: Array<Record<string, unknown>> } | undefined;
+        const blocks = message?.content ?? [];
+        for (const block of blocks) {
+          if (block.type !== "tool_use") continue;
+          const toolName = block.name as string;
+          const toolId = (block.id as string) || "";
+          const input = (block.input as Record<string, unknown>) || {};
+
+          if (toolName === "AskUserQuestion") {
+            // Schema: input.questions[] array — each item has .question and .options[].label
+            const rawQs = (input.questions as Array<Record<string, unknown>>) ?? [];
+            const firstQ = (rawQs[0] ?? {}) as Record<string, unknown>;
+            const optLabels = ((firstQ.options as Array<Record<string, unknown>>) ?? [])
+              .map((o) => (o.label as string) || "");
+            callbacks.onQuestion?.({
+              toolUseId: toolId,
+              questionText: (firstQ.question as string) || "",
+              options: optLabels.length > 0 ? optLabels : undefined,
+            });
+          }
+
+          if (toolName === "TeamCreate" && ctx.useAgentTeam && ctx.setTeamName) {
+            const teamNameInput = (input.team_name as string) || "";
+            if (teamNameInput) {
+              ctx.setTeamName(teamNameInput);
             }
           }
         }
@@ -407,11 +450,16 @@ export class SessionRunner {
         const input = (event.input as Record<string, unknown>) || {};
 
         // AskUserQuestion detection
+        // Schema: input.questions[] array — each item has .question and .options[].label
         if (toolName === "AskUserQuestion") {
+          const rawQs = (input.questions as Array<Record<string, unknown>>) ?? [];
+          const firstQ = (rawQs[0] ?? {}) as Record<string, unknown>;
+          const optLabels = ((firstQ.options as Array<Record<string, unknown>>) ?? [])
+            .map((o) => (o.label as string) || "");
           callbacks.onQuestion?.({
             toolUseId: toolId,
-            questionText: (input.question as string) || "",
-            options: input.options as string[] | undefined,
+            questionText: (firstQ.question as string) || "",
+            options: optLabels.length > 0 ? optLabels : undefined,
           });
           return;
         }

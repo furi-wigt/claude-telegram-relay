@@ -335,7 +335,17 @@ describe("SessionRunner handleEvent", () => {
         type: "tool_use",
         name: "AskUserQuestion",
         id: "toolu_1",
-        input: { question: "Pick a framework?", options: ["React", "Vue", "Svelte"] },
+        input: {
+          questions: [{
+            question: "Pick a framework?",
+            header: "FW",
+            options: [
+              { label: "React", description: "Popular UI library" },
+              { label: "Vue", description: "Progressive framework" },
+              { label: "Svelte", description: "Compiled framework" },
+            ],
+          }],
+        },
       }, ctx);
 
       expect(captured).not.toBeNull();
@@ -355,7 +365,9 @@ describe("SessionRunner handleEvent", () => {
         type: "tool_use",
         name: "AskUserQuestion",
         id: "toolu_2",
-        input: { question: "What should we name this?" },
+        input: {
+          questions: [{ question: "What should we name this?", header: "Name", options: [] }],
+        },
       }, ctx);
 
       expect(captured).not.toBeNull();
@@ -860,7 +872,7 @@ describe("SessionRunner handleEvent", () => {
         type: "tool_use",
         name: "AskUserQuestion",
         id: "toolu_empty",
-        input: { question: "" },
+        input: { questions: [{ question: "", header: "H", options: [] }] },
       }, ctx);
 
       expect(captured).not.toBeNull();
@@ -878,7 +890,7 @@ describe("SessionRunner handleEvent", () => {
       callHandleEvent(runner, {
         type: "tool_use",
         name: "AskUserQuestion",
-        input: { question: "No id here?" },
+        input: { questions: [{ question: "No id here?", header: "H", options: [] }] },
       }, ctx);
 
       expect(captured).not.toBeNull();
@@ -899,7 +911,7 @@ describe("SessionRunner handleEvent", () => {
         type: "tool_use",
         name: "AskUserQuestion",
         id: "toolu_noprogress",
-        input: { question: "Skip progress?" },
+        input: { questions: [{ question: "Skip progress?", header: "H", options: [] }] },
       }, ctx);
 
       // AskUserQuestion returns early; onProgress must not be called
@@ -1406,6 +1418,133 @@ describe("SessionRunner handleEvent", () => {
       }, ctx);
 
       expect(capturedTeamName).toBe("");
+    });
+  });
+
+  // Regression: Claude Code emits AskUserQuestion as a tool_use block INSIDE
+  // an assistant message in -p / stream-json mode, not as a top-level
+  // tool_use event. The top-level case never fires; we must scan
+  // assistant.message.content blocks.
+  describe("AskUserQuestion embedded in assistant.message.content (regression)", () => {
+    test("fires onQuestion when AskUserQuestion is embedded in assistant content with options", () => {
+      let captured: { toolUseId: string; questionText: string; options?: string[] } | null = null;
+      const ctx = createEventContext({
+        onQuestion: (q) => { captured = q; },
+      });
+
+      callHandleEvent(runner, {
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "text", text: "I need to ask you something." },
+            {
+              type: "tool_use",
+              id: "toolu_ask_01",
+              name: "AskUserQuestion",
+              input: {
+                questions: [{
+                  question: "Which framework should I use?",
+                  header: "FW",
+                  options: [
+                    { label: "React", description: "Popular UI library" },
+                    { label: "Vue", description: "Progressive framework" },
+                    { label: "Svelte", description: "Compiled framework" },
+                  ],
+                }],
+              },
+            },
+          ],
+        },
+      }, ctx);
+
+      expect(captured).not.toBeNull();
+      expect(captured!.toolUseId).toBe("toolu_ask_01");
+      expect(captured!.questionText).toBe("Which framework should I use?");
+      expect(captured!.options).toEqual(["React", "Vue", "Svelte"]);
+    });
+
+    test("fires onQuestion when AskUserQuestion is embedded without options", () => {
+      let captured: { toolUseId: string; questionText: string; options?: string[] } | null = null;
+      const ctx = createEventContext({
+        onQuestion: (q) => { captured = q; },
+      });
+
+      callHandleEvent(runner, {
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [
+            {
+              type: "tool_use",
+              id: "toolu_ask_02",
+              name: "AskUserQuestion",
+              input: {
+                questions: [{ question: "What name should I use for this file?", header: "Name", options: [] }],
+              },
+            },
+          ],
+        },
+      }, ctx);
+
+      expect(captured).not.toBeNull();
+      expect(captured!.toolUseId).toBe("toolu_ask_02");
+      expect(captured!.questionText).toBe("What name should I use for this file?");
+      expect(captured!.options).toBeUndefined();
+    });
+
+    test("does NOT fire onQuestion for text-only assistant messages", () => {
+      let questionFired = false;
+      const ctx = createEventContext({
+        onQuestion: () => { questionFired = true; },
+      });
+
+      callHandleEvent(runner, {
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "text", text: "Just a regular message, no question." },
+          ],
+        },
+      }, ctx);
+
+      expect(questionFired).toBe(false);
+    });
+
+    test("still fires onProgress (assistant text) alongside onQuestion", () => {
+      const progressEvents: string[] = [];
+      let questionFired = false;
+      const ctx = createEventContext({
+        onProgress: (e) => { progressEvents.push(e.summary); },
+        onQuestion: () => { questionFired = true; },
+      });
+
+      callHandleEvent(runner, {
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "text", text: "I need some input from you." },
+            {
+              type: "tool_use",
+              id: "toolu_ask_03",
+              name: "AskUserQuestion",
+              input: {
+                questions: [{
+                  question: "Proceed?",
+                  header: "Proceed",
+                  options: [{ label: "Yes", description: "yes" }, { label: "No", description: "no" }],
+                }],
+              },
+            },
+          ],
+        },
+      }, ctx);
+
+      expect(questionFired).toBe(true);
+      expect(progressEvents.length).toBeGreaterThan(0);
+      expect(progressEvents[0]).toContain("I need some input from you.");
     });
   });
 });

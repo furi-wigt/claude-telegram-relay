@@ -1,11 +1,19 @@
-import { describe, test, expect, mock, spyOn, afterEach } from "bun:test";
+import { describe, test, expect, mock, spyOn, beforeEach, afterEach } from "bun:test";
 import {
   analyzeTaskForTeam,
   analyzeTaskHardcoded,
   analyzeWithClaude,
   analyzeWithOllama,
+  _deps,
 } from "./teamAnalyzer.ts";
 import * as teamAnalyzer from "./teamAnalyzer.ts";
+
+// ---------------------------------------------------------------------------
+// Shared mock for callOllamaGenerate — injected via _deps to avoid
+// mock.module("../ollama.ts") which would pollute bun's module cache and break
+// other test files (e.g. routineMessage.test.ts) that need the real ollama.ts.
+// ---------------------------------------------------------------------------
+const mockCallOllamaGenerate = mock(async (_prompt: string, _opts?: unknown): Promise<string> => "");
 
 // ---------------------------------------------------------------------------
 // Hardcoded fallback tests (analyzeTaskHardcoded — synchronous, always available)
@@ -419,17 +427,12 @@ describe("analyzeTaskForTeam — cascade fallback", () => {
   });
 
   test("cascade: falls back to hardcoded when Ollama returns structurally invalid JSON (roles: {})", async () => {
-    // Claude fails, Ollama returns valid JSON but wrong structure → throws → falls back to hardcoded
+    // Claude fails, Ollama returns valid JSON but wrong structure → throws → falls back to hardcoded.
+    // Use _deps injection (not globalThis.fetch) so the test is independent of whether callOllamaGenerate
+    // is the real implementation or a cached mock from another test file.
     spyOn(teamAnalyzer, "analyzeWithClaude").mockRejectedValue(new Error("no claude"));
-    // Let analyzeWithOllama run with mocked fetch returning malformed structure
-    const originalFetch = globalThis.fetch;
     const malformed = JSON.stringify({ strategy: "s", roles: {} });
-    globalThis.fetch = mock(async () =>
-      new Response(JSON.stringify({ response: malformed }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      })
-    ) as typeof fetch;
+    _deps.callOllamaGenerate = mock(async () => malformed) as any;
 
     try {
       const result = await analyzeTaskForTeam("implement a feature");
@@ -437,7 +440,7 @@ describe("analyzeTaskForTeam — cascade fallback", () => {
       const roleNames = result.roles.map((r) => r.name);
       expect(roleNames).toContain("implementer");
     } finally {
-      globalThis.fetch = originalFetch;
+      _deps.callOllamaGenerate = mockCallOllamaGenerate as any;
     }
   });
 });
@@ -446,98 +449,74 @@ describe("analyzeTaskForTeam — cascade fallback", () => {
 // analyzeWithClaude — unit tests (no live Claude)
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// analyzeWithClaude — unit tests (mocked claudeText via _deps)
+//
+// These tests inject mocks through _deps.claudeText instead of relying on
+// spawn mocking or CLAUDE_BINARY env vars. This makes them independent of:
+//   - claude-process.idle-timeout.test.ts / vision.test.ts mocking ./spawn
+//   - longTermExtractor.test.ts mocking ../claude-process.ts at module level
+//     (which would make _deps.claudeText stale after mock.restore())
+//
+// Pattern: save origClaudeText, set _deps.claudeText to a custom mock,
+// restore in finally. No module-level mocking needed.
+// ---------------------------------------------------------------------------
+
 describe("analyzeWithClaude — JSON parsing", () => {
+  let origClaudeText: typeof _deps.claudeText;
+
+  beforeEach(() => {
+    origClaudeText = _deps.claudeText;
+  });
   afterEach(() => {
-    mock.restore();
+    _deps.claudeText = origClaudeText;
   });
 
   test("throws when Claude binary is not found (bad binary path)", async () => {
-    // Point at a non-existent binary — execFile will reject immediately
-    const origBinary = process.env.CLAUDE_BINARY;
-    process.env.CLAUDE_BINARY = "/nonexistent/claude-binary-path";
-    try {
-      await expect(analyzeWithClaude("implement a feature")).rejects.toThrow();
-    } finally {
-      if (origBinary === undefined) {
-        delete process.env.CLAUDE_BINARY;
-      } else {
-        process.env.CLAUDE_BINARY = origBinary;
-      }
-    }
+    // Simulate spawn failing with a binary-not-found error.
+    // claudeText throws non-"empty response" → analyzeWithClaude re-throws it.
+    _deps.claudeText = mock(async () => {
+      throw new Error("claudeText: failed to spawn '/nonexistent/claude-binary-path'");
+    }) as any;
+    await expect(analyzeWithClaude("implement a feature")).rejects.toThrow();
   });
 
   test("throws when JSON is missing from Claude output", async () => {
-    // Use `true` as the binary: exits 0 with empty stdout — no JSON found
-    const origBinary = process.env.CLAUDE_BINARY;
-    process.env.CLAUDE_BINARY = "true";
-    try {
-      await expect(analyzeWithClaude("no-json-task")).rejects.toThrow("no JSON object found");
-    } finally {
-      if (origBinary === undefined) {
-        delete process.env.CLAUDE_BINARY;
-      } else {
-        process.env.CLAUDE_BINARY = origBinary;
-      }
-    }
+    // Simulate claudeText throwing "empty response" (what happens when stdout is empty).
+    // analyzeWithClaude converts this to "no JSON object found".
+    _deps.claudeText = mock(async () => {
+      throw new Error("claudeText: empty response");
+    }) as any;
+    await expect(analyzeWithClaude("no-json-task")).rejects.toThrow("no JSON object found");
   });
 
   test("is an async function returning a Promise", () => {
-    // Use `true` as the binary: exits 0 with empty stdout, causing immediate rejection.
-    const origBinary = process.env.CLAUDE_BINARY;
-    process.env.CLAUDE_BINARY = "true";
+    _deps.claudeText = mock(async () => {
+      throw new Error("claudeText: empty response");
+    }) as any;
     const result = analyzeWithClaude("test");
     expect(result).toBeInstanceOf(Promise);
-    // Suppress the expected rejection (no JSON in empty output)
-    return result.catch(() => {}).finally(() => {
-      if (origBinary === undefined) {
-        delete process.env.CLAUDE_BINARY;
-      } else {
-        process.env.CLAUDE_BINARY = origBinary;
-      }
-    });
+    return result.catch(() => {});
   });
 
   test("parses valid JSON from Claude stdout successfully", async () => {
-    // Use a binary that outputs valid JSON so we can test the happy path.
-    // We'll use node -e to print the expected JSON.
-    const origBinary = process.env.CLAUDE_BINARY;
-    // Use 'node' with -e flag as the "binary" — but execFile passes all args after binary as args.
-    // Instead use a shell wrapper: /bin/sh -c 'echo ...'
-    // Simplest: point at a script that prints JSON.
-    // Since the test is in Bun, use: bun -e "..."
-    // Actually, execFile(binary, [arg1, arg2, ...]) passes the prompt as args[0].
-    // So binary must be a program that ignores its args and prints JSON to stdout.
-    // Use `printf` which ignores extra args on some systems — too fragile.
-    // Best: write a temp script using Bun's built-in.
-    const { writeFileSync, chmodSync, unlinkSync } = await import("node:fs");
-    const { tmpdir } = await import("node:os");
-    const { join } = await import("node:path");
-    const scriptPath = join(tmpdir(), `team-analyzer-test-${Date.now()}.sh`);
-    const json = JSON.stringify({
+    // Override _deps.claudeText to return valid JSON directly.
+    // Bypasses spawn/module-cache issues from other test files entirely.
+    const jsonStr = JSON.stringify({
       strategy: "test strategy",
       roles: [
         { name: "builder", focus: "build the thing" },
         { name: "checker", focus: "check the thing" },
       ],
     });
-    writeFileSync(scriptPath, `#!/bin/sh\necho '${json}'`);
-    chmodSync(scriptPath, 0o755);
-    process.env.CLAUDE_BINARY = scriptPath;
-    try {
-      const result = await analyzeWithClaude("test task");
-      expect(result.strategy).toBe("test strategy");
-      expect(result.roles).toHaveLength(2);
-      expect(result.roles[0].name).toBe("builder");
-      expect(result.orchestrationPrompt).toMatch(/^Create an agent team/);
-      expect(result.orchestrationPrompt).toContain("test task");
-    } finally {
-      unlinkSync(scriptPath);
-      if (origBinary === undefined) {
-        delete process.env.CLAUDE_BINARY;
-      } else {
-        process.env.CLAUDE_BINARY = origBinary;
-      }
-    }
+    _deps.claudeText = mock(async () => jsonStr) as any;
+
+    const result = await analyzeWithClaude("test task");
+    expect(result.strategy).toBe("test strategy");
+    expect(result.roles).toHaveLength(2);
+    expect(result.roles[0].name).toBe("builder");
+    expect(result.orchestrationPrompt).toMatch(/^Create an agent team/);
+    expect(result.orchestrationPrompt).toContain("test task");
   });
 });
 
@@ -545,73 +524,56 @@ describe("analyzeWithClaude — JSON parsing", () => {
 // analyzeWithOllama — unit tests (no live Ollama)
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// analyzeWithOllama — unit tests (mocked callOllamaGenerate via _deps)
+//
+// These tests inject mockCallOllamaGenerate through _deps.callOllamaGenerate
+// instead of mocking globalThis.fetch. This makes them independent of whether
+// callOllamaGenerate is the real implementation or a cached mock from another
+// test file (e.g. routineMessage.test.ts mocks ../ollama.ts at module level,
+// which bleeds into this file via bun's shared module cache when tests run
+// together, making globalThis.fetch mocking ineffective).
+// ---------------------------------------------------------------------------
+
 describe("analyzeWithOllama — connectivity", () => {
+  beforeEach(() => {
+    mockCallOllamaGenerate.mockReset();
+    _deps.callOllamaGenerate = mockCallOllamaGenerate as any;
+  });
+
   afterEach(() => {
     mock.restore();
   });
 
-  test("throws when Ollama base URL is unreachable", async () => {
-    // Point at a port that is guaranteed to refuse connections fast
-    const origUrl = process.env.OLLAMA_URL;
-    process.env.OLLAMA_URL = "http://127.0.0.1:1"; // port 1 is always refused
-    try {
-      await expect(analyzeWithOllama("test task")).rejects.toThrow();
-    } finally {
-      if (origUrl === undefined) {
-        delete process.env.OLLAMA_URL;
-      } else {
-        process.env.OLLAMA_URL = origUrl;
-      }
-    }
+  test("throws when Ollama is unreachable (network error)", async () => {
+    mockCallOllamaGenerate.mockRejectedValue(
+      new Error("connect ECONNREFUSED 127.0.0.1:1")
+    );
+    await expect(analyzeWithOllama("test task")).rejects.toThrow();
   });
 
   test("is an async function returning a Promise", () => {
-    const origUrl = process.env.OLLAMA_URL;
-    process.env.OLLAMA_URL = "http://127.0.0.1:1";
+    mockCallOllamaGenerate.mockRejectedValue(new Error("ECONNREFUSED"));
     const result = analyzeWithOllama("test");
     expect(result).toBeInstanceOf(Promise);
-    return result.catch(() => {}).finally(() => {
-      if (origUrl === undefined) {
-        delete process.env.OLLAMA_URL;
-      } else {
-        process.env.OLLAMA_URL = origUrl;
-      }
-    });
+    return result.catch(() => {});
   });
 
   test("throws on non-200 HTTP response from Ollama", async () => {
-    // Use a URL that responds but with a non-200 status.
-    // We can't easily set up a local HTTP server here, so we test with
-    // a real HTTP endpoint that returns an error status.
-    // Instead, mock fetch to return a 500 status.
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = mock(async () =>
-      new Response(null, { status: 500, statusText: "Internal Server Error" })
-    ) as typeof fetch;
-    try {
-      await expect(analyzeWithOllama("test task")).rejects.toThrow("HTTP 500");
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
+    // callOllamaGenerate throws this error when response.ok is false
+    mockCallOllamaGenerate.mockRejectedValue(
+      new Error("Ollama API error: HTTP 500")
+    );
+    await expect(analyzeWithOllama("test task")).rejects.toThrow("HTTP 500");
   });
 
   test("throws on valid HTTP response with missing JSON structure", async () => {
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = mock(async () =>
-      new Response(JSON.stringify({ response: "No JSON object here, just text." }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      })
-    ) as typeof fetch;
-    try {
-      await expect(analyzeWithOllama("test task")).rejects.toThrow("no JSON object found");
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
+    // callOllamaGenerate returns the raw .response text; analyzeWithOllama parses JSON from it
+    mockCallOllamaGenerate.mockResolvedValue("No JSON object here, just text.");
+    await expect(analyzeWithOllama("test task")).rejects.toThrow("no JSON object found");
   });
 
   test("parses valid JSON from Ollama response successfully", async () => {
-    const originalFetch = globalThis.fetch;
     const json = JSON.stringify({
       strategy: "ollama strategy",
       roles: [
@@ -619,100 +581,48 @@ describe("analyzeWithOllama — connectivity", () => {
         { name: "qa", focus: "quality check" },
       ],
     });
-    globalThis.fetch = mock(async () =>
-      new Response(JSON.stringify({ response: json }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      })
-    ) as typeof fetch;
-    try {
-      const result = await analyzeWithOllama("build something");
-      expect(result.strategy).toBe("ollama strategy");
-      expect(result.roles).toHaveLength(2);
-      expect(result.roles[0].name).toBe("coder");
-      expect(result.orchestrationPrompt).toMatch(/^Create an agent team/);
-      expect(result.orchestrationPrompt).toContain("build something");
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
+    mockCallOllamaGenerate.mockResolvedValue(json);
+    const result = await analyzeWithOllama("build something");
+    expect(result.strategy).toBe("ollama strategy");
+    expect(result.roles).toHaveLength(2);
+    expect(result.roles[0].name).toBe("coder");
+    expect(result.orchestrationPrompt).toMatch(/^Create an agent team/);
+    expect(result.orchestrationPrompt).toContain("build something");
   });
 
   test("throws 'JSON structure invalid' when roles is an object {} instead of array", async () => {
-    const originalFetch = globalThis.fetch;
     const malformed = JSON.stringify({ strategy: "some strategy", roles: {} });
-    globalThis.fetch = mock(async () =>
-      new Response(JSON.stringify({ response: malformed }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      })
-    ) as typeof fetch;
-    try {
-      await expect(analyzeWithOllama("test task")).rejects.toThrow("JSON structure invalid");
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
+    mockCallOllamaGenerate.mockResolvedValue(malformed);
+    await expect(analyzeWithOllama("test task")).rejects.toThrow("JSON structure invalid");
   });
 
   test("throws 'JSON structure invalid' when roles array has only 1 entry (< 2)", async () => {
-    const originalFetch = globalThis.fetch;
     const malformed = JSON.stringify({
       strategy: "some strategy",
       roles: [{ name: "solo", focus: "do everything" }],
     });
-    globalThis.fetch = mock(async () =>
-      new Response(JSON.stringify({ response: malformed }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      })
-    ) as typeof fetch;
-    try {
-      await expect(analyzeWithOllama("test task")).rejects.toThrow("JSON structure invalid");
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
+    mockCallOllamaGenerate.mockResolvedValue(malformed);
+    await expect(analyzeWithOllama("test task")).rejects.toThrow("JSON structure invalid");
   });
 
   test("throws 'JSON structure invalid' when strategy is missing", async () => {
-    const originalFetch = globalThis.fetch;
     const malformed = JSON.stringify({
       roles: [{ name: "a", focus: "do a" }, { name: "b", focus: "do b" }],
-      // no strategy field
     });
-    globalThis.fetch = mock(async () =>
-      new Response(JSON.stringify({ response: malformed }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      })
-    ) as typeof fetch;
-    try {
-      await expect(analyzeWithOllama("test task")).rejects.toThrow("JSON structure invalid");
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
+    mockCallOllamaGenerate.mockResolvedValue(malformed);
+    await expect(analyzeWithOllama("test task")).rejects.toThrow("JSON structure invalid");
   });
 
   test("throws 'role missing name or focus' when role objects lack required fields", async () => {
-    const originalFetch = globalThis.fetch;
-    // Valid array length, but role objects are {} instead of {name, focus}
     const malformed = JSON.stringify({
       strategy: "some strategy",
       roles: [{}, {}],
     });
-    globalThis.fetch = mock(async () =>
-      new Response(JSON.stringify({ response: malformed }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      })
-    ) as typeof fetch;
-    try {
-      await expect(analyzeWithOllama("test task")).rejects.toThrow("role missing name or focus");
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
+    mockCallOllamaGenerate.mockResolvedValue(malformed);
+    await expect(analyzeWithOllama("test task")).rejects.toThrow("role missing name or focus");
   });
 
   test("throws 'role missing name or focus' when role has name but no focus", async () => {
-    const originalFetch = globalThis.fetch;
     const malformed = JSON.stringify({
       strategy: "strategy",
       roles: [
@@ -720,17 +630,8 @@ describe("analyzeWithOllama — connectivity", () => {
         { name: "reviewer", focus: "review code" },
       ],
     });
-    globalThis.fetch = mock(async () =>
-      new Response(JSON.stringify({ response: malformed }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      })
-    ) as typeof fetch;
-    try {
-      await expect(analyzeWithOllama("test task")).rejects.toThrow("role missing name or focus");
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
+    mockCallOllamaGenerate.mockResolvedValue(malformed);
+    await expect(analyzeWithOllama("test task")).rejects.toThrow("role missing name or focus");
   });
 });
 

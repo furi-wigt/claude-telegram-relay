@@ -8,7 +8,7 @@
  * Session files are stored at: {RELAY_DIR}/sessions/{chatId}_{threadId}.json
  */
 
-import { readFile, writeFile, mkdir, readdir } from "fs/promises";
+import { readFile, writeFile, mkdir, readdir, access } from "fs/promises";
 import { join } from "path";
 
 const RELAY_DIR = process.env.RELAY_DIR || join(process.env.HOME || "~", ".claude-relay");
@@ -30,6 +30,40 @@ export interface SessionState {
   pendingMessage: string;
   /** @deprecated Retained for JSON backward compat; no longer populated */
   lastUserMessages: string[];
+  /**
+   * When true, the next Claude call should inject shortTermContext even if
+   * isResumeReliable() would otherwise skip it. Set by the user tapping
+   * "Inject context" after a resume failure. Cleared after injection.
+   */
+  pendingContextInjection: boolean;
+  /**
+   * When true, the next Claude call must NOT inject shortTermContext even
+   * though isResumeReliable() returns false (sessionId=null after /new).
+   * Set by resetSession() when the user explicitly requests a fresh start.
+   * Cleared after being consumed on the first post-reset message.
+   */
+  suppressContextInjection?: boolean;
+  /**
+   * Monotonic counter incremented each time resetSession() is called.
+   * Used by updateSessionIdGuarded() to detect stale onSessionId callbacks:
+   * if a Claude response arrives AFTER /new reset the session, the captured
+   * generation won't match the current one and the update is discarded,
+   * preventing the old session ID from overwriting the fresh null state.
+   */
+  resetGen: number;
+  /**
+   * Configured working directory for this topic.
+   * Updated by /cwd. Used as the source when a new Claude session starts.
+   * When undefined, falls back to PROJECT_DIR or relay working directory.
+   */
+  cwd?: string;
+  /**
+   * Locked working directory for the current active Claude session.
+   * Set once from `cwd` (or projectDir fallback) when sessionId transitions
+   * from null → active. Never changed while sessionId is non-null, ensuring
+   * --resume always uses the same CLAUDE.md context as the original spawn.
+   */
+  activeCwd?: string;
 }
 
 /** Build a unique map key from chatId and optional threadId */
@@ -80,6 +114,9 @@ export async function loadSession(chatId: number, agentId: string, threadId?: nu
       pendingContextSwitch: false,
       pendingMessage: "",
       lastUserMessages: [],
+      pendingContextInjection: false,
+      suppressContextInjection: false,
+      resetGen: 0,
     };
     sessions.set(key, state);
     return state;
@@ -103,6 +140,30 @@ export async function saveSession(state: SessionState): Promise<void> {
 export async function updateSessionId(chatId: number, sessionId: string, threadId?: number | null): Promise<void> {
   const session = sessions.get(sessionKey(chatId, threadId));
   if (session) {
+    session.sessionId = sessionId;
+    session.lastActivity = new Date().toISOString();
+    await saveSession(session);
+  }
+}
+
+/**
+ * Update the Claude Code session ID only if the session's resetGen matches the
+ * captured generation. This prevents a stale onSessionId callback (from a Claude
+ * response that was already in-flight when /new was tapped) from overwriting the
+ * null sessionId that resetSession() just set.
+ *
+ * Usage in relay.ts:
+ *   const gen = session.resetGen;   // capture BEFORE calling Claude
+ *   onSessionId: (id) => void updateSessionIdGuarded(chatId, id, gen, threadId)
+ */
+export async function updateSessionIdGuarded(
+  chatId: number,
+  sessionId: string,
+  gen: number,
+  threadId?: number | null,
+): Promise<void> {
+  const session = sessions.get(sessionKey(chatId, threadId));
+  if (session && session.resetGen === gen) {
     session.sessionId = sessionId;
     session.lastActivity = new Date().toISOString();
     await saveSession(session);
@@ -169,6 +230,9 @@ export async function loadAllSessions(): Promise<number> {
           pendingContextSwitch: raw.pendingContextSwitch ?? false,
           pendingMessage: raw.pendingMessage ?? "",
           lastUserMessages: raw.lastUserMessages ?? [],
+          pendingContextInjection: raw.pendingContextInjection ?? false,
+          suppressContextInjection: raw.suppressContextInjection ?? false,
+          resetGen: raw.resetGen ?? 0,
         };
         if (state.chatId) {
           sessions.set(sessionKey(state.chatId, state.threadId), state);
@@ -185,16 +249,72 @@ export async function loadAllSessions(): Promise<number> {
 }
 
 /**
- * Clear the session ID for a chat, forcing a new Claude Code session
- * on the next message. Does not delete the session file.
+ * Clear the session for a chat, forcing a new Claude Code session on the next
+ * message. Resets the turn counter and start time so the footer shows #1 on
+ * the first post-reset reply. Does not delete the session file.
  */
 export async function resetSession(chatId: number, threadId?: number | null): Promise<void> {
   const session = sessions.get(sessionKey(chatId, threadId));
   if (session) {
+    const now = new Date().toISOString();
     session.sessionId = null;
-    session.lastActivity = new Date().toISOString();
+    session.messageCount = 0;
+    session.startedAt = now;
+    session.lastActivity = now;
+    session.pendingContextInjection = false;
+    session.suppressContextInjection = true;
+    session.resetGen = (session.resetGen ?? 0) + 1;
     await saveSession(session);
   }
+}
+
+/**
+ * Detect whether a --resume attempt silently created a new session instead of
+ * continuing the old one. Claude CLI does not signal failure explicitly — we
+ * infer it by comparing session IDs before and after the call.
+ *
+ * @param triedResume  True when isResumeReliable() was true before the call
+ * @param prevId       session.sessionId captured BEFORE callClaude()
+ * @param newId        session.sessionId after callClaude() (updated by onSessionId)
+ * @returns true when a resume was attempted but Claude returned a different ID
+ */
+export function didResumeFail(
+  triedResume: boolean,
+  prevId: string | null,
+  newId: string | null,
+): boolean {
+  if (!triedResume) return false;
+  if (!prevId || !newId) return false;
+  return prevId !== newId;
+}
+
+/**
+ * Default TTL in hours for Claude session resume reliability.
+ * After this period, we assume the server-side session has expired and
+ * inject shortTermContext even if a sessionId exists on disk.
+ *
+ * Override with SESSION_RESUME_TTL_HOURS in .env.
+ */
+const DEFAULT_RESUME_TTL_HOURS = Number(process.env.SESSION_RESUME_TTL_HOURS) || 4;
+
+/**
+ * Return true when a --resume call is likely to succeed:
+ *   - sessionId is present (we have a Claude session UUID to resume)
+ *   - lastActivity is within the TTL window (session probably still active server-side)
+ *
+ * When false, shortTermContext should be injected into the prompt so Claude
+ * has conversation history even if resume fails silently.
+ *
+ * @param ttlHours  Optional override for the TTL (default: SESSION_RESUME_TTL_HOURS or 4h)
+ */
+export function isResumeReliable(session: SessionState, ttlHours: number = DEFAULT_RESUME_TTL_HOURS): boolean {
+  if (!session.sessionId) return false;
+
+  const lastActivity = new Date(session.lastActivity).getTime();
+  if (isNaN(lastActivity)) return false;
+
+  const hoursSinceActivity = (Date.now() - lastActivity) / 3_600_000;
+  return hoursSinceActivity < ttlHours;
 }
 
 /**
@@ -218,4 +338,66 @@ export function getSessionSummary(chatId: number, threadId?: number | null): str
   ];
 
   return parts.join('\n');
+}
+
+// ── Per-Topic CWD Helpers ────────────────────────────────────────────────────
+
+/**
+ * Set or clear the configured working directory for a topic.
+ *
+ * @param chatId    Telegram chat ID
+ * @param threadId  Forum topic thread ID (null for root chat)
+ * @param cwd       Absolute path to use, or undefined to clear (revert to default)
+ *
+ * @throws {Error}  If cwd is a non-empty string that does not exist on disk.
+ */
+export async function setTopicCwd(
+  chatId: number,
+  threadId: number | null | undefined,
+  cwd: string | undefined
+): Promise<void> {
+  if (cwd !== undefined && cwd !== "") {
+    try {
+      await access(cwd);
+    } catch {
+      throw new Error(`Path does not exist: ${cwd}`);
+    }
+  }
+
+  const key = sessionKey(chatId, threadId ?? null);
+  const session = sessions.get(key);
+  if (!session) return;
+
+  session.cwd = cwd !== "" ? cwd : undefined;
+  await saveSession(session);
+}
+
+/**
+ * Lock the active working directory for the current Claude session.
+ *
+ * Called once per new session (when sessionId transitions null → active).
+ * Skipped when the session already has an active sessionId so that
+ * --resume calls always use the same cwd as the original spawn.
+ *
+ * Resolution order: session.cwd → projectDir → undefined
+ *
+ * @param chatId      Telegram chat ID
+ * @param threadId    Forum topic thread ID (null for root chat)
+ * @param projectDir  Fallback directory (from PROJECT_DIR env or empty string)
+ */
+export async function lockActiveCwd(
+  chatId: number,
+  threadId: number | null | undefined,
+  projectDir: string | undefined
+): Promise<void> {
+  const key = sessionKey(chatId, threadId ?? null);
+  const session = sessions.get(key);
+  if (!session) return;
+
+  // Only lock when starting a fresh session — never overwrite an active one.
+  if (session.sessionId) return;
+
+  const resolved = session.cwd || projectDir || undefined;
+  session.activeCwd = resolved;
+  await saveSession(session);
 }
