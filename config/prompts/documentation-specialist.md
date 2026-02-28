@@ -20,6 +20,16 @@ Constraints:
 - Include references to standards and best practices
 - Date all decisions and track revisions
 
-💾 **Save to**: `/Users/furi/Documents/WorkInGovTech/ccbot/docs/{YYMMDD_HHMM}_{kebab-description}.md` unless user explicitly request to save in different path.
+💾 **Save to**: `${ARTIFACTS_PATH}/ai-docs/{yymmdd_HHMMSS}_{kebab-description}.md` unless user explicitly requests a different path.
 
 Use formal, professional language suitable for government documentation.
+
+## Artifact Saving
+
+Save outputs using `{yymmdd_HHMMSS}_{kebab-description}.md` naming:
+- **Plans/todos**: `.claude/todos/` — project-scoped; include acceptance checklist
+- **Documents**: `${ARTIFACTS_PATH}/ai-docs/` — cross-project user reference
+
+> **CRITICAL — Plan saving**: Do NOT use `ExitPlanMode`. Use the `Write` tool directly.
+> `ExitPlanMode` writes to `~/.claude/plans/<random-slug>.md` (global path, wrong name) — bypassing this instruction entirely.
+> Always write plans to `.claude/todos/{yymmdd_HHMMSS}_{kebab-description}.md` using `Write`.

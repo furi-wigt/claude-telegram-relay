@@ -1,0 +1,67 @@
+[
+  {
+    "id": "aws-architect",
+    "name": "AWS Cloud Architect",
+    "groupName": "AWS Cloud Architect",
+    "groupKey": "AWS_ARCHITECT",
+    "chatId": null,
+    "topicId": null,
+    "codingTopicId": null,
+    "claudeAgent": "architect.md",
+    "capabilities": ["infrastructure-design", "cost-optimization", "aws-services"]
+  },
+  {
+    "id": "security-analyst",
+    "name": "Security & Compliance Analyst",
+    "groupName": "Security & Compliance",
+    "groupKey": "SECURITY",
+    "chatId": null,
+    "topicId": null,
+    "codingTopicId": null,
+    "claudeAgent": "security.md",
+    "capabilities": ["security-audit", "compliance-check", "threat-modeling"]
+  },
+  {
+    "id": "documentation-specialist",
+    "name": "Technical Documentation Specialist",
+    "groupName": "Technical Documentation",
+    "groupKey": "DOCUMENTATION",
+    "chatId": null,
+    "topicId": null,
+    "codingTopicId": null,
+    "claudeAgent": "documentation-writer.md",
+    "capabilities": ["adr-creation", "system-docs", "runbooks"]
+  },
+  {
+    "id": "code-quality-coach",
+    "name": "Code Quality & TDD Coach",
+    "groupName": "Code Quality & TDD",
+    "groupKey": "CODE_QUALITY",
+    "chatId": null,
+    "topicId": null,
+    "codingTopicId": null,
+    "claudeAgent": "reviewer.md",
+    "capabilities": ["code-review", "test-generation", "refactoring"]
+  },
+  {
+    "id": "research-analyst",
+    "name": "Technical Research Analyst",
+    "groupName": "Technical Research",
+    "groupKey": "RESEARCH",
+    "chatId": null,
+    "topicId": null,
+    "codingTopicId": null,
+    "capabilities": ["technical-research", "architecture-analysis", "technology-evaluation", "comparative-analysis"]
+  },
+  {
+    "id": "general-assistant",
+    "name": "General AI Assistant",
+    "groupName": "General AI Assistant",
+    "groupKey": "GENERAL",
+    "chatId": null,
+    "topicId": null,
+    "codingTopicId": null,
+    "isDefault": true,
+    "capabilities": ["general-qa", "meeting-summary", "task-breakdown"]
+  }
+]
