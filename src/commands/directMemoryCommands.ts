@@ -2,12 +2,12 @@
  * Direct Memory Mutation Commands
  *
  * Adds four commands for explicit memory management with +/- syntax:
- *   /goals  +goal1, +goal2, -old goal text
- *   /goals  *goal1, *2  — mark goal as done (index or fuzzy match)
+ *   /goals  +goal1 | +goal2 | -old goal text
+ *   /goals  *goal1 | *2  — mark goal as done (index or fuzzy match)
  *   /goals  *           — list completed/archived goals
- *   /facts  +fact1, -old fact
- *   /prefs  +prefer X, -old preference
- *   /reminders +Meeting Friday 3pm, -old reminder
+ *   /facts  +fact1 | -old fact
+ *   /prefs  +prefer X | -old preference
+ *   /reminders +Meeting Friday 3pm | -old reminder
  *
  * - `+item` adds a new entry
  * - `-item` removes matching entry using Ollama fuzzy match (fallback: ilike)
@@ -21,6 +21,7 @@ import { InlineKeyboard } from "grammy";
 import { claudeText } from "../claude-process.ts";
 import { saveCommandInteraction } from "../utils/saveMessage.ts";
 import { findPotentialDuplicates, parseModelIndices } from "../utils/duplicateDetector.ts";
+import { chunkMessage } from "../utils/sendToGroup.ts";
 
 export interface DirectMemoryOptions {
   supabase: SupabaseClient | null;
@@ -72,6 +73,50 @@ const COMMAND_CONFIG: Record<string, CommandConfig> = {
   },
 };
 
+// ── List cache ─────────────────────────────────────────────────────────────
+//
+// Anchors numeric indices (*N, -N) to the list the user last viewed.
+// Populated by listItems(); consumed (read-only) by findGoalsByIndexOrQuery()
+// and findMatchingItems() for the numeric path.
+//
+// A single invalidation happens at the END of handleDirectMemoryCommand after
+// all operations complete — preventing mid-command index shifts caused by
+// mutations (e.g. toggleGoalDone changing type to completed_goal shifts the
+// type="goal" query result for subsequent ops in the same command).
+
+interface CachedList {
+  items: MemoryItem[];
+  expiresAt: number;
+}
+
+const listCache = new Map<string, CachedList>();
+const LIST_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+function listCacheKey(chatId: number, commandName: string): string {
+  return `${chatId}:${commandName}`;
+}
+
+function setListCache(chatId: number, commandName: string, items: MemoryItem[]): void {
+  listCache.set(listCacheKey(chatId, commandName), {
+    items,
+    expiresAt: Date.now() + LIST_CACHE_TTL_MS,
+  });
+}
+
+function getListCache(chatId: number, commandName: string): MemoryItem[] | null {
+  const key = listCacheKey(chatId, commandName);
+  const entry = listCache.get(key);
+  if (!entry || Date.now() >= entry.expiresAt) {
+    listCache.delete(key);
+    return null;
+  }
+  return entry.items;
+}
+
+function invalidateListCache(chatId: number, commandName: string): void {
+  listCache.delete(listCacheKey(chatId, commandName));
+}
+
 // ── Pending duplicate confirmations ───────────────────────────────────────
 
 interface PendingAdd {
@@ -96,10 +141,10 @@ setInterval(() => {
 /**
  * Parse a command argument string with +/- items.
  *
- * Input:  "+goal1, +goal2, -old goal text, +goal3"
+ * Input:  "+goal1 | +goal2 | -old goal text | +goal3"
  * Output: { adds: ["goal1", "goal2", "goal3"], removes: ["old goal text"] }
  *
- * Items are comma-separated. Leading +/- determines action.
+ * Items are pipe-separated. Leading +/- determines action.
  * Items without a prefix are ignored.
  */
 export function parseAddRemoveArgs(input: string): {
@@ -111,10 +156,8 @@ export function parseAddRemoveArgs(input: string): {
   const removes: string[] = [];
   const toggleDone: string[] = [];
 
-  // Split on commas, but be careful not to split within items
-  // Strategy: split on ", +" or ", -" boundaries
-  // First normalize: split on comma + optional whitespace
-  const parts = input.split(/,\s*/);
+  // Split on pipe separator with optional surrounding whitespace
+  const parts = input.split(/\s*\|\s*/);
 
   for (const raw of parts) {
     const trimmed = raw.trim();
@@ -135,6 +178,28 @@ export function parseAddRemoveArgs(input: string): {
   }
 
   return { adds, removes, toggleDone };
+}
+
+// ── Text Normalization ─────────────────────────────────────────────────────
+
+/**
+ * Strip markdown inline formatting characters before substring comparison.
+ *
+ * Goals/facts stored via AI tags often contain backtick-wrapped terms
+ * (e.g. `` `--system-prompt` ``) or bold/italic markers (`**`, `_`).
+ * When a user types the same text without those markers the raw `.includes()`
+ * check fails.  Normalising both sides makes removal/toggle reliable
+ * regardless of how the content was originally formatted.
+ *
+ * Characters stripped: backtick, asterisk, underscore, tilde (strikethrough).
+ * Whitespace is also collapsed so that "foo  bar" matches "foo bar".
+ */
+export function normalizeForSearch(text: string): string {
+  return text
+    .replace(/[`*_~]/g, "")   // strip inline markdown
+    .replace(/\s+/g, " ")     // collapse whitespace
+    .trim()
+    .toLowerCase();
 }
 
 // ── Fuzzy Matching ─────────────────────────────────────────────────────────
@@ -160,13 +225,16 @@ async function findMatchingItems(
   config: CommandConfig,
   query: string
 ): Promise<MemoryItem[]> {
-  // Build query with the same scope as listItems
-  const scope = `chat_id.eq.${chatId},chat_id.is.null`;
+  // Provenance model: all types globally visible except reminders (date category).
+  // Goals, facts, prefs: no chat_id filter. Reminders: chat-scoped.
   let baseQuery = supabase
     .from("memory")
     .select("id, content")
-    .or(scope)
     .eq("type", config.type);
+
+  if (config.name === "reminders") {
+    baseQuery = (baseQuery as any).or(`chat_id.eq.${chatId},chat_id.is.null`);
+  }
 
   if (config.name === "prefs" || config.name === "reminders") {
     // Strict category filter — these buckets are well-defined
@@ -177,6 +245,28 @@ async function findMatchingItems(
   }
   // goals: no category filter — same as listItems
 
+  // Index-based: check cache first to avoid an unnecessary DB round-trip.
+  // On a cache miss, fetch from DB and SET the cache so that all subsequent
+  // numeric ops in the same multi-op command resolve against the same stable
+  // snapshot — even when the user jumped straight to -N without a prior
+  // no-args list call (cold-start case).
+  if (/^\d+$/.test(query)) {
+    let source = getListCache(chatId, config.name);
+    if (source === null) {
+      const { data, error } = await baseQuery
+        .order("created_at", { ascending: true })
+        .order("id", { ascending: true })
+        .limit(50);
+      if (error || !data || data.length === 0) return [];
+      source = data as MemoryItem[];
+      setListCache(chatId, config.name, source);
+    }
+    const idx = parseInt(query, 10) - 1;
+    if (idx >= 0 && idx < source.length) return [source[idx]];
+    return [];
+  }
+
+  // Non-numeric: always a fresh DB query for substring/semantic matching.
   const { data, error } = await baseQuery
     .order("created_at", { ascending: true })
     .order("id", { ascending: true })
@@ -186,21 +276,18 @@ async function findMatchingItems(
 
   const candidates = data as MemoryItem[];
 
-  // Index-based: purely numeric query like "1", "2"
-  if (/^\d+$/.test(query)) {
-    const idx = parseInt(query, 10) - 1;
-    if (idx >= 0 && idx < candidates.length) return [candidates[idx]];
-    return []; // out of range
-  }
-
   // Strategy: substring match first (fast, reliable).
   // Ollama is used only as a semantic fallback when substring yields nothing,
   // e.g. user types "-that pm2 thing" to match "pm2 cron implementation".
   // This order fixes a bug where Ollama returned wrong indices (items 1,2)
   // causing the disambiguation keyboard to show completely unrelated items.
-  const queryLower = query.toLowerCase();
+  //
+  // Both sides are normalized (markdown stripped, whitespace collapsed) so that
+  // a goal stored as "Use `--flag` for `claudeStream`" matches a query typed
+  // as "--flag for claudeStream" without backticks.
+  const queryNorm = normalizeForSearch(query);
   const substringMatches = candidates.filter((item) =>
-    item.content.toLowerCase().includes(queryLower)
+    normalizeForSearch(item.content).includes(queryNorm)
   );
 
   if (substringMatches.length > 0) {
@@ -265,13 +352,16 @@ async function listItems(
   chatId: number,
   config: CommandConfig
 ): Promise<string> {
-  const scope = `chat_id.eq.${chatId},chat_id.is.null`;
-
+  // Provenance model: goals, facts, and prefs are globally visible — no chat_id filter.
+  // Reminders (date category) remain chat-scoped (transient, group-specific).
   let query = supabase
     .from("memory")
     .select("id, content")
-    .or(scope)
     .eq("type", config.type);
+
+  if (config.name === "reminders") {
+    query = (query as any).or(`chat_id.eq.${chatId},chat_id.is.null`);
+  }
 
   if (config.name === "prefs" || config.name === "reminders") {
     // Strict category filter for prefs and reminders
@@ -283,8 +373,8 @@ async function listItems(
   // goals: no category filter — includes items stored via [GOAL:] intent tags
 
   const usageHint = config.name === "goals"
-    ? `\nUse /${config.name} +item to add, -N or -text to remove, *N or *text to mark done.`
-    : `\nUse /${config.name} +item to add, -N or -text to remove.`;
+    ? `\nUse /${config.name} +item | -N | *N  (pipe-separate multiple ops)`
+    : `\nUse /${config.name} +item | -N or -text  (pipe-separate multiple ops)`;
 
   const { data, error } = await query
     .order("created_at", { ascending: true })
@@ -294,6 +384,10 @@ async function listItems(
   if (error || !data || data.length === 0) {
     return `No ${config.label}s stored yet.${usageHint}`;
   }
+
+  // Cache the list so numeric ops (*N, -N) within the same command
+  // resolve against what was shown to the user, not a potentially shifted DB state.
+  setListCache(chatId, config.name, data as MemoryItem[]);
 
   // Number all items for index-based addressing (-1, -2, etc.)
   const lines = (data as MemoryItem[]).map((item, i) => `  ${i + 1}. ${item.content}`).join("\n");
@@ -312,11 +406,35 @@ async function findGoalsByIndexOrQuery(
 ): Promise<MemoryItem[]> {
   if (query === "") return []; // caller handles "list completed" path
 
-  const scope = `chat_id.eq.${chatId},chat_id.is.null`;
+  // Index-based: check cache first to avoid an unnecessary DB round-trip.
+  // On a cache miss, fetch from DB and SET the cache so that all subsequent
+  // numeric ops in the same multi-op command resolve against the same stable
+  // snapshot — even when the user jumped straight to *N without a prior
+  // no-args /goals list (cold-start case).
+  if (/^\d+$/.test(query)) {
+    let source = getListCache(chatId, "goals");
+    if (source === null) {
+      const { data, error } = await supabase
+        .from("memory")
+        .select("id, content")
+        .eq("type", "goal")
+        .order("created_at", { ascending: true })
+        .order("id", { ascending: true })
+        .limit(50);
+      if (error || !data || data.length === 0) return [];
+      source = data as MemoryItem[];
+      setListCache(chatId, "goals", source);
+    }
+    const idx = parseInt(query, 10) - 1;
+    if (idx >= 0 && idx < source.length) return [source[idx]];
+    return [];
+  }
+
+  // Non-numeric: always a fresh DB query for substring/semantic matching.
+  // Goals are globally scoped — fetch all regardless of which group created them.
   const { data, error } = await supabase
     .from("memory")
     .select("id, content")
-    .or(scope)
     .eq("type", "goal")
     .order("created_at", { ascending: true })
     .order("id", { ascending: true })
@@ -326,17 +444,12 @@ async function findGoalsByIndexOrQuery(
 
   const goals = data as MemoryItem[];
 
-  // Index-based: purely numeric query like "1", "2"
-  if (/^\d+$/.test(query)) {
-    const idx = parseInt(query, 10) - 1;
-    if (idx >= 0 && idx < goals.length) return [goals[idx]];
-    return [];
-  }
-
-  // Substring match
-  const queryLower = query.toLowerCase();
+  // Substring match — normalize both sides to strip markdown formatting
+  // (backticks, asterisks, underscores) so a goal stored as "`--flag`"
+  // is found when the user types "--flag" without backticks.
+  const queryNorm = normalizeForSearch(query);
   const substringMatches = goals.filter((g) =>
-    g.content.toLowerCase().includes(queryLower)
+    normalizeForSearch(g.content).includes(queryNorm)
   );
   if (substringMatches.length > 0) return substringMatches;
 
@@ -401,11 +514,10 @@ async function listCompletedGoals(
   supabase: SupabaseClient,
   chatId: number
 ): Promise<string> {
-  const scope = `chat_id.eq.${chatId},chat_id.is.null`;
+  // Goals are globally scoped — list completed goals from all groups.
   const { data, error } = await supabase
     .from("memory")
     .select("id, content, completed_at")
-    .or(scope)
     .eq("type", "completed_goal")
     .order("completed_at", { ascending: false })
     .limit(50);
@@ -457,6 +569,19 @@ async function listCompletedGoals(
   return parts.join("\n\n");
 }
 
+// ── Reply helpers ──────────────────────────────────────────────────────────
+
+/**
+ * Send a reply, splitting into multiple messages if the text exceeds
+ * Telegram's 4096-character limit. Uses the same chunking strategy as
+ * sendToGroup (paragraph → line → hard-split).
+ */
+async function replyChunked(ctx: Context, text: string): Promise<void> {
+  for (const chunk of chunkMessage(text)) {
+    await ctx.reply(chunk);
+  }
+}
+
 // ── Command handler ────────────────────────────────────────────────────────
 
 /**
@@ -475,19 +600,24 @@ async function handleDirectMemoryCommand(
 
   if (!input) {
     const replyText = await listItems(supabase, chatId, config);
-    await ctx.reply(replyText);
+    await replyChunked(ctx, replyText);
     await saveCommandInteraction(supabase, chatId, `/${config.name}`, replyText);
     return;
   }
 
   const { adds, removes, toggleDone } = parseAddRemoveArgs(input);
 
+  // Track whether any mutation occurred so we can do a single cache invalidation
+  // at the END of the command rather than mid-command. Mid-command invalidation
+  // causes subsequent numeric ops to re-query the DB and get a shifted list.
+  let mutationOccurred = false;
+
   // ── Handle * syntax (goals only) ────────────────────────────────────────
   if (config.name === "goals" && toggleDone.length > 0) {
     // "/goals *" alone → list completed goals
     if (toggleDone.length === 1 && toggleDone[0] === "") {
       const replyText = await listCompletedGoals(supabase, chatId);
-      await ctx.reply(replyText);
+      await replyChunked(ctx, replyText);
       await saveCommandInteraction(supabase, chatId, `/${config.name} *`, replyText);
       return;
     }
@@ -506,6 +636,7 @@ async function handleDirectMemoryCommand(
 
         if (matches.length === 1) {
           const { wasActive } = await toggleGoalDone(supabase, matches[0].id);
+          mutationOccurred = true;
           if (wasActive) {
             results.push(`✅ Marked as done: ${matches[0].content}`);
           } else {
@@ -538,7 +669,7 @@ async function handleDirectMemoryCommand(
 
     if (results.length > 0) {
       const replyText = results.join("\n");
-      await ctx.reply(replyText);
+      await replyChunked(ctx, replyText);
       await saveCommandInteraction(supabase, chatId, `/${config.name} ${input}`, replyText);
     }
 
@@ -549,7 +680,7 @@ async function handleDirectMemoryCommand(
   if (adds.length === 0 && removes.length === 0) {
     await ctx.reply(
       `No valid items found. Use + to add and - to remove.\n` +
-        `Example: /${config.name} +Item to add, -Item to remove`
+        `Example: /${config.name} +Item to add | -Item to remove`
     );
     return;
   }
@@ -559,13 +690,16 @@ async function handleDirectMemoryCommand(
   // ── Process additions (with duplicate detection) ────────────────────────
   for (const content of adds) {
     try {
-      // Check for semantic duplicates before inserting
-      const scope = `chat_id.eq.${chatId},chat_id.is.null`;
+      // Check for semantic duplicates before inserting.
+      // Provenance model: search globally for non-date types; reminders scoped to current chat.
       let existingQuery = supabase
         .from("memory")
         .select("id, content")
-        .or(scope)
         .eq("type", config.type);
+
+      if (config.name === "reminders") {
+        existingQuery = (existingQuery as any).or(`chat_id.eq.${chatId},chat_id.is.null`);
+      }
 
       if (config.name === "prefs" || config.name === "reminders") {
         existingQuery = existingQuery.eq("category", config.category);
@@ -612,6 +746,8 @@ async function handleDirectMemoryCommand(
       const { error } = await supabase.from("memory").insert({
         type: config.type,
         content,
+        // Provenance model: chat_id records which group created this item (audit trail).
+        // Scope is always global — read queries ignore chat_id for non-date types.
         chat_id: chatId,
         category: config.category,
         extracted_from_exchange: false,
@@ -621,6 +757,7 @@ async function handleDirectMemoryCommand(
       if (error) {
         results.push(`❌ Failed to add: ${content}`);
       } else {
+        mutationOccurred = true;
         results.push(`${config.emoji} Added: ${content}`);
       }
     } catch {
@@ -642,6 +779,7 @@ async function handleDirectMemoryCommand(
         // Single match — delete immediately
         const ok = await deleteItem(supabase, matches[0].id);
         if (ok) {
+          mutationOccurred = true;
           results.push(`🗑️ Removed: ${matches[0].content}`);
         } else {
           results.push(`❌ Failed to remove: ${matches[0].content}`);
@@ -674,7 +812,7 @@ async function handleDirectMemoryCommand(
 
   if (results.length > 0) {
     const replyText = results.join("\n");
-    await ctx.reply(replyText);
+    await replyChunked(ctx, replyText);
 
     // Save to short-term memory
     await saveCommandInteraction(
@@ -683,6 +821,13 @@ async function handleDirectMemoryCommand(
       `/${config.name} ${input}`,
       replyText
     );
+  }
+
+  // Single cache invalidation after ALL operations complete.
+  // This keeps the cache stable for every op within the command while ensuring
+  // the next list command (or next *N command) gets a fresh DB result.
+  if (mutationOccurred) {
+    invalidateListCache(chatId, config.name);
   }
 }
 
@@ -771,7 +916,7 @@ export function registerDirectMemoryCommands(
       const { error } = await supabase.from("memory").insert({
         type: pending.config.type,
         content: pending.content,
-        chat_id: pending.chatId,
+        chat_id: pending.chatId,  // provenance: record originating chat
         category: pending.config.category,
         extracted_from_exchange: false,
         confidence: 1.0,

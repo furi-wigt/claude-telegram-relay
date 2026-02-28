@@ -88,12 +88,16 @@ export function registerMemoryCommands(
 
     try {
       // Fast-path: word-level containment check (catches paraphrases like
-      // "I prefer AWS" vs "prefers AWS cloud services for development")
-      const { data: existingMemories } = await supabase
+      // "I prefer AWS" vs "prefers AWS cloud services for development").
+      // Provenance model: search globally for facts/goals; reminders scoped to current chat.
+      let existingQuery = supabase
         .from("memory")
         .select("id, content")
-        .eq("type", type)
-        .eq("chat_id", chatId);
+        .eq("type", type);
+      if (category === "date") {
+        existingQuery = (existingQuery as any).or(`chat_id.eq.${chatId},chat_id.is.null`);
+      }
+      const { data: existingMemories } = await existingQuery;
 
       console.log(`[remember] dedup: fetched ${existingMemories?.length ?? 0} existing ${type}s for chat ${chatId}`);
       if (existingMemories?.length) {

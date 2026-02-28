@@ -24,11 +24,47 @@ beforeAll(() => {
   }));
 });
 
-import { parseAddRemoveArgs, registerDirectMemoryCommands } from "./directMemoryCommands.ts";
+import { parseAddRemoveArgs, registerDirectMemoryCommands, normalizeForSearch } from "./directMemoryCommands.ts";
 
 // ============================================================
 // parseAddRemoveArgs — pure function
 // ============================================================
+
+// ============================================================
+// normalizeForSearch — pure function unit tests
+// ============================================================
+
+describe("normalizeForSearch", () => {
+  test("strips backticks", () => {
+    expect(normalizeForSearch("`--system-prompt`")).toBe("--system-prompt");
+  });
+
+  test("strips asterisks (bold/italic)", () => {
+    expect(normalizeForSearch("**TDD** workflow")).toBe("tdd workflow");
+  });
+
+  test("strips underscores (italic)", () => {
+    expect(normalizeForSearch("run _daily_ at 3am")).toBe("run daily at 3am");
+  });
+
+  test("strips tildes (strikethrough)", () => {
+    expect(normalizeForSearch("~~deprecated~~")).toBe("deprecated");
+  });
+
+  test("collapses multiple spaces", () => {
+    expect(normalizeForSearch("foo   bar")).toBe("foo bar");
+  });
+
+  test("lowercases output", () => {
+    expect(normalizeForSearch("Implement SYSTEM")).toBe("implement system");
+  });
+
+  test("combined: backticks + mixed case", () => {
+    expect(
+      normalizeForSearch("Implement system prompt via `--system-prompt` for `claudeStream`")
+    ).toBe("implement system prompt via --system-prompt for claudestream");
+  });
+});
 
 describe("parseAddRemoveArgs", () => {
   test("parses single add", () => {
@@ -48,28 +84,28 @@ describe("parseAddRemoveArgs", () => {
   });
 
   test("parses mixed adds and removes", () => {
-    const result = parseAddRemoveArgs("+Goal A, +Goal B, -Old thing, +Goal C");
+    const result = parseAddRemoveArgs("+Goal A | +Goal B | -Old thing | +Goal C");
     expect(result.adds).toEqual(["Goal A", "Goal B", "Goal C"]);
     expect(result.removes).toEqual(["Old thing"]);
     expect(result.toggleDone).toEqual([]);
   });
 
   test("ignores items without +/-/* prefix", () => {
-    const result = parseAddRemoveArgs("no prefix, +valid add, bare text");
+    const result = parseAddRemoveArgs("no prefix | +valid add | bare text");
     expect(result.adds).toEqual(["valid add"]);
     expect(result.removes).toEqual([]);
     expect(result.toggleDone).toEqual([]);
   });
 
   test("trims whitespace from items", () => {
-    const result = parseAddRemoveArgs("  +  trimmed goal  ,  -  trimmed remove  ");
+    const result = parseAddRemoveArgs("  +  trimmed goal  |  -  trimmed remove  ");
     expect(result.adds).toEqual(["trimmed goal"]);
     expect(result.removes).toEqual(["trimmed remove"]);
     expect(result.toggleDone).toEqual([]);
   });
 
   test("ignores empty items after stripping prefix", () => {
-    const result = parseAddRemoveArgs("+, -, +valid");
+    const result = parseAddRemoveArgs("+ | - | +valid");
     expect(result.adds).toEqual(["valid"]);
     expect(result.removes).toEqual([]);
     expect(result.toggleDone).toEqual([]);
@@ -97,21 +133,21 @@ describe("parseAddRemoveArgs", () => {
   });
 
   test("mixed +add, *done, -remove populates all three fields", () => {
-    const result = parseAddRemoveArgs("+add me, *done goal, -remove me");
+    const result = parseAddRemoveArgs("+add me | *done goal | -remove me");
     expect(result.adds).toEqual(["add me"]);
     expect(result.removes).toEqual(["remove me"]);
     expect(result.toggleDone).toEqual(["done goal"]);
   });
 
   test("mixed *3, +new goal, -old stuff routes correctly", () => {
-    const result = parseAddRemoveArgs("*3, +new goal, -old stuff");
+    const result = parseAddRemoveArgs("*3 | +new goal | -old stuff");
     expect(result.adds).toEqual(["new goal"]);
     expect(result.removes).toEqual(["old stuff"]);
     expect(result.toggleDone).toEqual(["3"]);
   });
 
   test("multiple * items in one command", () => {
-    const result = parseAddRemoveArgs("*first goal, *second goal");
+    const result = parseAddRemoveArgs("*first goal | *second goal");
     expect(result.toggleDone).toEqual(["first goal", "second goal"]);
     expect(result.adds).toEqual([]);
     expect(result.removes).toEqual([]);
@@ -314,6 +350,33 @@ describe("/goals command — add path", () => {
     expect(text).toContain("Finish the API by March");
   });
 
+  test("inserts goal with chat_id=chatId for provenance (reads are globally scoped)", async () => {
+    // Provenance model: goals store the originating chatId for audit trail.
+    // Global visibility is achieved via read queries that ignore chat_id for goals.
+    const bot = mockBot();
+    const memInsert = mock(() => Promise.resolve({ data: null, error: null }));
+    const msgInsert = mock(() => Promise.resolve({ data: null, error: null }));
+    const dupChain: any = {};
+    dupChain.eq = mock(() => dupChain);
+    dupChain.or = mock(() => dupChain);
+    dupChain.order = mock(() => dupChain);
+    dupChain.limit = mock(() => Promise.resolve({ data: [], error: null }));
+    const supabase = {
+      from: mock((table: string) =>
+        table === "messages" ? { insert: msgInsert } : { insert: memInsert, select: mock(() => dupChain) }
+      ),
+    } as any;
+    registerDirectMemoryCommands(bot as any, { supabase });
+
+    const ctx = mockCtx({ chatId: 88888, match: "+Ship the v3 release" });
+    await bot._triggerCommand("goals", ctx);
+
+    expect(memInsert).toHaveBeenCalledTimes(1);
+    const inserted = memInsert.mock.calls[0][0];
+    expect(inserted.type).toBe("goal");
+    expect(inserted.chat_id).toBe(88888); // provenance: records where goal was created
+  });
+
   test("inserts multiple goals from one command", async () => {
     const bot = mockBot();
     const memInsert = mock(() => Promise.resolve({ data: null, error: null }));
@@ -330,7 +393,7 @@ describe("/goals command — add path", () => {
     } as any;
     registerDirectMemoryCommands(bot as any, { supabase });
 
-    const ctx = mockCtx({ match: "+Goal One, +Goal Two" });
+    const ctx = mockCtx({ match: "+Goal One | +Goal Two" });
     await bot._triggerCommand("goals", ctx);
 
     expect(memInsert).toHaveBeenCalledTimes(2);
@@ -433,6 +496,101 @@ describe("/reminders command — add path", () => {
 });
 
 // ============================================================
+// Global scoping — /facts and /prefs insert with chat_id=null
+//
+// Bug: /facts +text and /prefs +text stored with chat_id=chatId,
+// making them invisible in other groups. Fix: personal and preference
+// categories must be stored with chat_id=null (globally visible).
+// /reminders (date category) must stay chat-scoped.
+// ============================================================
+
+describe("/facts command — provenance write path (personal category)", () => {
+  test("inserts personal fact with chat_id=chatId for provenance (reads are globally scoped)", async () => {
+    // Provenance model: personal facts store real chatId for audit trail.
+    // Global visibility is achieved by removing chat_id filter from read queries.
+    const bot = mockBot();
+    const memInsert = mock(() => Promise.resolve({ data: null, error: null }));
+    const msgInsert = mock(() => Promise.resolve({ data: null, error: null }));
+    const dupChain: any = {};
+    dupChain.eq = mock(() => dupChain);
+    dupChain.or = mock(() => dupChain);
+    dupChain.order = mock(() => dupChain);
+    dupChain.limit = mock(() => Promise.resolve({ data: [], error: null }));
+    const supabase = {
+      from: mock((table: string) =>
+        table === "messages" ? { insert: msgInsert } : { insert: memInsert, select: mock(() => dupChain) }
+      ),
+    } as any;
+    registerDirectMemoryCommands(bot as any, { supabase });
+
+    const ctx = mockCtx({ chatId: 99999, match: "+I am a Solution Architect at GovTech" });
+    await bot._triggerCommand("facts", ctx);
+
+    expect(memInsert).toHaveBeenCalledTimes(1);
+    const inserted = memInsert.mock.calls[0][0];
+    expect(inserted.category).toBe("personal");
+    expect(inserted.chat_id).toBe(99999); // provenance: records where fact was created
+  });
+});
+
+describe("/prefs command — provenance write path (preference category)", () => {
+  test("inserts preference with chat_id=chatId for provenance (reads are globally scoped)", async () => {
+    // Provenance model: preferences store real chatId for audit trail.
+    // Global visibility is achieved by removing chat_id filter from read queries.
+    const bot = mockBot();
+    const memInsert = mock(() => Promise.resolve({ data: null, error: null }));
+    const msgInsert = mock(() => Promise.resolve({ data: null, error: null }));
+    const dupChain: any = {};
+    dupChain.eq = mock(() => dupChain);
+    dupChain.or = mock(() => dupChain);
+    dupChain.order = mock(() => dupChain);
+    dupChain.limit = mock(() => Promise.resolve({ data: [], error: null }));
+    const supabase = {
+      from: mock((table: string) =>
+        table === "messages" ? { insert: msgInsert } : { insert: memInsert, select: mock(() => dupChain) }
+      ),
+    } as any;
+    registerDirectMemoryCommands(bot as any, { supabase });
+
+    const ctx = mockCtx({ chatId: 77777, match: "+Always use bullet points in responses" });
+    await bot._triggerCommand("prefs", ctx);
+
+    expect(memInsert).toHaveBeenCalledTimes(1);
+    const inserted = memInsert.mock.calls[0][0];
+    expect(inserted.category).toBe("preference");
+    expect(inserted.chat_id).toBe(77777); // provenance: records where pref was created
+  });
+});
+
+describe("/reminders command — stays chat-scoped (date category)", () => {
+  test("inserts reminder with chat_id=chatId (date facts are group-specific)", async () => {
+    // Reminders are transient and group-specific — they must stay chat-scoped.
+    const bot = mockBot();
+    const memInsert = mock(() => Promise.resolve({ data: null, error: null }));
+    const msgInsert = mock(() => Promise.resolve({ data: null, error: null }));
+    const dupChain: any = {};
+    dupChain.eq = mock(() => dupChain);
+    dupChain.or = mock(() => dupChain);
+    dupChain.order = mock(() => dupChain);
+    dupChain.limit = mock(() => Promise.resolve({ data: [], error: null }));
+    const supabase = {
+      from: mock((table: string) =>
+        table === "messages" ? { insert: msgInsert } : { insert: memInsert, select: mock(() => dupChain) }
+      ),
+    } as any;
+    registerDirectMemoryCommands(bot as any, { supabase });
+
+    const ctx = mockCtx({ chatId: 55555, match: "+AWS review Friday 2pm" });
+    await bot._triggerCommand("reminders", ctx);
+
+    expect(memInsert).toHaveBeenCalledTimes(1);
+    const inserted = memInsert.mock.calls[0][0];
+    expect(inserted.category).toBe("date");
+    expect(inserted.chat_id).toBe(55555); // date facts stay chat-scoped
+  });
+});
+
+// ============================================================
 // Remove path — fallback ilike matching
 // (Ollama is unavailable in test env, falls back to substring)
 // ============================================================
@@ -502,6 +660,116 @@ describe("/goals command — remove path (ilike fallback)", () => {
 
     const text = ctx.reply.mock.calls[0][0] as string;
     expect(text).toContain("Not found");
+  });
+});
+
+// ============================================================
+// markdown normalization — substring match ignores backticks/asterisks
+// Bug: goals stored with `` `--system-prompt` `` not found when user
+// types "-implement system prompt handling via --system-prompt parameter"
+// ============================================================
+
+describe("/goals remove path — markdown normalization", () => {
+  test("removes goal with backtick-wrapped terms when query has no backticks", async () => {
+    const bot = mockBot();
+    const { supabase, eqDeleteFn } = mockSupabaseWithCandidates([
+      {
+        id: "g1",
+        content: "Implement system prompt handling via `--system-prompt` parameter for `claudeStream`/`claudeText` calls",
+      },
+    ]);
+    registerDirectMemoryCommands(bot as any, { supabase });
+
+    // User types without backticks — previously returned "Not found"
+    const ctx = mockCtx({ match: "-implement system prompt handling via --system-prompt parameter" });
+    await bot._triggerCommand("goals", ctx);
+
+    // Should delete the matched item, NOT return "Not found"
+    expect(eqDeleteFn).toHaveBeenCalledWith("id", "g1");
+    const text = ctx.reply.mock.calls[0][0] as string;
+    expect(text).toContain("Removed");
+    expect(text).not.toContain("Not found");
+  });
+
+  test("removes goal with asterisk markdown when query has no asterisks", async () => {
+    const bot = mockBot();
+    const { supabase, eqDeleteFn } = mockSupabaseWithCandidates([
+      { id: "g2", content: "Complete **TDD** workflow for the relay bot" },
+    ]);
+    registerDirectMemoryCommands(bot as any, { supabase });
+
+    const ctx = mockCtx({ match: "-Complete TDD workflow for the relay bot" });
+    await bot._triggerCommand("goals", ctx);
+
+    expect(eqDeleteFn).toHaveBeenCalledWith("id", "g2");
+    const text = ctx.reply.mock.calls[0][0] as string;
+    expect(text).toContain("Removed");
+  });
+
+  test("removes goal with mixed markdown (backticks + underscores) when query is plain text", async () => {
+    const bot = mockBot();
+    const { supabase, eqDeleteFn } = mockSupabaseWithCandidates([
+      { id: "g3", content: "Enable `orphan-gc` to run _daily_ at 3am" },
+    ]);
+    registerDirectMemoryCommands(bot as any, { supabase });
+
+    const ctx = mockCtx({ match: "-Enable orphan-gc to run daily at 3am" });
+    await bot._triggerCommand("goals", ctx);
+
+    expect(eqDeleteFn).toHaveBeenCalledWith("id", "g3");
+    const text = ctx.reply.mock.calls[0][0] as string;
+    expect(text).toContain("Removed");
+  });
+
+  test("markDone (*) works for goal stored with backtick markdown", async () => {
+    const bot = mockBot();
+    const eqUpdateFn = mock(() => Promise.resolve({ data: null, error: null }));
+    const updateFn = mock(() => ({ eq: eqUpdateFn }));
+
+    // selectFn branches on field list:
+    //   "id, content" → findGoalsByIndexOrQuery path (returns list with .order().order().limit())
+    //   "type"        → toggleGoalDone path (returns single record with .eq().single())
+    const selectFn = mock((fields: string) => {
+      if (fields === "type") {
+        return {
+          eq: mock(() => ({
+            single: mock(() =>
+              Promise.resolve({ data: { type: "goal" }, error: null })
+            ),
+          })),
+        };
+      }
+      // "id, content" chain for findGoalsByIndexOrQuery
+      const chain: any = {};
+      chain.eq = mock(() => chain);
+      chain.or = mock(() => chain);
+      chain.order = mock(() => chain);
+      chain.limit = mock(() =>
+        Promise.resolve({
+          data: [{ id: "g4", content: "Implement `_isEntry` guard for PM2/bun" }],
+          error: null,
+        })
+      );
+      return chain;
+    });
+
+    const supabase = {
+      from: mock(() => ({
+        select: selectFn,
+        update: updateFn,
+        delete: mock(() => ({ eq: mock(() => Promise.resolve({ error: null })) })),
+        insert: mock(() => Promise.resolve({ error: null })),
+      })),
+    } as any;
+    registerDirectMemoryCommands(bot as any, { supabase });
+
+    // User types without backticks/underscores
+    const ctx = mockCtx({ match: "*Implement isEntry guard for PM2/bun" });
+    await bot._triggerCommand("goals", ctx);
+
+    const text = ctx.reply.mock.calls[0][0] as string;
+    expect(text).toContain("Marked as done");
+    expect(text).not.toContain("Not found");
   });
 });
 
@@ -703,7 +971,9 @@ describe("/facts no-args — lists all facts", () => {
 // ============================================================
 
 describe("E2E — findMatchingItems uses same scope as listItems", () => {
-  test("findMatchingItems query calls .or() for chat_id scope (not strict .eq)", async () => {
+  test("findMatchingItems for /facts does NOT apply chat_id scope (provenance model: globally visible)", async () => {
+    // Provenance model: facts are globally visible — no chat_id filter applied.
+    // Only reminders (/reminders command) apply the chat_id scope filter.
     const bot = mockBot();
     const { supabase, chain } = mockSupabaseWithCandidates([
       { id: "f1", content: "pm2 cron implementation" },
@@ -713,13 +983,12 @@ describe("E2E — findMatchingItems uses same scope as listItems", () => {
     const ctx = mockCtx({ chatId: 12345, match: "-pm2 cron" });
     await bot._triggerCommand("facts", ctx);
 
-    // The chain's .or() must have been called with the scope for findMatchingItems
-    expect(chain.or).toHaveBeenCalled();
-    const orArgs = chain.or.mock.calls.map((c: any) => c[0] as string);
-    const scopeCall = orArgs.find(
+    // .or() must NOT be called with chat_id scope for facts
+    const orArgs = (chain.or?.mock?.calls ?? []).map((c: any) => c[0] as string);
+    const chatIdScopeCall = orArgs.find(
       (arg: string) => arg.includes("chat_id.eq.12345") && arg.includes("chat_id.is.null")
     );
-    expect(scopeCall).toBeDefined();
+    expect(chatIdScopeCall).toBeUndefined();
   });
 
   test("findMatchingItems for /facts calls .or() for category (includes null-category items)", async () => {
@@ -1105,7 +1374,8 @@ describe("E2E — /goals shows items regardless of category (fix for [GOAL:] tag
    * Verify that /goals calls .or() for chat_id scope (not strict .eq).
    * Items stored via [GOAL:] tag have category=null — they must be visible.
    */
-  test("listItems uses .or() for chat_id scope, not strict .eq()", async () => {
+  test("listItems for goals does NOT filter by chatId (goals are globally scoped)", async () => {
+    // Goals must be visible across all groups — listItems must not apply chatId scope for goals.
     const bot = mockBot();
     const { supabase, listChain } = mockSupabaseForList([
       { id: "g1", content: "Check with HR for internship job posting" },
@@ -1116,13 +1386,12 @@ describe("E2E — /goals shows items regardless of category (fix for [GOAL:] tag
     const ctx = mockCtx({ chatId: 12345, match: "" });
     await bot._triggerCommand("goals", ctx);
 
-    // .or() must have been called with the scope (includes chat_id IS NULL)
-    expect(listChain.or).toHaveBeenCalled();
-    const orArg = listChain.or.mock.calls[0][0] as string;
-    expect(orArg).toContain("chat_id.eq.12345");
-    expect(orArg).toContain("chat_id.is.null");
+    // .or() must NOT have been called with a chatId scope — goals are globally visible
+    const orCalls = (listChain.or.mock.calls as any[]).map((c) => c[0] as string);
+    const chatIdScopeFound = orCalls.some((arg) => arg.includes("chat_id.eq.12345"));
+    expect(chatIdScopeFound).toBe(false);
 
-    // Goals are displayed
+    // Goals are displayed (globally scoped — items from any group visible)
     const text = ctx.reply.mock.calls[0][0] as string;
     expect(text).toContain("Check with HR for internship job posting");
     expect(text).toContain("Centralised TODO system");
@@ -1202,7 +1471,8 @@ describe("index-based delete (-N syntax)", () => {
     ]);
     registerDirectMemoryCommands(bot as any, { supabase });
 
-    const ctx = mockCtx({ match: "-2" });
+    // Unique chatId: avoids picking up stale cache from earlier no-args list tests
+    const ctx = mockCtx({ chatId: 66601, match: "-2" });
     await bot._triggerCommand("goals", ctx);
 
     // Index 2 (1-based) maps to candidates[1] → id "g2"
@@ -1220,7 +1490,8 @@ describe("index-based delete (-N syntax)", () => {
     ]);
     registerDirectMemoryCommands(bot as any, { supabase });
 
-    const ctx = mockCtx({ match: "-1" });
+    // Unique chatId: avoids stale cache from earlier facts no-args tests
+    const ctx = mockCtx({ chatId: 66602, match: "-1" });
     await bot._triggerCommand("facts", ctx);
 
     expect(eqDeleteFn).toHaveBeenCalledWith("id", "f1");
@@ -1255,7 +1526,8 @@ describe("index-based delete (-N syntax)", () => {
     ]);
     registerDirectMemoryCommands(bot as any, { supabase });
 
-    const ctx = mockCtx({ match: "-2" });
+    // Unique chatId: avoids stale cache from earlier reminders no-args tests
+    const ctx = mockCtx({ chatId: 66603, match: "-2" });
     await bot._triggerCommand("reminders", ctx);
 
     expect(eqDeleteFn).toHaveBeenCalledWith("id", "r2");
@@ -1501,5 +1773,478 @@ describe("duplicate detection on add", () => {
     const text = ctx.reply.mock.calls[0][0] as string;
     expect(text).toContain("Added");
     expect(text).toContain("Brand new goal");
+  });
+});
+
+// ============================================================
+// Provenance model — write paths (RED)
+//
+// Under the provenance model, ALL memory types store the real chatId for
+// audit trail.  The old ternary (goal/personal/preference → null) is removed.
+// Scope is determined by the read path (no chat_id filter), not the write path.
+// ============================================================
+
+describe("/facts command — provenance write path", () => {
+  test("inserts personal fact with chat_id=chatId (provenance) not null", async () => {
+    // RED: fails until W4 is implemented (currently stores null for personal category).
+    const bot = mockBot();
+    const memInsert = mock(() => Promise.resolve({ data: null, error: null }));
+    const msgInsert = mock(() => Promise.resolve({ data: null, error: null }));
+    const dupChain: any = {};
+    dupChain.eq = mock(() => dupChain);
+    dupChain.or = mock(() => dupChain);
+    dupChain.order = mock(() => dupChain);
+    dupChain.limit = mock(() => Promise.resolve({ data: [], error: null }));
+    const supabase = {
+      from: mock((table: string) =>
+        table === "messages" ? { insert: msgInsert } : { insert: memInsert, select: mock(() => dupChain) }
+      ),
+    } as any;
+    registerDirectMemoryCommands(bot as any, { supabase });
+
+    const ctx = mockCtx({ chatId: 11111, match: "+I am a Solution Architect at GovTech" });
+    await bot._triggerCommand("facts", ctx);
+
+    expect(memInsert).toHaveBeenCalledTimes(1);
+    const inserted = memInsert.mock.calls[0][0];
+    expect(inserted.category).toBe("personal");
+    expect(inserted.chat_id).toBe(11111); // provenance: store real chatId
+  });
+});
+
+describe("/prefs command — provenance write path", () => {
+  test("inserts preference with chat_id=chatId (provenance) not null", async () => {
+    // RED: fails until W4 is implemented (currently stores null for preference category).
+    const bot = mockBot();
+    const memInsert = mock(() => Promise.resolve({ data: null, error: null }));
+    const msgInsert = mock(() => Promise.resolve({ data: null, error: null }));
+    const dupChain: any = {};
+    dupChain.eq = mock(() => dupChain);
+    dupChain.or = mock(() => dupChain);
+    dupChain.order = mock(() => dupChain);
+    dupChain.limit = mock(() => Promise.resolve({ data: [], error: null }));
+    const supabase = {
+      from: mock((table: string) =>
+        table === "messages" ? { insert: msgInsert } : { insert: memInsert, select: mock(() => dupChain) }
+      ),
+    } as any;
+    registerDirectMemoryCommands(bot as any, { supabase });
+
+    const ctx = mockCtx({ chatId: 22222, match: "+Always use bullet points in responses" });
+    await bot._triggerCommand("prefs", ctx);
+
+    expect(memInsert).toHaveBeenCalledTimes(1);
+    const inserted = memInsert.mock.calls[0][0];
+    expect(inserted.category).toBe("preference");
+    expect(inserted.chat_id).toBe(22222); // provenance: store real chatId
+  });
+});
+
+describe("/goals command — provenance write path", () => {
+  test("inserts goal with chat_id=chatId (provenance) not null", async () => {
+    // RED: fails until W4 is implemented (currently stores null for goals).
+    const bot = mockBot();
+    const memInsert = mock(() => Promise.resolve({ data: null, error: null }));
+    const msgInsert = mock(() => Promise.resolve({ data: null, error: null }));
+    const dupChain: any = {};
+    dupChain.eq = mock(() => dupChain);
+    dupChain.or = mock(() => dupChain);
+    dupChain.order = mock(() => dupChain);
+    dupChain.limit = mock(() => Promise.resolve({ data: [], error: null }));
+    const supabase = {
+      from: mock((table: string) =>
+        table === "messages" ? { insert: msgInsert } : { insert: memInsert, select: mock(() => dupChain) }
+      ),
+    } as any;
+    registerDirectMemoryCommands(bot as any, { supabase });
+
+    const ctx = mockCtx({ chatId: 33333, match: "+Deploy new memory architecture" });
+    await bot._triggerCommand("goals", ctx);
+
+    expect(memInsert).toHaveBeenCalledTimes(1);
+    const inserted = memInsert.mock.calls[0][0];
+    expect(inserted.type).toBe("goal");
+    expect(inserted.chat_id).toBe(33333); // provenance: store real chatId
+  });
+});
+
+describe("/reminders command — stays chat-scoped (provenance model unchanged)", () => {
+  test("inserts reminder with chat_id=chatId (date facts always chat-scoped)", async () => {
+    // Reminders are transient — provenance = scope for dates. No change in behavior.
+    const bot = mockBot();
+    const memInsert = mock(() => Promise.resolve({ data: null, error: null }));
+    const msgInsert = mock(() => Promise.resolve({ data: null, error: null }));
+    const dupChain: any = {};
+    dupChain.eq = mock(() => dupChain);
+    dupChain.or = mock(() => dupChain);
+    dupChain.order = mock(() => dupChain);
+    dupChain.limit = mock(() => Promise.resolve({ data: [], error: null }));
+    const supabase = {
+      from: mock((table: string) =>
+        table === "messages" ? { insert: msgInsert } : { insert: memInsert, select: mock(() => dupChain) }
+      ),
+    } as any;
+    registerDirectMemoryCommands(bot as any, { supabase });
+
+    const ctx = mockCtx({ chatId: 44444, match: "+AWS review Friday 2pm" });
+    await bot._triggerCommand("reminders", ctx);
+
+    expect(memInsert).toHaveBeenCalledTimes(1);
+    const inserted = memInsert.mock.calls[0][0];
+    expect(inserted.category).toBe("date");
+    expect(inserted.chat_id).toBe(44444);
+  });
+});
+
+// ============================================================
+// Chunked reply — /facts (and other list commands) must not
+// exceed Telegram's 4096-character limit.
+//
+// Root cause: after the provenance model, /facts returns ALL global
+// facts from ALL groups — 50 items at ~100 chars each can exceed 4096.
+// Fix: use chunkMessage() from sendToGroup to split the reply.
+// ============================================================
+
+describe("/facts no-args — chunked reply for long lists", () => {
+  function makeItems(count: number) {
+    return Array.from({ length: count }, (_, i) => ({
+      id: `f${i + 1}`,
+      content: `Fact ${i + 1}: unique-marker-${i} ${"x".repeat(90)}`,
+    }));
+  }
+
+  test("sends multiple reply calls when facts list exceeds 4096 chars", async () => {
+    const bot = mockBot();
+    const { supabase } = mockSupabaseForList(makeItems(50));
+    registerDirectMemoryCommands(bot as any, { supabase });
+
+    const ctx = mockCtx({ match: "" });
+    await bot._triggerCommand("facts", ctx);
+
+    // 50 items × ~105 chars + header/footer ≈ 5300 chars → must chunk
+    expect(ctx.reply.mock.calls.length).toBeGreaterThan(1);
+  });
+
+  test("each chunk sent to ctx.reply is within Telegram's 4096 char limit", async () => {
+    const bot = mockBot();
+    const { supabase } = mockSupabaseForList(makeItems(50));
+    registerDirectMemoryCommands(bot as any, { supabase });
+
+    const ctx = mockCtx({ match: "" });
+    await bot._triggerCommand("facts", ctx);
+
+    for (const call of ctx.reply.mock.calls) {
+      const text = call[0] as string;
+      expect(text.length).toBeLessThanOrEqual(4096);
+    }
+  });
+
+  test("full facts list content is preserved across all chunked replies (no data loss)", async () => {
+    const bot = mockBot();
+    const { supabase } = mockSupabaseForList(makeItems(50));
+    registerDirectMemoryCommands(bot as any, { supabase });
+
+    const ctx = mockCtx({ match: "" });
+    await bot._triggerCommand("facts", ctx);
+
+    const combined = (ctx.reply.mock.calls as any[]).map((c) => c[0] as string).join("");
+
+    // Every item's unique marker must appear in the combined output
+    for (let i = 0; i < 50; i++) {
+      expect(combined).toContain(`unique-marker-${i}`);
+    }
+  });
+});
+
+// ============================================================
+// Cache — multi-op index stability (Phase 1 + 2 fix)
+//
+// Bug: /goals *10 | -12 | *15 marked goal #16 as done instead of #15.
+// Root cause: toggleGoalDone changes item type to completed_goal, so a
+// subsequent fresh DB query (type="goal") shifts all indices after the
+// toggled item by 1.  The second *N op then targets the wrong item.
+//
+// Fix: list cache anchors numeric indices to the list shown to the user;
+// deferred invalidation ensures cache is stable for the full command.
+// ============================================================
+
+describe("cache — multi-op index stability", () => {
+  /**
+   * Build a supabase mock for cache-based tests.
+   * Once firstToggledId is recorded in updatedIds (via updateEqFn),
+   * subsequent list queries exclude it — simulating the DB state where
+   * that goal's type has been changed to completed_goal.
+   */
+  function mockSupabaseMultiOp(
+    goals: Array<{ id: string; content: string }>,
+    firstToggledId: string
+  ) {
+    const goalsAfterToggle = goals.filter((g) => g.id !== firstToggledId);
+    const updatedIds: string[] = [];
+
+    const updateEqFn = mock((field: string, val: string) => {
+      if (field === "id") updatedIds.push(val);
+      return Promise.resolve({ error: null });
+    });
+
+    const singleFn = mock(() =>
+      Promise.resolve({ data: { type: "goal" }, error: null })
+    );
+
+    // list chain: returns shifted results once firstToggledId has been updated
+    const listChain: any = {};
+    listChain.eq = mock(() => listChain);
+    listChain.or = mock(() => listChain);
+    listChain.order = mock(() => listChain);
+    listChain.limit = () => {
+      const data = updatedIds.includes(firstToggledId) ? goalsAfterToggle : goals;
+      return Promise.resolve({ data, error: null });
+    };
+
+    // single chain: for toggleGoalDone's select("type").eq(...).single()
+    const singleChain: any = {};
+    singleChain.eq = mock(() => singleChain);
+    singleChain.single = singleFn;
+
+    const msgInsert = mock(() => Promise.resolve({ data: null, error: null }));
+
+    const supabase = {
+      from: mock((table: string) => {
+        if (table === "messages") return { insert: msgInsert };
+        return {
+          select: (cols: string) =>
+            cols === "type" ? singleChain : listChain,
+          update: mock(() => ({ eq: updateEqFn })),
+        };
+      }),
+    } as any;
+
+    return { supabase, updatedIds };
+  }
+
+  test("/goals *1 | *3 — first toggle does not shift second toggle", async () => {
+    // chatId unique to avoid cross-test cache contamination
+    const chatId = 70001;
+
+    const goals = [
+      { id: "g1", content: "Learn Rust" },
+      { id: "g2", content: "Ship API v2" },
+      { id: "g3", content: "Read 12 books" },
+      { id: "g4", content: "Improve test coverage" },
+      { id: "g5", content: "Write documentation" },
+    ];
+
+    const { supabase, updatedIds } = mockSupabaseMultiOp(goals, "g1");
+    const bot = mockBot();
+    registerDirectMemoryCommands(bot as any, { supabase });
+
+    // Step 1: populate cache via no-args /goals (simulates user viewing the list)
+    await bot._triggerCommand("goals", mockCtx({ chatId, match: "" }));
+
+    // Step 2: multi-op — *1 and *3
+    await bot._triggerCommand("goals", mockCtx({ chatId, match: "*1 | *3" }));
+
+    // g1 (index 1) and g3 (index 3) should be toggled
+    expect(updatedIds).toContain("g1");
+    expect(updatedIds).toContain("g3");
+    // Without fix: *3 uses shifted DB list [g2,g3,g4,g5] → index 3 = g4 (wrong)
+    expect(updatedIds).not.toContain("g4");
+  });
+
+  test("cache is invalidated after command — next /goals list hits DB fresh", async () => {
+    const chatId = 70002;
+
+    const goals = [
+      { id: "g1", content: "Goal One" },
+      { id: "g2", content: "Goal Two" },
+      { id: "g3", content: "Goal Three" },
+    ];
+
+    const { supabase } = mockSupabaseMultiOp(goals, "g1");
+    const bot = mockBot();
+    registerDirectMemoryCommands(bot as any, { supabase });
+
+    // Step 1: populate cache
+    await bot._triggerCommand("goals", mockCtx({ chatId, match: "" }));
+
+    // Step 2: toggle *1 — cache should be invalidated at end of command
+    await bot._triggerCommand("goals", mockCtx({ chatId, match: "*1" }));
+
+    // Step 3: list again — must query DB fresh (g1 toggled → excluded by mock)
+    const freshCtx = mockCtx({ chatId, match: "" });
+    await bot._triggerCommand("goals", freshCtx);
+
+    const text = freshCtx.reply.mock.calls[0][0] as string;
+    // Fresh DB excludes "Goal One" (g1 toggled)
+    expect(text).toContain("Goal Two");
+    expect(text).toContain("Goal Three");
+    expect(text).not.toContain("Goal One");
+  });
+
+  test("single-op /goals *2 still works after cache fix (regression)", async () => {
+    const chatId = 70003;
+
+    const goals = [
+      { id: "g1", content: "Learn Rust" },
+      { id: "g2", content: "Ship API v2" },
+      { id: "g3", content: "Read 12 books" },
+    ];
+
+    const { supabase, updatedIds } = mockSupabaseMultiOp(goals, "g2");
+    const bot = mockBot();
+    registerDirectMemoryCommands(bot as any, { supabase });
+
+    // populate cache
+    await bot._triggerCommand("goals", mockCtx({ chatId, match: "" }));
+
+    // single toggle *2
+    await bot._triggerCommand("goals", mockCtx({ chatId, match: "*2" }));
+
+    expect(updatedIds).toContain("g2");
+    expect(updatedIds).not.toContain("g1");
+    expect(updatedIds).not.toContain("g3");
+  });
+
+  test("/goals *1 | *3 cold-start seeds cache on first op (no prior list call)", async () => {
+    // Bug: without a preceding no-args /goals call, cache is empty.
+    // Old code: getListCache ?? freshDB — never sets cache on miss.
+    // Each op got a fresh (shifted) DB result, so *3 resolved against [g2,g3,g4,g5] → g4 (wrong).
+    // Fix: on cache miss in numeric path, fetch DB AND setListCache.
+    const chatId = 80001;
+
+    const goals = [
+      { id: "g1", content: "Learn Rust" },
+      { id: "g2", content: "Ship API v2" },
+      { id: "g3", content: "Read 12 books" },
+      { id: "g4", content: "Improve test coverage" },
+      { id: "g5", content: "Write documentation" },
+    ];
+
+    const { supabase, updatedIds } = mockSupabaseMultiOp(goals, "g1");
+    const bot = mockBot();
+    registerDirectMemoryCommands(bot as any, { supabase });
+
+    // NO prior no-args /goals — jump straight to multi-op
+    await bot._triggerCommand("goals", mockCtx({ chatId, match: "*1 | *3" }));
+
+    expect(updatedIds).toContain("g1");
+    expect(updatedIds).toContain("g3");
+    // Without fix: *3 resolves against shifted list [g2,g3,g4,g5] → index 3 = g4 (wrong)
+    expect(updatedIds).not.toContain("g4");
+  });
+
+  test("/facts -1 | -3 cold-start seeds cache on first op (no prior list call)", async () => {
+    // Same cold-start bug for findMatchingItems (facts/prefs/reminders -N path).
+    const chatId = 80002;
+
+    const facts = [
+      { id: "f1", content: "User is a Solution Architect" },
+      { id: "f2", content: "User works at GovTech" },
+      { id: "f3", content: "User prefers concise responses" },
+      { id: "f4", content: "User uses Singapore timezone" },
+      { id: "f5", content: "User has a MacBook Pro" },
+    ];
+
+    const deletedIds: string[] = [];
+
+    const deleteEqFn = mock((field: string, val: string) => {
+      if (field === "id") deletedIds.push(val);
+      return Promise.resolve({ error: null });
+    });
+
+    // Simulate shifted list once first item deleted
+    const listChain: any = {};
+    listChain.eq = mock(() => listChain);
+    listChain.or = mock(() => listChain);
+    listChain.order = mock(() => listChain);
+    listChain.limit = () => {
+      const data = facts.filter((f) => !deletedIds.includes(f.id));
+      return Promise.resolve({ data, error: null });
+    };
+
+    const msgInsert = mock(() => Promise.resolve({ data: null, error: null }));
+
+    const supabase = {
+      from: mock((table: string) => {
+        if (table === "messages") return { insert: msgInsert };
+        return {
+          select: mock(() => listChain),
+          delete: mock(() => ({ eq: deleteEqFn })),
+        };
+      }),
+    } as any;
+
+    const bot = mockBot();
+    registerDirectMemoryCommands(bot as any, { supabase });
+
+    // NO prior no-args /facts — jump straight to multi-op delete
+    await bot._triggerCommand("facts", mockCtx({ chatId, match: "-1 | -3" }));
+
+    expect(deletedIds).toContain("f1");
+    expect(deletedIds).toContain("f3");
+    // Without fix: -3 resolves against shifted [f2,f3,f4,f5] → index 3 = f4 (wrong)
+    expect(deletedIds).not.toContain("f4");
+  });
+});
+
+describe("listItems — provenance model read path (R5)", () => {
+  test("personal facts list does NOT apply chat_id OR-scope filter", async () => {
+    // RED: fails until R5 is implemented (currently applies .or(chat_id.eq.X,chat_id.is.null)
+    // for all non-goal types including facts).
+    // Under provenance model: no chat_id filter for facts (globally visible).
+    const bot = mockBot();
+    const memInsert = mock(() => Promise.resolve({ data: null, error: null }));
+    const msgInsert = mock(() => Promise.resolve({ data: null, error: null }));
+    const orFn = mock((arg: string) => dupChain);
+    const dupChain: any = {};
+    dupChain.eq = mock(() => dupChain);
+    dupChain.or = orFn;
+    dupChain.order = mock(() => dupChain);
+    dupChain.limit = mock(() => Promise.resolve({
+      data: [{ id: "f1", content: "User is a Solution Architect" }],
+      error: null,
+    }));
+    const supabase = {
+      from: mock((table: string) =>
+        table === "messages" ? { insert: msgInsert } : { insert: memInsert, select: mock(() => dupChain) }
+      ),
+    } as any;
+    registerDirectMemoryCommands(bot as any, { supabase });
+
+    const ctx = mockCtx({ chatId: 55555, match: "" });
+    await bot._triggerCommand("facts", ctx);
+
+    // .or() should NOT be called with a chat_id scope for facts
+    const orCallsWithChatIdScope = orFn.mock.calls.filter((args: string[]) =>
+      args[0]?.includes("chat_id.eq.55555")
+    );
+    expect(orCallsWithChatIdScope.length).toBe(0);
+  });
+
+  test("reminders list DOES apply chat_id OR-scope filter (dates stay chat-scoped)", async () => {
+    // Reminders are chat-scoped — .or(chat_id.eq.X, ...) must still be applied.
+    const bot = mockBot();
+    const memInsert = mock(() => Promise.resolve({ data: null, error: null }));
+    const msgInsert = mock(() => Promise.resolve({ data: null, error: null }));
+    const orFn = mock((arg: string) => reminderChain);
+    const reminderChain: any = {};
+    reminderChain.eq = mock(() => reminderChain);
+    reminderChain.or = orFn;
+    reminderChain.order = mock(() => reminderChain);
+    reminderChain.limit = mock(() => Promise.resolve({ data: [], error: null }));
+    const supabase = {
+      from: mock((table: string) =>
+        table === "messages" ? { insert: msgInsert } : { insert: memInsert, select: mock(() => reminderChain) }
+      ),
+    } as any;
+    registerDirectMemoryCommands(bot as any, { supabase });
+
+    const ctx = mockCtx({ chatId: 66666, match: "" });
+    await bot._triggerCommand("reminders", ctx);
+
+    const orCallsWithChatIdScope = orFn.mock.calls.filter((args: string[]) =>
+      args[0]?.includes("chat_id.eq.66666")
+    );
+    expect(orCallsWithChatIdScope.length).toBeGreaterThan(0);
   });
 });
