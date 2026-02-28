@@ -19,12 +19,16 @@
 import type { Bot, Context } from "grammy";
 import { InlineKeyboard } from "grammy";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { getSession, getSessionSummary, resetSession, saveSession } from "../session/groupSessions.ts";
+import { getSession, loadSession, getSessionSummary, resetSession, saveSession, setTopicCwd } from "../session/groupSessions.ts";
 import { getMemoryFull, type FullMemory } from "../memory.ts";
 import { handleRoutinesCommand } from "../routines/routineHandler.ts";
 import { registerMemoryCommands } from "./memoryCommands.ts";
 import { registerDirectMemoryCommands } from "./directMemoryCommands.ts";
 import { saveCommandInteraction } from "../utils/saveMessage.ts";
+import { searchDocumentsByTitles, type DocumentSearchResult } from "../rag/documentSearch.ts";
+import { listDocuments, deleteDocument } from "../documents/documentProcessor.ts";
+import { isTROQAActive } from "../tro/troQAState.ts";
+import { handleCwdCommand } from "./cwdCommand.ts";
 
 const TELEGRAM_MAX_MESSAGE_LENGTH = 4096;
 
@@ -69,6 +73,14 @@ export interface CommandOptions {
   userId?: number;
   /** Called by /new <prompt> to process the follow-up text as a user message */
   onMessage?: (chatId: number, text: string, ctx: Context) => Promise<void>;
+  /** Fallback working directory (PROJECT_DIR) shown in /cwd display output */
+  projectDir?: string;
+  /**
+   * Resolves the agent ID for a given chat ID.
+   * Used by /cwd to pre-load the session when it is not yet in the in-memory
+   * cache (e.g., when /cwd is issued before any regular message in a topic).
+   */
+  agentResolver?: (chatId: number) => string;
 }
 
 // ── Memory formatting helpers ────────────────────────────────────────────────
@@ -126,6 +138,113 @@ function buildMemoryOverview(mem: FullMemory): string {
 }
 
 /**
+ * Pure handler logic for the /doc command.
+ * Accepts injectable list/delete functions for testability.
+ * Returns the reply string; the caller is responsible for sending it.
+ */
+export async function handleDocCommand(
+  args: string,
+  supabase: SupabaseClient | null,
+  listFn: (sb: SupabaseClient) => ReturnType<typeof listDocuments> = listDocuments,
+  deleteFn: (sb: SupabaseClient, title: string) => ReturnType<typeof deleteDocument> = deleteDocument,
+  searchFn: (sb: SupabaseClient, question: string, titles: string[]) => Promise<DocumentSearchResult> = searchDocumentsByTitles
+): Promise<string> {
+  if (!supabase) {
+    return "Document management requires Supabase. Please configure your database first.";
+  }
+
+  const [subcmd, ...rest] = args.trim().split(/\s+/);
+
+  if (subcmd === "query") {
+    const remaining = rest.join(" ").trim();
+    if (!remaining) {
+      return (
+        "Usage: /doc query <question>\n\n" +
+        "Examples:\n" +
+        "  /doc query What is my deductible?\n" +
+        "  /doc query What is my deductible? | NTUC Income\n" +
+        "  /doc query What is my deductible? | NTUC Income | AIA Shield"
+      );
+    }
+    const parts = remaining.split("|").map((s) => s.trim());
+    const question = parts[0];
+    const titles = parts.slice(1).filter(Boolean);
+
+    const result = await searchFn(supabase, question, titles);
+
+    if (!result.hasResults) {
+      const scope = titles.length === 0
+        ? "across all documents"
+        : `in ${titles.map((t) => `"${t}"`).join(", ")}`;
+      return (
+        `No relevant content found for "${question}" ${scope}.\n\n` +
+        "Make sure your documents are indexed:\n" +
+        "  /doc list"
+      );
+    }
+
+    const scopeLabel = titles.length === 0 ? "all documents" : titles.join(", ");
+    const lines: string[] = [
+      `🔍 "${question}" — ${scopeLabel}`,
+      `Found ${result.chunks.length} relevant excerpt(s):`,
+      "",
+    ];
+    for (const chunk of result.chunks) {
+      const pct = (chunk.similarity * 100).toFixed(0);
+      lines.push(`📄 ${chunk.title} — ${chunk.source} (relevance ${pct}%)`);
+      lines.push(chunk.content.substring(0, 400) + (chunk.content.length > 400 ? "…" : ""));
+      lines.push("");
+    }
+    lines.push("💡 Ask me anything about these excerpts for a fuller answer.");
+    return lines.join("\n");
+  }
+
+  if (!subcmd || subcmd === "list") {
+    const docs = await listFn(supabase);
+    if (!docs.length) {
+      return (
+        "No documents indexed yet.\n\n" +
+        "Send any PDF, TXT, or MD file to index it automatically.\n" +
+        "Use the file caption as the document title."
+      );
+    }
+    const lines = ["📚 Indexed Documents\n"];
+    for (const doc of docs) {
+      lines.push(`📄 "${doc.title}"`);
+      lines.push(`   Sources : ${doc.sources.join(", ")}`);
+      lines.push(`   Chunks  : ${doc.chunks}`);
+      lines.push("");
+    }
+    lines.push(`Total: ${docs.length} document${docs.length === 1 ? "" : "s"}`);
+    return lines.join("\n");
+  }
+
+  if (subcmd === "delete" || subcmd === "forget") {
+    const title = rest.join(" ").trim();
+    if (!title) {
+      return `Usage: /doc ${subcmd} <document title>\n\nExample: /doc ${subcmd} "My Policy"`;
+    }
+    const result = await deleteFn(supabase, title);
+    if (result.deleted === 0) {
+      return `No document found with title "${title}".`;
+    }
+    return `🗑️ Deleted "${title}" (${result.deleted} chunk${result.deleted === 1 ? "" : "s"} removed).`;
+  }
+
+  return (
+    "Usage:\n" +
+    "  /doc list — list all indexed documents\n" +
+    "  /doc query <question> — search all documents\n" +
+    "  /doc query <question> | <title> — search specific document(s)\n" +
+    "  /doc delete <title> — remove a document\n" +
+    "  /doc forget <title> — remove a document (alias for delete)\n\n" +
+    "Use | to separate multiple document titles:\n" +
+    "  /doc query What is my premium? | NTUC Income | AIA Shield\n\n" +
+    "To index a document, send a PDF, TXT, or MD file. The caption becomes the title."
+  );
+}
+
+/**
  * Register all bot commands.
  * Call once at startup after the bot is created.
  */
@@ -137,7 +256,6 @@ export function registerCommands(bot: Bot, options: CommandOptions): void {
     const help = [
       "Available commands:",
       "",
-      "/status - Show current session status",
       "/new [prompt] - Start a fresh conversation (optionally with first message)",
       "/memory - Show all memory (goals, prefs, facts, dates)",
       "/memory goals - Active goals only",
@@ -166,6 +284,15 @@ export function registerCommands(bot: Bot, options: CommandOptions): void {
       "/code new <path> <task> - Start agentic coding session",
       "/code status - Show current coding session",
       "/plan <task> - Plan a coding task with guided Q&A before running Claude",
+      "/cwd - Show working directory for this topic",
+      "/cwd /path/to/dir - Set working directory (takes effect after /new)",
+      "/cwd reset - Clear working directory (reverts to default after /new)",
+      "/doc list - List all indexed documents",
+      "/doc query <question> - Search all indexed documents",
+      "/doc query <question> | <title> - Search specific document(s)",
+      "/doc delete <title> - Remove a document from the index",
+      "/doc forget <title> - Remove a document (alias for delete)",
+      "/monthly_update - Trigger TRO monthly update pipeline (ad-hoc)",
       "/help - Show this help",
       "",
       "Create routines by describing them:",
@@ -182,25 +309,15 @@ export function registerCommands(bot: Bot, options: CommandOptions): void {
     await handleRoutinesCommand(ctx, args, supabase);
   });
 
-  // /status - show session status (included in short-term memory)
-  bot.command("status", async (ctx) => {
-    const chatId = ctx.chat?.id;
-    if (!chatId) return;
-
-    const summary = getSessionSummary(chatId);
-    const replyText = `Session Status\n\n${summary}`;
-    await ctx.reply(replyText);
-    await saveCommandInteraction(supabase, chatId, "/status", replyText);
-  });
-
   // /new [prompt] - reset session; if prompt given, immediately process it
   bot.command("new", async (ctx) => {
     const chatId = ctx.chat?.id;
     if (!chatId) return;
 
+    const threadId = ctx.msg?.message_thread_id ?? null;
     const prompt = (ctx.match ?? "").trim();
 
-    await resetSession(chatId);
+    await resetSession(chatId, threadId);
 
     if (prompt && onMessage) {
       await ctx.reply("Starting a fresh conversation! Processing your message...");
@@ -302,26 +419,91 @@ export function registerCommands(bot: Bot, options: CommandOptions): void {
 
   // Register direct memory mutation commands (/goals, /facts, /prefs, /reminders)
   registerDirectMemoryCommands(bot, { supabase });
-}
 
-/**
- * Build a session progress footer for long responses.
- * Appended to Claude responses when processing took longer than threshold.
- */
-export function buildProgressFooter(
-  chatId: number,
-  processingTimeMs: number,
-  thresholdMs = 30000
-): string | null {
-  if (processingTimeMs < thresholdMs) return null;
+  // /doc list|query|delete|forget - manage and search indexed RAG documents
+  bot.command("doc", async (ctx) => {
+    const chatId = ctx.chat?.id;
+    if (!chatId) return;
 
-  const session = getSession(chatId);
-  if (!session) return null;
+    const args = (ctx.match ?? "").trim();
+    const result = await handleDocCommand(args, supabase);
+    await sendLongMessage(ctx, result);
+  });
 
-  const seconds = Math.round(processingTimeMs / 1000);
-  const msgCount = session.messageCount || 0;
+  // /monthly_update — trigger TRO monthly update pipeline ad-hoc
+  bot.command("monthly_update", async (ctx) => {
+    const chatId = ctx.chat?.id;
+    if (!chatId) return;
 
-  return `_(${seconds}s · msg ${msgCount} · /status for session info)_`;
+    // Guard: refuse if a pipeline is already in Q&A phase
+    if (isTROQAActive(chatId)) {
+      await ctx.reply(
+        "TRO monthly update is already running — currently waiting for your Q&A answers.\n\n" +
+        "Answer the questions sent above, or wait for the 15-minute timeout to pass."
+      );
+      return;
+    }
+
+    await ctx.reply(
+      "Starting TRO monthly update pipeline...\n\n" +
+      "This will:\n" +
+      "1. Pull GitLab activity for the past 30 days\n" +
+      "2. Read past monthly update PDFs for context\n" +
+      "3. Ask you context questions via this chat\n" +
+      "4. Generate slide outline and PPTX draft\n\n" +
+      "You'll receive updates as each phase completes."
+    );
+
+    // Spawn the routine as a background process with --ad-hoc flag
+    const routineScript = new URL("../../routines/tro-monthly-update.ts", import.meta.url).pathname;
+    const proc = Bun.spawn(
+      ["bun", "run", routineScript, "--ad-hoc"],
+      {
+        stdout: "inherit",
+        stderr: "inherit",
+        env: { ...process.env },
+        detached: true,
+      }
+    );
+
+    // Unref so the relay doesn't wait for it
+    proc.unref();
+
+    console.log(`[monthly-update] Spawned tro-monthly-update.ts (pid ${proc.pid})`);
+  });
+
+  // /cwd — view or change the working directory for this topic
+  bot.command("cwd", async (ctx) => {
+    const chatId = ctx.chat?.id;
+    if (!chatId) return;
+
+    const threadId = ctx.message?.message_thread_id ?? null;
+
+    // Ensure the session is in the in-memory cache before we try to persist cwd.
+    // getSession() only checks the cache; if the user issues /cwd before sending
+    // any regular message in this topic, the session won't be loaded yet and
+    // setTopicCwd() would silently no-op.
+    let session = getSession(chatId, threadId);
+    if (!session && options.agentResolver) {
+      try {
+        const agentId = options.agentResolver(chatId);
+        session = await loadSession(chatId, agentId, threadId);
+        console.log(`[/cwd] pre-loaded session for chatId=${chatId} threadId=${threadId} agentId=${agentId}`);
+      } catch (loadErr) {
+        console.error("[/cwd] session pre-load error:", loadErr instanceof Error ? loadErr.message : loadErr);
+      }
+    }
+
+    const result = await handleCwdCommand(ctx, session?.cwd, options.projectDir);
+
+    if (result?.ok) {
+      try {
+        await setTopicCwd(chatId, threadId, result.newCwd);
+      } catch (err) {
+        console.error("[/cwd] setTopicCwd error:", err instanceof Error ? err.message : err);
+      }
+    }
+  });
 }
 
 /**

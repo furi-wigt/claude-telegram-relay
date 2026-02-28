@@ -6,9 +6,10 @@
     "groupKey": "AWS_ARCHITECT",
     "chatId": -1003764926913,
     "topicId": null,
-    "codingTopicId": 3,
+    "codingTopicId": null,
     "claudeAgent": "architect.md",
-    "capabilities": ["infrastructure-design", "cost-optimization", "aws-services"]
+    "capabilities": ["infrastructure-design", "cost-optimization", "aws-services"],
+    "diagnostics": { "enabled": true }
   },
   {
     "id": "security-analyst",
@@ -17,9 +18,10 @@
     "groupKey": "SECURITY",
     "chatId": -1003801404022,
     "topicId": null,
-    "codingTopicId": 2,
+    "codingTopicId": null,
     "claudeAgent": "security.md",
-    "capabilities": ["security-audit", "compliance-check", "threat-modeling"]
+    "capabilities": ["security-audit", "compliance-check", "threat-modeling"],
+    "diagnostics": { "enabled": true }
   },
   {
     "id": "documentation-specialist",
@@ -28,7 +30,7 @@
     "groupKey": "DOCUMENTATION",
     "chatId": -1003872739958,
     "topicId": null,
-    "codingTopicId": 3,
+    "codingTopicId": null,
     "claudeAgent": "documentation-writer.md",
     "capabilities": ["adr-creation", "system-docs", "runbooks"]
   },
@@ -39,9 +41,10 @@
     "groupKey": "CODE_QUALITY",
     "chatId": -1003802998454,
     "topicId": null,
-    "codingTopicId": 3,
+    "codingTopicId": null,
     "claudeAgent": "reviewer.md",
-    "capabilities": ["code-review", "test-generation", "refactoring"]
+    "capabilities": ["code-review", "test-generation", "refactoring"],
+    "diagnostics": { "enabled": true }
   },
   {
     "id": "research-analyst",
@@ -60,7 +63,7 @@
     "groupKey": "GENERAL",
     "chatId": -1003481121777,
     "topicId": null,
-    "codingTopicId": 3,
+    "codingTopicId": null,
     "isDefault": true,
     "capabilities": ["general-qa", "meeting-summary", "task-breakdown"]
   }
