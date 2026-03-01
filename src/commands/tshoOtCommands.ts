@@ -5,6 +5,7 @@
  * All commands execute `tshoot` with the topic's active cwd injected.
  *
  * Registered commands:
+ *   /ts <cmd> <subcmd> [args]  — generic tshoot proxy (manifest-routed, Phase 7)
  *   /scan             — run AWS + GitLab health scans in parallel
  *   /ts-new [slug]    — start a new tshoot session
  *   /ts-sessions      — list sessions for current project
@@ -20,6 +21,7 @@
  *   - tshoot installed and in PATH
  */
 
+import { InputFile } from "grammy";
 import type { Bot, Context } from "grammy";
 import { getSession, loadSession } from "../session/groupSessions.ts";
 
@@ -36,6 +38,64 @@ interface ExecResult {
   stdout: string;
   stderr: string;
   exitCode: number;
+}
+
+interface ManifestEntry {
+  cmd: string;
+  args: string;
+  output: "text" | "file";
+  /** Relative path to artifact file (only present when output === "file") */
+  artifact?: string;
+}
+
+interface CommandManifest {
+  version: string;
+  commands: ManifestEntry[];
+}
+
+// ─── Manifest cache ────────────────────────────────────────────────────────────
+
+/** Per-cwd manifest cache. Key = absolute cwd path. */
+const manifestCache = new Map<string, CommandManifest>();
+
+/**
+ * Fetch and cache the tshoot command manifest for a given cwd.
+ * Returns null if `tshoot commands --json` fails or output is not valid JSON.
+ */
+async function fetchManifest(cwd: string): Promise<CommandManifest | null> {
+  const cached = manifestCache.get(cwd);
+  if (cached) return cached;
+
+  const result = await runTshoot(["commands", "--json"], cwd);
+  if (result.exitCode !== 0) return null;
+
+  try {
+    const manifest = JSON.parse(result.stdout) as CommandManifest;
+    manifestCache.set(cwd, manifest);
+    return manifest;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Invalidate the cached manifest for a cwd (call when /cwd changes).
+ * No-op if the cwd was not cached.
+ */
+export function invalidateManifestCache(cwd: string): void {
+  manifestCache.delete(cwd);
+}
+
+/**
+ * Build a human-readable help string from a manifest.
+ */
+function formatManifestHelp(manifest: CommandManifest): string {
+  const lines = ["Available /ts commands:"];
+  for (const entry of manifest.commands) {
+    const argPart = entry.args ? ` ${entry.args}` : "";
+    lines.push(`  /ts ${entry.cmd}${argPart}`);
+  }
+  return lines.join("\n");
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -245,6 +305,87 @@ export function registerTshoOtCommands(
 
     const out = stripAnsi(result.stdout);
     await ctx.reply(truncate(out || `Project context: ${cwd}`));
+  });
+
+  // ── /ts <cmd> <subcmd> [args…] ──────────────────────────────────────────────
+  //
+  // Generic tshoot proxy. Routes any subcommand via the manifest returned by
+  // `tshoot commands --json`. No relay change needed when tshoot adds new
+  // subcommands — just update tshoot and the manifest.
+  //
+  // Usage examples:
+  //   /ts incident new 2026-02-28_enum-bug
+  //   /ts incident list
+  //   /ts incident export            ← uploads artifacts/incident.docx
+  //   /ts incident status
+  //   /ts incident link path/to/evidence
+  //   /ts scan aws
+  //
+  bot.command("ts", async (ctx) => {
+    const chatId = ctx.chat?.id;
+    if (!chatId) return;
+    const threadId = ctx.message?.message_thread_id ?? null;
+
+    const cwd = await getCwdOrReply(ctx, chatId, threadId);
+    if (!cwd) return;
+
+    // Parse args: strip "/ts" (with optional @bot suffix) and split
+    const raw = ctx.message?.text ?? "";
+    const rest = raw.replace(/^\/ts(?:@\S+)?\s*/, "").trim();
+    const tokens = rest.split(/\s+/).filter(Boolean);
+
+    // Fetch manifest (cached per cwd)
+    const manifest = await fetchManifest(cwd);
+    if (!manifest) {
+      await ctx.reply(
+        "Could not load tshoot command manifest.\n" +
+          "Ensure tshoot is installed and `tshoot commands --json` works in your project dir."
+      );
+      return;
+    }
+
+    // Match first two tokens against manifest cmd (e.g. "incident new")
+    const lookup =
+      tokens.length >= 2
+        ? `${tokens[0]} ${tokens[1]}`
+        : tokens[0] ?? "";
+
+    const entry = manifest.commands.find((e) => e.cmd === lookup);
+
+    if (!entry) {
+      if (!lookup) {
+        await ctx.reply(formatManifestHelp(manifest));
+      } else {
+        const help = formatManifestHelp(manifest);
+        await ctx.reply(`Unknown command: /ts ${lookup}\n\n${help}`);
+      }
+      return;
+    }
+
+    // Extra args after cmd+subcmd
+    const extraArgs = tokens.slice(2);
+    const tshootArgs = [...entry.cmd.split(" "), ...extraArgs];
+
+    const result = await runTshoot(tshootArgs, cwd);
+    if (await replyOnError(ctx, result, entry.cmd)) return;
+
+    if (entry.output === "file") {
+      // stdout contains the absolute path to the artifact
+      const filePath = result.stdout.trim();
+      if (!filePath) {
+        await ctx.reply(`tshoot ${entry.cmd} produced no file path on stdout.`);
+        return;
+      }
+      try {
+        await ctx.replyWithDocument(new InputFile(filePath));
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        await ctx.reply(`File upload failed: ${msg}\nPath: ${filePath}`);
+      }
+    } else {
+      const out = stripAnsi(result.stdout);
+      await ctx.reply(truncate(out || `(no output from tshoot ${entry.cmd})`));
+    }
   });
 }
 

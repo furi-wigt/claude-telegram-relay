@@ -26,6 +26,7 @@ import { registerMemoryCommands } from "./memoryCommands.ts";
 import { registerDirectMemoryCommands } from "./directMemoryCommands.ts";
 import { saveCommandInteraction } from "../utils/saveMessage.ts";
 import { searchDocumentsByTitles, type DocumentSearchResult } from "../rag/documentSearch.ts";
+import { invalidateManifestCache } from "./tshoOtCommands.ts";
 import { listDocuments, deleteDocument } from "../documents/documentProcessor.ts";
 import { isTROQAActive } from "../tro/troQAState.ts";
 import { handleCwdCommand } from "./cwdCommand.ts";
@@ -499,6 +500,8 @@ export function registerCommands(bot: Bot, options: CommandOptions): void {
     if (result?.ok) {
       try {
         await setTopicCwd(chatId, threadId, result.newCwd);
+        // Invalidate manifest cache so /ts fetches fresh commands for the new cwd
+        if (result.newCwd) invalidateManifestCache(result.newCwd);
       } catch (err) {
         console.error("[/cwd] setTopicCwd error:", err instanceof Error ? err.message : err);
       }
