@@ -51,7 +51,7 @@ import { buildAgentPrompt } from "./agents/promptBuilder.ts";
 import { GroupQueueManager } from "./queue/groupQueueManager.ts";
 import { registerCommands, registerContextSwitchCallbackHandler } from "./commands/botCommands.ts";
 import { registerTshoOtCommands, handleTshoOtCapture } from "./commands/tshoOtCommands.ts";
-import { detectAndHandle, registerCallbackHandler } from "./routines/routineHandler.ts";
+import { registerCallbackHandler } from "./routines/routineHandler.ts";
 import { getTROQAState, appendQAAnswer } from "./tro/troQAState.ts";
 import { registerDedupReviewCallbackHandler } from "./memory/dedupReviewCallbackHandler.ts";
 import { CodingSessionManager } from "./coding/sessionManager.ts";
@@ -1077,9 +1077,6 @@ bot.on("message:text", async (ctx) => {
 
   // Priority 3b: Inline tshoot capture (!finding / !discovery)
   if (await handleTshoOtCapture(ctx, text, chatId, threadId, (id) => getAgentForChat(id).id)) return;
-
-  // Priority 4: Check for routine creation intent before normal Claude processing
-  if (await detectAndHandle(ctx, text)) return;
 
   if (!queueManager.hasCapacity(chatId, threadId)) {
     await ctx.reply("Too many pending messages. Please wait for the current ones to complete.");

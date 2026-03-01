@@ -614,3 +614,61 @@ describe("claudeStream — backward compatibility (no onQuestion)", () => {
     expect(args).not.toContain("--input-format");
   });
 });
+
+// ═══════════════════════════════════════════════════════════════
+// Suite: One-shot mode — proc.exited hang fix (issue 260228_224400)
+// ═══════════════════════════════════════════════════════════════
+
+describe("claudeStream — one-shot mode proc.exited hang fix", () => {
+  test("proc.kill() called after result event so exited resolves promptly", async () => {
+    // Simulate Claude emitting result but process not exiting on its own.
+    // exitDelay is set to a long value — without the fix proc.exited would hang
+    // until the idle timer fires.  With the fix, kill() is called immediately after
+    // the result event and resolveExit() fires synchronously.
+    let killCalled = false;
+
+    spawnMock.mockImplementation(() =>
+      mockProc({
+        stdout: resultLine("long response text") + "\n",
+        exitCode: 143, // SIGTERM — what proc.kill() triggers
+        exitDelay: 60_000, // Would time out without the fix
+        onKill: () => { killCalled = true; },
+      })
+    );
+
+    const result = await claudeStream("explain something complex");
+
+    // Result returned correctly (exit 143 treated as graceful)
+    expect(result).toBe("long response text");
+    // proc.kill() was called after result received
+    expect(killCalled).toBe(true);
+  });
+
+  test("result returned correctly even when process exits via kill", async () => {
+    spawnMock.mockImplementation(() =>
+      mockProc({
+        stdout: resultLine("the actual answer") + "\n",
+        exitCode: 143,
+        exitDelay: 60_000,
+      })
+    );
+
+    const result = await claudeStream("some prompt");
+    expect(result).toBe("the actual answer");
+  });
+
+  test("one-shot returns result even when process would otherwise hang indefinitely", async () => {
+    // Worst-case: process never self-exits (exitDelay=long).
+    // The fix calls proc.kill() after result → exitCode=143 (SIGTERM) → graceful return.
+    spawnMock.mockImplementation(() =>
+      mockProc({
+        stdout: resultLine("correct answer") + "\n",
+        exitCode: 143,
+        exitDelay: 300_000, // 5 min — the old idle-timeout delay without the fix
+      })
+    );
+
+    const result = await claudeStream("complex prompt");
+    expect(result).toBe("correct answer");
+  });
+});

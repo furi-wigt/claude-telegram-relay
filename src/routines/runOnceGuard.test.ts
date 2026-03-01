@@ -8,7 +8,7 @@ import { test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { shouldSkipToday, markRanToday } from "./runOnceGuard.ts";
+import { shouldSkipToday, shouldSkipRecently, markRanToday } from "./runOnceGuard.ts";
 
 // ============================================================
 // Helpers
@@ -122,6 +122,54 @@ test("a lastrun file from yesterday (local time) is NOT skipped today", () => {
   // Simulates the morning-summary scenario: ran yesterday, should run today
   writeFileSync(lastRunFile, YESTERDAY, "utf8");
   expect(shouldSkipToday(lastRunFile)).toBe(false);
+});
+
+// ============================================================
+// shouldSkipRecently — 2-hour cooldown guard
+// ============================================================
+
+test("shouldSkipRecently returns false when lastrun file does not exist", () => {
+  expect(shouldSkipRecently(lastRunFile, 2)).toBe(false);
+});
+
+test("shouldSkipRecently returns true when file was modified 1 minute ago (within 2h cooldown)", () => {
+  writeFileSync(lastRunFile, "touched", "utf8");
+  // mtime is now — definitely within any cooldown
+  expect(shouldSkipRecently(lastRunFile, 2)).toBe(true);
+});
+
+test("shouldSkipRecently returns false when file is older than cooldown", () => {
+  // Write file then backdate its mtime to 3 hours ago
+  writeFileSync(lastRunFile, "touched", "utf8");
+  const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60 * 1000);
+  const { utimesSync } = require("fs");
+  utimesSync(lastRunFile, threeHoursAgo, threeHoursAgo);
+  expect(shouldSkipRecently(lastRunFile, 2)).toBe(false);
+});
+
+test("shouldSkipRecently with 0h cooldown always returns false (file older than 0 hours)", () => {
+  writeFileSync(lastRunFile, "touched", "utf8");
+  // Even a just-written file is >= 0ms old, so ageMs < 0 is false
+  // This is an edge-case boundary — 0h cooldown means never skip
+  expect(shouldSkipRecently(lastRunFile, 0)).toBe(false);
+});
+
+test("shouldSkipRecently: morning run at 15:00 does NOT block 23:00 scheduled run (2h cooldown)", () => {
+  // Simulate: manual run at 15:00, check at 23:00 → 8 hours elapsed → not skipped
+  writeFileSync(lastRunFile, "touched", "utf8");
+  const eightHoursAgo = new Date(Date.now() - 8 * 60 * 60 * 1000);
+  const { utimesSync } = require("fs");
+  utimesSync(lastRunFile, eightHoursAgo, eightHoursAgo);
+  expect(shouldSkipRecently(lastRunFile, 2)).toBe(false);
+});
+
+test("shouldSkipRecently: PM2 crash-restart 5 minutes after 23:00 run IS skipped (within 2h)", () => {
+  // Simulate: ran at 23:00, PM2 restarts at 23:05 → 5 min elapsed → skipped
+  writeFileSync(lastRunFile, "touched", "utf8");
+  const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+  const { utimesSync } = require("fs");
+  utimesSync(lastRunFile, fiveMinutesAgo, fiveMinutesAgo);
+  expect(shouldSkipRecently(lastRunFile, 2)).toBe(true);
 });
 
 test("UTC-previous-day date does not cause false skip on local-today", () => {

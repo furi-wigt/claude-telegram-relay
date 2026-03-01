@@ -555,14 +555,19 @@ export async function claudeStream(
           } else if (type === "result" && event.subtype === "success") {
             resultText = (event.result as string) ?? "";
             console.debug(`[stream] result received, length=${resultText.length}`);
-            // In interactive mode stdin stays open — Claude keeps waiting for more input
-            // and the process never exits on its own.  Close stdin now so Claude exits
-            // cleanly instead of sitting idle until the 5-minute idle timer fires.
+            // After receiving the result the process must be terminated so proc.exited
+            // resolves promptly.  Without this, claudeStream blocks until the 5-min
+            // idle timer fires and returns a 45-char error string instead of the result.
+            //
+            // Interactive mode: Claude waits for more stdin — close the pipe so it exits.
+            // One-shot mode:    Claude doesn't exit promptly on its own — kill it.
             if (interactiveMode) {
               try {
                 const stdinEnd = proc.stdin as { end?: () => void } | null | undefined;
                 stdinEnd?.end?.();
               } catch { /* ignore close errors */ }
+            } else {
+              proc.kill();
             }
           }
         }
