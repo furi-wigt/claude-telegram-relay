@@ -19,6 +19,7 @@
 import YahooFinance from "yahoo-finance2";
 const yahooFinance = new YahooFinance({ suppressNotices: ["yahooSurvey", "ripHistorical"] });
 import { sendAndRecord } from "../src/utils/routineMessage.ts";
+import { sendToGroup } from "../src/utils/sendToGroup.ts";
 import { GROUPS, validateGroup } from "../src/config/groups.ts";
 import { USER_TIMEZONE } from "../src/config/userConfig.ts";
 
@@ -469,8 +470,12 @@ const _isEntry =
   process.env.pm_exec_path === import.meta.url?.replace("file://", "");
 
 if (_isEntry) {
-  main().catch(err => {
+  main().catch(async (err) => {
+    const msg = err instanceof Error ? err.message : String(err);
     console.error("ETF screener failed:", err);
+    try {
+      await sendToGroup(GROUPS.GENERAL.chatId, `⚠️ etf-52week-screener failed:\n\n${msg}`);
+    } catch { /* ignore secondary failure */ }
     process.exit(0); // exit 0 so PM2 does not immediately restart — next run at scheduled cron time
   });
 }

@@ -31,6 +31,7 @@
 import { readdir, stat, unlink } from "fs/promises";
 import { join, dirname } from "path";
 import { sendAndRecord } from "../src/utils/routineMessage.ts";
+import { sendToGroup } from "../src/utils/sendToGroup.ts";
 import { GROUPS, validateGroup } from "../src/config/groups.ts";
 import { getObservabilityConfig, getPm2LogsDir } from "../config/observability.ts";
 
@@ -299,8 +300,12 @@ const _isEntry =
   process.env.pm_exec_path === import.meta.url?.replace("file://", "");
 
 if (_isEntry) {
-  main().catch((error) => {
+  main().catch(async (error) => {
+    const msg = error instanceof Error ? error.message : String(error);
     console.error("Error running log cleanup:", error);
+    try {
+      await sendToGroup(GROUPS.GENERAL.chatId, `⚠️ log-cleanup failed:\n\n${msg}`);
+    } catch { /* ignore secondary failure */ }
     process.exit(0); // exit 0 so PM2 does not immediately restart
   });
 }

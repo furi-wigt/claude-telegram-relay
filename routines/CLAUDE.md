@@ -183,7 +183,15 @@ async function fetchData() {
 Exit 1 triggers an immediate PM2 restart loop. Exit 0 tells PM2 the cron
 task completed; it retries at the next scheduled time.
 
+**Always send a Telegram notification on fatal error.** Routines run
+unattended — silent failures are invisible. Use `sendToGroup` (not
+`sendAndRecord`) for fatal errors. Wrap the send in its own try/catch so
+a Telegram failure does not prevent `process.exit(0)`.
+
 ```ts
+import { sendToGroup } from "../src/utils/sendToGroup.ts";
+import { GROUPS } from "../src/config/groups.ts";
+
 // ⚠️ Do NOT use `if (import.meta.main)` — it breaks under PM2 bun container.
 // PM2's ProcessContainerForkBun.js loads scripts via require(), which sets
 // import.meta.main = false. main() silently never fires. Use _isEntry instead.
@@ -192,8 +200,12 @@ const _isEntry =
   process.env.pm_exec_path === import.meta.url?.replace("file://", "");
 
 if (_isEntry) {
-  main().catch((err) => {
-    console.error("Error:", err);
+  main().catch(async (err) => {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error("Error running my-routine:", err);
+    try {
+      await sendToGroup(GROUPS.GENERAL.chatId, `⚠️ my-routine failed:\n\n${msg}`);
+    } catch { /* ignore secondary failure */ }
     process.exit(0); // ← always 0
   });
 }
@@ -348,6 +360,7 @@ Before committing a new routine:
 - [ ] `validateGroup()` called before any Supabase or Telegram calls
 - [ ] All Supabase calls guarded with URL/key check and try/catch
 - [ ] `process.exit(0)` in catch (never exit 1)
+- [ ] Catch block sends Telegram via `sendToGroup` on fatal error (wrapped in try/catch)
 - [ ] `_isEntry` guard on the main() call (NOT `import.meta.main` — PM2 bun sets it to false)
 - [ ] Pure functions extracted and exported for testing
 - [ ] Test file exists: `routines/<name>.test.ts`

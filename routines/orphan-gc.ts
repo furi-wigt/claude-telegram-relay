@@ -41,6 +41,7 @@ import { join } from "path";
 import { homedir } from "os";
 import { spawn } from "bun";
 import { sendAndRecord } from "../src/utils/routineMessage.ts";
+import { sendToGroup } from "../src/utils/sendToGroup.ts";
 import { GROUPS, validateGroup } from "../src/config/groups.ts";
 
 // ============================================================
@@ -458,8 +459,12 @@ const _isEntry =
   process.env.pm_exec_path === import.meta.url?.replace("file://", "");
 
 if (_isEntry) {
-  main().catch((error) => {
+  main().catch(async (error) => {
+    const msg = error instanceof Error ? error.message : String(error);
     console.error("Error running orphan GC:", error);
+    try {
+      await sendToGroup(GROUPS.GENERAL.chatId, `⚠️ orphan-gc failed:\n\n${msg}`);
+    } catch { /* ignore secondary failure */ }
     process.exit(0); // exit 0 so PM2 does not immediately restart
   });
 }

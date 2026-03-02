@@ -26,6 +26,7 @@ import { createClient } from "@supabase/supabase-js";
 import { runPrompt } from "../integrations/claude/index.ts";
 import { callOllama } from "../src/fallback.ts";
 import { sendAndRecord } from "../src/utils/routineMessage.ts";
+import { sendToGroup } from "../src/utils/sendToGroup.ts";
 import { GROUPS, validateGroup } from "../src/config/groups.ts";
 import { USER_NAME, USER_TIMEZONE } from "../src/config/userConfig.ts";
 import { shouldSkipRecently, markRanToday } from "../src/routines/runOnceGuard.ts";
@@ -479,8 +480,12 @@ const _isEntry =
   process.env.pm_exec_path === import.meta.url?.replace("file://", "");
 
 if (_isEntry) {
-  main().catch((error) => {
+  main().catch(async (error) => {
+    const msg = error instanceof Error ? error.message : String(error);
     console.error("Error running night summary:", error);
+    try {
+      await sendToGroup(GROUPS.GENERAL.chatId, `⚠️ night-summary failed:\n\n${msg}`);
+    } catch { /* ignore secondary failure */ }
     process.exit(0); // exit 0 so PM2 does not immediately restart — next run at scheduled cron time
   });
 }
