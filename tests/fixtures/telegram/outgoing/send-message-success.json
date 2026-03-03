@@ -1,0 +1,30 @@
+{
+  "id": "send-message-success",
+  "description": "bot.api.sendMessage() success response — initial /plan loading card sent to private chat",
+  "source": "real",
+  "captured_at": "2026-03-03T21:39:53+08:00",
+  "trigger": "Send /plan outgoing capture test in private chat",
+  "boundary": "bot-api-response",
+  "handler": "bot.api.sendMessage",
+  "payload": {
+    "message_id": 1029,
+    "from": {
+      "id": 8599605373,
+      "is_bot": true,
+      "first_name": "ccbot",
+      "username": "f4121_bot"
+    },
+    "chat": {
+      "id": 1078052084,
+      "first_name": "Furi",
+      "last_name": "Karnapi",
+      "username": "f412i",
+      "type": "private"
+    },
+    "date": 1772545193,
+    "text": "📋 plan: outgoing capture test\n━━━━━━━━━━━━━━━━━━━━\n\n⏳ Generating questions…",
+    "entities": [
+      { "offset": 3, "length": 27, "type": "bold" }
+    ]
+  }
+}

@@ -144,14 +144,16 @@ export class InteractiveStateMachine {
         qIdxNum === session.currentIndex &&
         qIdxNum + 1 >= session.questions.length &&
         session.editingIndex === undefined;
-      await ctx
+      const ackResult = await ctx
         .answerCallbackQuery(willFetch ? { text: "✓ Reviewing your answers…" } : {})
-        .catch(() => {});
+        .catch(() => undefined);
+      if (process.env.E2E_DEBUG) console.log("[e2e:outgoing:answerCallbackQuery]", JSON.stringify(ackResult));
       await this.recordAnswer(session, qIdxNum, parseInt(oIdx));
       return;
     }
 
-    await ctx.answerCallbackQuery().catch(() => {});
+    const ackResult2 = await ctx.answerCallbackQuery().catch(() => undefined);
+    if (process.env.E2E_DEBUG) console.log("[e2e:outgoing:answerCallbackQuery]", JSON.stringify(ackResult2));
 
     if (data === "iq:back") {
       await this.goBack(session);

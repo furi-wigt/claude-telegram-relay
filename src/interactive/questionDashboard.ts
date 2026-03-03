@@ -35,6 +35,7 @@ export class QuestionDashboard {
   async createLoadingCard(chatId: number, task: string): Promise<number> {
     const text = this.formatLoading(task);
     const msg = await this.bot.api.sendMessage(chatId, text, { parse_mode: "MarkdownV2" });
+    if (process.env.E2E_DEBUG) console.log("[e2e:outgoing:sendMessage]", JSON.stringify(msg));
     return msg.message_id;
   }
 
@@ -223,10 +224,11 @@ export class QuestionDashboard {
     keyboard: InlineKeyboard
   ): Promise<void> {
     try {
-      await this.bot.api.editMessageText(chatId, messageId, text, {
+      const editResult = await this.bot.api.editMessageText(chatId, messageId, text, {
         reply_markup: keyboard,
         parse_mode: "MarkdownV2",
       });
+      if (process.env.E2E_DEBUG) console.log("[e2e:outgoing:editMessageText]", JSON.stringify(editResult));
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (!msg.includes("message is not modified")) {

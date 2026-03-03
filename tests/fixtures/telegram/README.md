@@ -21,9 +21,11 @@ Grammy SDK boundary fixtures — `ctx` shapes delivered to bot handlers.
 
 ## Outgoing fixtures (`outgoing/`)
 
-| File | API method | Source | Captured |
-|------|-----------|--------|----------|
-| _(none yet — capture sessions pending)_ | | | |
+| File | API method | Return shape | Source | Captured |
+|------|-----------|--------------|--------|----------|
+| `send-message-success.json` | `bot.api.sendMessage` | `Message` object | real | 2026-03-03 |
+| `edit-message-text-success.json` | `bot.api.editMessageText` | `Message` object (with `edit_date`) | real | 2026-03-03 |
+| `answer-callback-query-success.json` | `ctx.answerCallbackQuery` | `true` (boolean, not object) | real | 2026-03-03 |
 
 ---
 

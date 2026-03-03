@@ -601,7 +601,8 @@ bot.on("callback_query:data", async (ctx) => {
   const data = ctx.callbackQuery.data || "";
   if (data.startsWith("rq:")) {
     // ── Relay Question Form callbacks ────────────────────────────────────────
-    await ctx.answerCallbackQuery().catch(() => {});
+    const ackResult = await ctx.answerCallbackQuery().catch(() => undefined);
+    if (process.env.E2E_DEBUG) console.log("[e2e:outgoing:answerCallbackQuery]", JSON.stringify(ackResult));
 
     const parts = data.split(":");
     const action = parts[1]; // s | n | o | sub | cxl
@@ -637,9 +638,10 @@ bot.on("callback_query:data", async (ctx) => {
 
       // Edit form message in-place
       try {
-        await bot.api.editMessageText(chatId, form.formMessageId, buildFormText(form), {
+        const editResult = await bot.api.editMessageText(chatId, form.formMessageId, buildFormText(form), {
           reply_markup: buildFormKeyboard(form, chatId, threadId),
         });
+        if (process.env.E2E_DEBUG) console.log("[e2e:outgoing:editMessageText]", JSON.stringify(editResult));
       } catch { /* message not modified is fine */ }
 
     } else if (action === "n") {
@@ -883,6 +885,7 @@ async function processTextMessage(
           ...(threadId != null && { message_thread_id: threadId }),
           reply_markup: keyboard,
         });
+        if (process.env.E2E_DEBUG) console.log("[e2e:outgoing:sendMessage]", JSON.stringify(formMsg));
         form.formMessageId = formMsg.message_id;
       } catch (err) {
         console.error("[relay-form] Failed to send form message:", err);
