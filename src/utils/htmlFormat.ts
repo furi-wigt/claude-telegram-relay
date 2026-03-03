@@ -69,6 +69,57 @@ function markdownTableToPreAscii(tableBlock: string): string {
   return `<pre>${content}</pre>`;
 }
 
+/**
+ * Split raw markdown text into chunks no larger than `maxLen` characters.
+ *
+ * Splitting strategy (in priority order):
+ *   1. At double-newline paragraph boundaries (never mid-paragraph when avoidable)
+ *   2. At the last word boundary within the limit
+ *   3. Hard split at `maxLen` (last resort — e.g. a single word longer than the limit)
+ *
+ * Each chunk is valid, self-contained markdown that can be independently
+ * passed to `markdownToHtml`. This avoids the HTML-split-mid-tag problem
+ * where `<b>` or `<pre>` opened in one chunk has its closing tag in the next.
+ *
+ * @param text   Raw markdown string to split.
+ * @param maxLen Maximum character length per chunk (applied to markdown, not HTML).
+ * @returns      Array of markdown chunks. Always at least one element.
+ */
+export function splitMarkdown(text: string, maxLen: number): string[] {
+  if (text.length <= maxLen) return [text];
+
+  const chunks: string[] = [];
+  let current = "";
+
+  for (const para of text.split(/\n\n/)) {
+    const joined = current ? current + "\n\n" + para : para;
+
+    if (joined.length <= maxLen) {
+      current = joined;
+      continue;
+    }
+
+    // Flush current chunk before processing this paragraph.
+    if (current) {
+      chunks.push(current);
+      current = "";
+    }
+
+    // Paragraph itself might exceed the limit — split it.
+    let remaining = para;
+    while (remaining.length > maxLen) {
+      let splitAt = remaining.lastIndexOf(" ", maxLen);
+      if (splitAt <= 0) splitAt = maxLen; // hard split if no space found
+      chunks.push(remaining.substring(0, splitAt));
+      remaining = remaining.substring(splitAt).trimStart();
+    }
+    current = remaining;
+  }
+
+  if (current) chunks.push(current);
+  return chunks.length > 0 ? chunks : [text];
+}
+
 export function markdownToHtml(text: string): string {
   // ── Step 0a: extract fenced code blocks FIRST ─────────────────────────────
   // Must happen before blockquote extraction so "> " lines inside fences are

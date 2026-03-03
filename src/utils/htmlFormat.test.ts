@@ -5,7 +5,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { markdownToHtml } from "./htmlFormat.ts";
+import { markdownToHtml, splitMarkdown } from "./htmlFormat.ts";
 
 // ────────────────────────────────────────────────────────────────────────────
 // Blockquotes
@@ -193,5 +193,90 @@ describe("regression — HTML escaping", () => {
 
   test("ampersand is escaped", () => {
     expect(markdownToHtml("AT&T")).toBe("AT&amp;T");
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// splitMarkdown
+// ────────────────────────────────────────────────────────────────────────────
+
+describe("splitMarkdown", () => {
+  test("short text returned as single chunk", () => {
+    const result = splitMarkdown("Hello world", 100);
+    expect(result).toEqual(["Hello world"]);
+  });
+
+  test("text exactly at limit returned as single chunk", () => {
+    const text = "x".repeat(100);
+    expect(splitMarkdown(text, 100)).toEqual([text]);
+  });
+
+  test("two paragraphs combined within limit → single chunk", () => {
+    const result = splitMarkdown("Para one\n\nPara two", 100);
+    expect(result).toEqual(["Para one\n\nPara two"]);
+  });
+
+  test("two paragraphs exceeding limit → split at double-newline", () => {
+    const p1 = "a".repeat(60);
+    const p2 = "b".repeat(60);
+    const result = splitMarkdown(`${p1}\n\n${p2}`, 100);
+    expect(result).toHaveLength(2);
+    expect(result[0]).toBe(p1);
+    expect(result[1]).toBe(p2);
+  });
+
+  test("single paragraph exceeding limit → split at word boundary", () => {
+    // 5 words of 20 chars each, separated by spaces → 104 chars total
+    const word = "w".repeat(20);
+    const text = [word, word, word, word, word].join(" ");
+    const result = splitMarkdown(text, 50);
+    // Each chunk must be ≤ 50 chars
+    for (const chunk of result) {
+      expect(chunk.length).toBeLessThanOrEqual(50);
+    }
+    // All content must be preserved
+    expect(result.join(" ")).toBe(text);
+  });
+
+  test("single word longer than limit → hard-split at limit", () => {
+    const word = "x".repeat(200);
+    const result = splitMarkdown(word, 100);
+    expect(result.length).toBeGreaterThan(1);
+    for (const chunk of result) {
+      expect(chunk.length).toBeLessThanOrEqual(100);
+    }
+  });
+
+  test("empty string → returns single empty-string chunk", () => {
+    expect(splitMarkdown("", 100)).toEqual([""]);
+  });
+
+  test("multiple paragraphs → each chunk within limit", () => {
+    const paragraphs = Array.from({ length: 10 }, (_, i) => `Paragraph ${i}: ${"x".repeat(40)}`);
+    const text = paragraphs.join("\n\n");
+    const result = splitMarkdown(text, 100);
+    for (const chunk of result) {
+      expect(chunk.length).toBeLessThanOrEqual(100);
+    }
+    // Round-trip: rejoining at \n\n should reproduce original
+    expect(result.join("\n\n")).toBe(text);
+  });
+
+  test("markdown formatting in each chunk converts independently", () => {
+    // Regression: bold in chunk 2 should render even if chunk 1 has unrelated content
+    const p1 = "a".repeat(50);
+    const p2 = "**bold text**";
+    const chunks = splitMarkdown(`${p1}\n\n${p2}`, 60);
+    expect(chunks.length).toBeGreaterThanOrEqual(2);
+    const lastChunk = chunks[chunks.length - 1];
+    expect(markdownToHtml(lastChunk)).toContain("<b>bold text</b>");
+  });
+
+  test("inline code in second chunk converts correctly", () => {
+    const p1 = "x".repeat(50);
+    const p2 = "Use `myFunc()` here";
+    const chunks = splitMarkdown(`${p1}\n\n${p2}`, 60);
+    const lastChunk = chunks[chunks.length - 1];
+    expect(markdownToHtml(lastChunk)).toContain("<code>myFunc()</code>");
   });
 });

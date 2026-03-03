@@ -19,7 +19,7 @@ import {
   handleCancelCallback,
   handleCancelCommand,
 } from "./cancel.ts";
-import { markdownToHtml } from "./utils/htmlFormat.ts";
+import { markdownToHtml, splitMarkdown } from "./utils/htmlFormat.ts";
 import { transcribe } from "./transcribe.ts";
 import {
   processMemoryIntents,
@@ -1887,30 +1887,6 @@ try {
 
 // Prompt building is now handled by src/agents/promptBuilder.ts (buildAgentPrompt)
 
-/**
- * Convert Claude's Markdown output to Telegram HTML.
- *
- * Telegram HTML supports: <b>, <i>, <u>, <s>, <code>, <pre>, <a href>
- * Order matters — process block-level before inline to avoid double-escaping.
- */
-function isBalancedHtml(html: string): boolean {
-  const tagStack: string[] = [];
-  const selfClosing = new Set(["br", "hr", "img"]);
-  const tagRe = /<\/?([a-zA-Z]+)[^>]*>/g;
-  let m: RegExpExecArray | null;
-  while ((m = tagRe.exec(html)) !== null) {
-    const tag = m[1].toLowerCase();
-    if (selfClosing.has(tag)) continue;
-    if (m[0].startsWith("</")) {
-      if (tagStack[tagStack.length - 1] === tag) tagStack.pop();
-      else return false;
-    } else {
-      tagStack.push(tag);
-    }
-  }
-  return tagStack.length === 0;
-}
-
 async function sendResponse(ctx: Context, response: string, footer?: FooterData): Promise<void> {
   // Handle empty responses
   if (!response || response.trim().length === 0) {
@@ -1919,55 +1895,29 @@ async function sendResponse(ctx: Context, response: string, footer?: FooterData)
     return;
   }
 
-  // Telegram has a 4096 character limit
-  const MAX_LENGTH = 4000;
-  const html = markdownToHtml(response);
+  // Split markdown BEFORE converting to HTML.
+  // This ensures each chunk is self-contained markdown — no HTML tag is ever
+  // bisected by a split boundary. Each chunk is converted independently, so
+  // inline code (`code`), bold (**text**), and fenced blocks all render correctly.
+  //
+  // 3800 < 4096 (Telegram limit) to leave headroom for HTML tag expansion
+  // (markdown `**x**` becomes `<b>x</b>`, adding ~50% overhead for formatted spans).
+  const MARKDOWN_SPLIT_LEN = 3800;
   const footerHtml = footer ? buildFooter(footer) : "";
-
-  if (html.length + footerHtml.length <= MAX_LENGTH) {
-    try {
-      await ctx.reply(html + footerHtml, { parse_mode: "HTML" });
-    } catch {
-      // Telegram rejected the HTML (e.g. unbalanced tags from markdownToHtml).
-      // Fall back to plain text so the response is never silently lost.
-      const plain = html.replace(/<[^>]+>/g, "");
-      const footerPlain = footerHtml.replace(/<[^>]+>/g, "");
-      await ctx.reply(plain + footerPlain);
-    }
-    return;
-  }
-
-  // Split long responses
-  const chunks = [];
-  let remaining = html;
-
-  while (remaining.length > 0) {
-    if (remaining.length <= MAX_LENGTH) {
-      chunks.push(remaining);
-      break;
-    }
-
-    // Try to split at a natural boundary
-    let splitIndex = remaining.lastIndexOf("\n\n", MAX_LENGTH);
-    if (splitIndex === -1) splitIndex = remaining.lastIndexOf("\n", MAX_LENGTH);
-    if (splitIndex === -1) splitIndex = remaining.lastIndexOf(" ", MAX_LENGTH);
-    if (splitIndex === -1) splitIndex = MAX_LENGTH;
-
-    chunks.push(remaining.substring(0, splitIndex));
-    remaining = remaining.substring(splitIndex).trim();
-  }
+  const chunks = splitMarkdown(response, MARKDOWN_SPLIT_LEN);
 
   for (let i = 0; i < chunks.length; i++) {
     const isLast = i === chunks.length - 1;
-    const chunk = isLast ? chunks[i] + footerHtml : chunks[i];
-    if (isBalancedHtml(chunk)) {
-      await ctx.reply(chunk, { parse_mode: "HTML" });
-    } else {
-      // HTML is not balanced in this chunk — strip tags and send as plain text.
-      // For the last chunk, still append the footer as plain text so it's always visible.
-      const plain = chunks[i].replace(/<[^>]+>/g, "");
-      const footerPlain = isLast ? footerHtml.replace(/<[^>]+>/g, "") : "";
-      await ctx.reply(plain + footerPlain);
+    const html = markdownToHtml(chunks[i]);
+    const fullHtml = isLast ? html + footerHtml : html;
+
+    try {
+      await ctx.reply(fullHtml, { parse_mode: "HTML" });
+    } catch {
+      // Telegram rejected the HTML — fall back to plain text so the response
+      // is never silently lost.
+      const plain = fullHtml.replace(/<[^>]+>/g, "");
+      await ctx.reply(plain);
     }
   }
 }
