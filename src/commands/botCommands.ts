@@ -313,6 +313,7 @@ export function registerCommands(bot: Bot, options: CommandOptions): void {
 
   // /new [prompt] - reset session; if prompt given, immediately process it
   bot.command("new", async (ctx) => {
+    if (process.env.E2E_DEBUG) console.log("[e2e:command:new]", JSON.stringify({ message: ctx.message, chat: ctx.chat, from: ctx.from, match: ctx.match }));
     const chatId = ctx.chat?.id;
     if (!chatId) return;
 
@@ -335,6 +336,7 @@ export function registerCommands(bot: Bot, options: CommandOptions): void {
   // /memory [subcommand] — included in short-term memory
   // Subcommands: goals | done | prefs | facts | dates | (none = all)
   bot.command("memory", async (ctx) => {
+    if (process.env.E2E_DEBUG) console.log("[e2e:command:memory]", JSON.stringify({ message: ctx.message, chat: ctx.chat, from: ctx.from, match: ctx.match }));
     const chatId = ctx.chat?.id;
     if (!chatId) return;
 
@@ -399,6 +401,7 @@ export function registerCommands(bot: Bot, options: CommandOptions): void {
 
   // /history - show recent messages from session
   bot.command("history", async (ctx) => {
+    if (process.env.E2E_DEBUG) console.log("[e2e:command:history]", JSON.stringify({ message: ctx.message, chat: ctx.chat, from: ctx.from, match: ctx.match }));
     const chatId = ctx.chat?.id;
     if (!chatId) return;
 
