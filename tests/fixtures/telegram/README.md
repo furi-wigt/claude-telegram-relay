@@ -20,6 +20,7 @@ Grammy SDK boundary fixtures — `ctx` shapes delivered to bot handlers.
 | `button-tap-cancel.json` | Tap ✖ Cancel button on /plan inline keyboard (private chat) | real | 2026-03-03 |
 | `command-new.json` | Send /new in private chat | real | 2026-03-03 |
 | `command-memory.json` | Send /memory in private chat | real | 2026-03-03 |
+| `command-history.json` | Send /history in private chat | real | 2026-03-03 |
 
 ## Outgoing fixtures (`outgoing/`)
 
