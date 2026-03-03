@@ -18,6 +18,8 @@ Grammy SDK boundary fixtures — `ctx` shapes delivered to bot handlers.
 | `command-help.json` | Send /help in private chat | real | 2026-03-03 |
 | `group-forum-text.json` | Text in supergroup forum topic (Code Quality & TDD / Claude-relay) | real | 2026-03-03 |
 | `button-tap-cancel.json` | Tap ✖ Cancel button on /plan inline keyboard (private chat) | real | 2026-03-03 |
+| `command-new.json` | Send /new in private chat | real | 2026-03-03 |
+| `command-memory.json` | Send /memory in private chat | real | 2026-03-03 |
 
 ## Outgoing fixtures (`outgoing/`)
 

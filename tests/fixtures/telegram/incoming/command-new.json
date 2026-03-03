@@ -1,0 +1,26 @@
+{
+  "id": "command-new",
+  "description": "User sends /new command in private chat — starts a fresh conversation session",
+  "source": "real",
+  "captured_at": "2026-03-03T21:45:24+08:00",
+  "trigger": "Send /new in private chat",
+  "boundary": "grammy-ctx",
+  "payload": {
+    "message": {
+      "message_id": 1030,
+      "text": "/new",
+      "entities": [
+        { "offset": 0, "length": 4, "type": "bot_command" }
+      ]
+    },
+    "chat": {
+      "id": 1078052084,
+      "type": "private"
+    },
+    "from": {
+      "id": 1078052084,
+      "username": "f412i"
+    },
+    "match": ""
+  }
+}
