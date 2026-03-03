@@ -136,6 +136,13 @@ export class InteractiveStateMachine {
 
     // iq:a:{qIdx}:{oIdx}
     if (data.startsWith("iq:a:")) {
+      // Reject answer taps when not actively collecting — prevents Telegram's
+      // callback retry from triggering a second onBatchComplete while one is
+      // already in-flight (phase will be "loading" during the Claude call).
+      if (session.phase !== "collecting") {
+        await ctx.answerCallbackQuery().catch(() => {});
+        return;
+      }
       const [, , qIdx, oIdx] = data.split(":");
       const qIdxNum = parseInt(qIdx);
       // Show instant toast when this is the last answer and will trigger a backend fetch.
@@ -144,6 +151,14 @@ export class InteractiveStateMachine {
         qIdxNum === session.currentIndex &&
         qIdxNum + 1 >= session.questions.length &&
         session.editingIndex === undefined;
+
+      // Pre-claim the "loading" phase SYNCHRONOUSLY (no await between phase check
+      // and this update) so a concurrent Telegram retry can't pass the phase guard above.
+      if (willFetch) {
+        const claimed = updateSession(chatId, { phase: "loading" });
+        if (!claimed) return; // session expired between getSession and now
+      }
+
       const ackResult = await ctx
         .answerCallbackQuery(willFetch ? { text: "✓ Reviewing your answers…" } : {})
         .catch(() => undefined);
@@ -232,7 +247,9 @@ export class InteractiveStateMachine {
       });
       if (updated) await this.dashboard.showQuestion(updated);
     } else {
-      const updated = updateSession(chatId, { answers: newAnswers });
+      // Set phase to "loading" before the async Claude call — same re-entry
+      // protection as in recordAnswer.
+      const updated = updateSession(chatId, { answers: newAnswers, phase: "loading" });
       if (updated) await this.onBatchComplete(updated);
     }
 
@@ -274,7 +291,9 @@ export class InteractiveStateMachine {
       });
       if (updated) await this.dashboard.showQuestion(updated);
     } else {
-      const updated = updateSession(chatId, { answers: newAnswers });
+      // Set phase to "loading" before the async Claude call so that Telegram's
+      // callback retry cannot trigger a second onBatchComplete concurrently.
+      const updated = updateSession(chatId, { answers: newAnswers, phase: "loading" });
       if (updated) await this.onBatchComplete(updated);
     }
   }
@@ -347,10 +366,12 @@ export class InteractiveStateMachine {
         const updated = updateSession(chatId, { completedQA: newCompletedQA });
         if (updated) await this.advanceToSummary(updated);
       } else {
-        // Append new questions, advance round
+        // Append new questions, advance round, and restore phase to "collecting"
+        // so the next batch's answer taps are accepted by the phase guard.
         const newQuestions = [...questions, ...result.questions];
         const newAnswers = [...answers, ...new Array(result.questions.length).fill(null)];
         const updated = updateSession(chatId, {
+          phase: "collecting",
           questions: newQuestions,
           answers: newAnswers,
           currentBatchStart: questions.length,

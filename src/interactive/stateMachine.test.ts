@@ -409,6 +409,126 @@ describe("InteractiveStateMachine multi-round", () => {
     });
   });
 
+  // ─── Race condition / re-entry guard ──────────────────────────────────────
+
+  describe("TC-RACE-1: duplicate answer callback during onBatchComplete is ignored", () => {
+    it("calls callClaude exactly once when the same last-answer callback arrives twice", async () => {
+      const { bot } = createMockBot();
+      let claudeCallCount = 0;
+      const callClaude = async (_prompt: string): Promise<string> => {
+        claudeCallCount++;
+        return DONE_RESPONSE;
+      };
+      const sm = new InteractiveStateMachine(bot, callClaude);
+
+      const session = makeSession({
+        phase: "collecting",
+        questions: [Q_FRAMEWORK],
+        answers: [null],
+        currentIndex: 0,
+        round: 1,
+        completedQA: [],
+        currentBatchStart: 0,
+      });
+      setSession(CHAT_ID, session);
+
+      const ctx = createMockCtx();
+
+      // Fire two concurrent answer callbacks for the same (last) question.
+      // The second should be rejected by the phase guard after the first sets
+      // phase to "loading".
+      await Promise.all([
+        sm.handleCallback(ctx, "iq:a:0:0"),
+        sm.handleCallback(ctx, "iq:a:0:0"),
+      ]);
+
+      // callClaude should have been called exactly once despite the duplicate tap.
+      expect(claudeCallCount).toBe(1);
+
+      const updated = getSession(CHAT_ID);
+      expect(updated?.phase).toBe("confirming");
+    });
+  });
+
+  describe("TC-RACE-2: iq:a callback silently ignored when phase is 'loading'", () => {
+    it("does nothing and acks when session.phase is 'loading'", async () => {
+      const { bot } = createMockBot();
+      let claudeCalled = false;
+      const callClaude = async () => {
+        claudeCalled = true;
+        return DONE_RESPONSE;
+      };
+      const sm = new InteractiveStateMachine(bot, callClaude);
+
+      const session = makeSession({ phase: "loading" });
+      setSession(CHAT_ID, session);
+
+      const ctx = createMockCtx();
+      await sm.handleCallback(ctx, "iq:a:0:0");
+
+      expect(claudeCalled).toBe(false);
+      // Session should be unchanged
+      const after = getSession(CHAT_ID);
+      expect(after?.phase).toBe("loading");
+    });
+  });
+
+  describe("TC-RACE-3: iq:a callback silently ignored when phase is 'confirming'", () => {
+    it("does nothing and acks when session.phase is 'confirming'", async () => {
+      const { bot } = createMockBot();
+      let claudeCalled = false;
+      const callClaude = async () => {
+        claudeCalled = true;
+        return DONE_RESPONSE;
+      };
+      const sm = new InteractiveStateMachine(bot, callClaude);
+
+      const session = makeSession({ phase: "confirming" });
+      setSession(CHAT_ID, session);
+
+      const ctx = createMockCtx();
+      await sm.handleCallback(ctx, "iq:a:0:0");
+
+      expect(claudeCalled).toBe(false);
+      const after = getSession(CHAT_ID);
+      expect(after?.phase).toBe("confirming");
+    });
+  });
+
+  describe("TC-FRETEXT-PHASE: handleFreeText sets phase to loading before onBatchComplete", () => {
+    it("calls callClaude once when two concurrent free-text answers arrive for the last question", async () => {
+      const { bot } = createMockBot();
+      let claudeCallCount = 0;
+      const callClaude = async (_prompt: string): Promise<string> => {
+        claudeCallCount++;
+        return DONE_RESPONSE;
+      };
+      const sm = new InteractiveStateMachine(bot, callClaude);
+
+      const freeTextQ = { ...Q_FRAMEWORK, allowFreeText: true };
+      const session = makeSession({
+        phase: "collecting",
+        questions: [freeTextQ],
+        answers: [null],
+        currentIndex: 0,
+        round: 1,
+      });
+      setSession(CHAT_ID, session);
+
+      const ctx = createMockCtx();
+
+      // Two concurrent free-text answers for the only (last) question.
+      await Promise.all([
+        sm.handleFreeText(ctx, "NestJS"),
+        sm.handleFreeText(ctx, "NestJS"),
+      ]);
+
+      expect(claudeCallCount).toBe(1);
+      const updated = getSession(CHAT_ID);
+      expect(updated?.phase).toBe("confirming");
+    });
+  });
+
   describe("expired session returns early", () => {
     it("does nothing when session has expired", async () => {
       const { bot } = createMockBot();
