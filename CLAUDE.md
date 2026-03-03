@@ -6,6 +6,8 @@
 > **When a user opens this project for the first time, greet them warmly and begin Phase 1 immediately. Do not wait for them to ask.**
 >
 > **For LLM agents working on routines:** Before creating, modifying, or debugging any file in `routines/`, read `routines/CLAUDE.md` first. It defines required code patterns (PM2/bun `_isEntry` guard, `process.exit(0)` error handling), deployment safety rules (never ecosystem-wide restart), and a pre-commit checklist. `routines/user_journey.md` covers the user-facing lifecycle and Telegram interface.
+>
+> **For LLM agents writing or reviewing E2E/integration tests:** Read `CLAUDE.e2e.md` before writing any test that touches Telegram bot behavior. It defines the fixture-based mock library, capture protocol, and runner DSL. Do not assume Grammy ctx shapes — use captured fixtures only.
 
 ## What This Is
 
