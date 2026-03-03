@@ -41,3 +41,9 @@ Grammy SDK boundary fixtures — `ctx` shapes delivered to bot handlers.
 5. Paste the log output here.
 6. I extract Grammy-level fields and write the fixture JSON.
 7. I update this catalogue.
+
+---
+
+## Sibling directories
+
+- `../claude-cli/` — Claude subprocess stdio boundary fixtures (Phase 1+ — capture pending)

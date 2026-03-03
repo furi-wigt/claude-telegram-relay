@@ -176,3 +176,83 @@ runNodes([repeat(3, step(...))]);
 - No assumptions about Grammy ctx shape before capture
 - No test runner code before Phase 4
 - No Supabase or Claude CLI fixtures until Telegram library has ≥ 10 entries
+
+---
+
+## Claude CLI fixture schema
+
+**Load condition**: Also read this section when writing tests that mock `claudeText` or `claudeStream`.
+
+### Boundary
+
+`"claude-cli-stdout"` — what the relay reads from Claude's `stdout` after spawning it
+via `src/claude-process.ts`. Two spawn modes:
+
+| Mode | Command pattern | `payload` shape |
+|------|-----------------|-----------------|
+| `"text"` | `claude -p <prompt> --output-format text --model <model>` | `{ stdout: string, exitCode: number }` |
+| `"stream-json"` | `claude -p <prompt> --output-format stream-json --verbose` | `{ lines: object[], exitCode: number }` |
+| `"stream-json-interactive"` | interactive stdin/stdout with `--input-format stream-json` | `{ lines: object[], exitCode: number }` |
+
+### Fixture schema
+
+```json
+{
+  "id": "plain-response",
+  "description": "claudeText returns a short plain text answer",
+  "source": "real",
+  "captured_at": "2026-03-03T...",
+  "trigger": "claudeText('What is 2+2?', { model: 'claude-haiku-4-5-20251001' })",
+  "boundary": "claude-cli-stdout",
+  "mode": "text",
+  "payload": {
+    "stdout": "4",
+    "exitCode": 0
+  }
+}
+```
+
+### Directory layout
+
+```
+tests/fixtures/claude-cli/
+├── README.md          ← Catalogue (update after every capture)
+├── text-mode/         ← claudeText output (plain string + exitCode)
+└── stream-mode/       ← claudeStream NDJSON lines + exitCode
+```
+
+### Capture protocol
+
+Unlike Telegram fixtures, Claude CLI captures are **fully scripted** — no live Telegram
+interaction needed:
+
+1. Run `bun run scripts/capture-claude-cli.ts` (created in Phase 1).
+2. Script spawns Claude CLI with a controlled prompt, captures stdout verbatim.
+3. Writes JSON fixture to `tests/fixtures/claude-cli/{text-mode|stream-mode}/{id}.json`.
+4. Verify payload matches what the relay actually parses.
+5. Update `tests/fixtures/claude-cli/README.md` catalogue.
+
+### Known NDJSON `type` values (to be confirmed by Phase 2)
+
+| type | Description |
+|------|-------------|
+| `"system"` | Initial system message (suspected — confirm from real capture) |
+| `"assistant"` | Text or tool output from Claude (suspected) |
+| `"result"` | Final line; `subtype: "success"` or `"error_during_generation"` |
+
+### Key unknowns (resolve in Phase 1–2)
+
+1. Exact NDJSON line `type` values emitted in stream-json mode.
+2. `result` line structure and `subtype` values.
+3. Session ID location in the stream (needed for `onSessionId` callback).
+4. Whether `--output-format stream-json` includes thinking blocks by default.
+5. Exact JSON structure of an `AskUserQuestion` tool_use event.
+
+### Mock helpers (Phase 4 — not yet implemented)
+
+```typescript
+// Will be added to tests/e2e/runner.ts in Phase 4
+loadClaudeCliFixture(id)         // load from tests/fixtures/claude-cli/
+mockClaudeText(fixtureId)        // stub claudeText return value
+mockClaudeStream(fixtureId)      // stub NDJSON line iteration
+```
