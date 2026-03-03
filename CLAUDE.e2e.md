@@ -137,33 +137,36 @@ enough Grammy ctx detail, add `if (process.env.E2E_DEBUG) console.log("[e2e]", J
 
 ---
 
-## Runner DSL (Phase 4 — not implemented yet)
+## Runner DSL (implemented — Phase 4 + Phase 5)
 
-Scenarios compose fixtures sequentially. Design only — no code until 3 real fixtures exist.
+Runner: `tests/e2e/runner.ts`
+Tests: `tests/e2e/fixtures.test.ts` (36 tests, all passing)
 
 ```typescript
+import { loadFixture, step, branch, repeat, runNodes, assertResult, createMockApi } from "./runner";
+
 // Sequential
-scenario("user sends plain text and gets reply", [
-  step("incoming", "plain-text-message"),
-  assert({ botApiCalled: "sendMessage", contains: "Hello" }),
-]);
+const fixture = loadFixture("incoming/plain-text-message");
+const mockApi = createMockApi();
+step(fixture, handler, mockApi);
+assertResult(mockApi, "sendMessage");
 
 // Conditional
-scenario("command routing", [
-  step("incoming", "command-help"),
+runNodes([
+  step(...),
   branch({
     if: (calls) => calls.some(c => c.method === "sendMessage"),
-    then: [assert({ contains: "/help" })],
-    else: [fail("expected sendMessage")],
+    then: [assertResult(mockApi, "sendMessage")],
+    else: [() => { throw new Error("expected sendMessage"); }],
   }),
 ]);
 
 // Loop
-scenario("repeated taps", [
-  repeat(3, step("incoming", "callback-query-button-tap")),
-  assert({ botApiCalled: "editMessageText" }),
-]);
+runNodes([repeat(3, step(...))]);
 ```
+
+**Global library promoted**: `~/.claude/e2e-fixtures/telegram/` (2026-03-03, 10 fixtures)
+**Global agent context**: `~/.claude/CLAUDE.e2e.md`
 
 ---
 
