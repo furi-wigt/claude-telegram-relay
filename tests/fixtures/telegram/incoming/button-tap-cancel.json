@@ -1,0 +1,81 @@
+{
+  "id": "button-tap-cancel",
+  "description": "User taps the Cancel button on an inline keyboard (iq:cancel from /plan flow)",
+  "source": "real",
+  "captured_at": "2026-03-03T20:56:25+08:00",
+  "trigger": "Send /plan in private chat, tap '✖ Cancel' button",
+  "boundary": "grammy-ctx",
+  "handler": "bot.on('callback_query:data')",
+  "notes": [
+    "callbackQuery.id is a unique string per button tap — not stable across sessions",
+    "callbackQuery.data is the payload string set on the InlineKeyboardButton",
+    "callbackQuery.message is the bot message the keyboard was attached to — includes full text and reply_markup",
+    "callbackQuery.message.from.id is the BOT's user ID (not the user), since the bot sent the message",
+    "callbackQuery.chat_instance identifies the chat where the button was shown",
+    "ctx.chat and ctx.from are still the user's private chat / user identity",
+    "No ctx.message at top level — callback_query ctx does not have a message property directly"
+  ],
+  "payload": {
+    "callbackQuery": {
+      "id": "4630198447950452507",
+      "from": {
+        "id": 1078052084,
+        "is_bot": false,
+        "first_name": "Furi",
+        "last_name": "Karnapi",
+        "username": "f412i",
+        "language_code": "en"
+      },
+      "message": {
+        "message_id": 1025,
+        "from": {
+          "id": 8599605373,
+          "is_bot": true,
+          "first_name": "ccbot",
+          "username": "f4121_bot"
+        },
+        "chat": {
+          "id": 1078052084,
+          "first_name": "Furi",
+          "last_name": "Karnapi",
+          "username": "f412i",
+          "type": "private"
+        },
+        "date": 1772542553,
+        "edit_date": 1772542569,
+        "text": "📋 plan: test\n━━━━━━━━━━━━━━━━━━━━\n\n⚙️ Q1 of 3   ░░░░░░░░░░  0%\n\nWhat component needs testing?\n\n✍️ Type a custom answer or tap a button",
+        "entities": [
+          { "offset": 3, "length": 10, "type": "bold" },
+          { "offset": 65, "length": 29, "type": "bold" },
+          { "offset": 96, "length": 39, "type": "italic" }
+        ],
+        "reply_markup": {
+          "inline_keyboard": [
+            [{ "text": "Main bot relay", "callback_data": "iq:a:0:0" }],
+            [{ "text": "Scheduled routines", "callback_data": "iq:a:0:1" }],
+            [{ "text": "Multi-agent groups", "callback_data": "iq:a:0:2" }],
+            [{ "text": "Full setup verification", "callback_data": "iq:a:0:3" }],
+            [{ "text": "✖ Cancel", "callback_data": "iq:cancel" }]
+          ]
+        }
+      },
+      "chat_instance": "4494821607405375504",
+      "data": "iq:cancel"
+    },
+    "chat": {
+      "id": 1078052084,
+      "first_name": "Furi",
+      "last_name": "Karnapi",
+      "username": "f412i",
+      "type": "private"
+    },
+    "from": {
+      "id": 1078052084,
+      "is_bot": false,
+      "first_name": "Furi",
+      "last_name": "Karnapi",
+      "username": "f412i",
+      "language_code": "en"
+    }
+  }
+}

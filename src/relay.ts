@@ -597,6 +597,7 @@ if (CODING_AUTO_SCAN_INTERVAL > 0 && ALLOWED_USER_ID) {
 // Handle iq: and cancel: callback queries.
 // code_*: callbacks are fully consumed by registerCodingCommands middleware (no next()).
 bot.on("callback_query:data", async (ctx) => {
+  if (process.env.E2E_DEBUG) console.log("[e2e:callback_query]", JSON.stringify({ callbackQuery: ctx.callbackQuery, chat: ctx.chat, from: ctx.from }));
   const data = ctx.callbackQuery.data || "";
   if (data.startsWith("rq:")) {
     // ── Relay Question Form callbacks ────────────────────────────────────────
