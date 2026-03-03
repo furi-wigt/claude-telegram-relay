@@ -14,7 +14,7 @@ Grammy SDK boundary fixtures — `ctx` shapes delivered to bot handlers.
 
 | File | Trigger | Source | Captured |
 |------|---------|--------|----------|
-| _(none yet — capture sessions pending)_ | | | |
+| `plain-text-message.json` | Send "hello" in private chat | real | 2026-03-03 |
 
 ## Outgoing fixtures (`outgoing/`)
 

@@ -1019,6 +1019,7 @@ async function processTextMessage(
 
 // Text messages
 bot.on("message:text", async (ctx) => {
+  if (process.env.E2E_DEBUG) console.log("[e2e:text]", JSON.stringify({ message: ctx.message, chat: ctx.chat, from: ctx.from }));
   const text = ctx.message.text;
   const chatId = ctx.chat?.id;
   const threadId = ctx.message?.message_thread_id ?? null;
