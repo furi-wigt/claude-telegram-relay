@@ -1,11 +1,10 @@
 /**
- * E2E Runner DSL — Phase 4: sequential execution only.
+ * E2E Runner DSL — Phase 5: branch() and repeat() operators.
  *
  * Loads Grammy-ctx fixtures from tests/fixtures/telegram/incoming/ and
  * converts them to raw Telegram Update objects that Grammy's bot.handleUpdate()
  * can dispatch through registered middleware.
  *
- * Phase 5 will add branch() and repeat() operators.
  * Phase 6 will add outgoing fixture assertions.
  */
 
@@ -32,6 +31,22 @@ export interface Step {
   kind: "incoming";
   fixture: string;
 }
+
+export interface Branch {
+  kind: "branch";
+  if: (calls: ApiCall[]) => boolean;
+  then: ScenarioNode[];
+  else?: ScenarioNode[];
+}
+
+export interface Repeat {
+  kind: "repeat";
+  times: number;
+  node: ScenarioNode;
+}
+
+/** Any node that can appear in a scenario sequence */
+export type ScenarioNode = Step | Branch | Repeat;
 
 export interface AssertOptions {
   /** Bot API method name that must have been called at least once */
@@ -95,6 +110,58 @@ export function fixtureToUpdate(fixture: Fixture): object {
 
 export function step(fixture: string): Step {
   return { kind: "incoming", fixture };
+}
+
+export function branch(options: {
+  if: (calls: ApiCall[]) => boolean;
+  then: ScenarioNode[];
+  else?: ScenarioNode[];
+}): Branch {
+  return { kind: "branch", ...options };
+}
+
+export function repeat(times: number, node: ScenarioNode): Repeat {
+  return { kind: "repeat", times, node };
+}
+
+// ─── Scenario runner ──────────────────────────────────────────────────────────
+//
+// Executes a sequence of ScenarioNodes against a shared ApiCall log.
+// No bot.handleUpdate() integration at this layer — the runner operates on
+// the mock API call log directly, making it fast and framework-independent.
+//
+// To drive a real Grammy bot, callers load the fixture, call fixtureToUpdate(),
+// pass it to bot.handleUpdate(), then pass the resulting api calls to runNodes().
+
+export function runNodes(
+  nodes: ScenarioNode[],
+  calls: ApiCall[]
+): void {
+  for (const node of nodes) {
+    runNode(node, calls);
+  }
+}
+
+function runNode(node: ScenarioNode, calls: ApiCall[]): void {
+  if (node.kind === "incoming") {
+    // In pure DSL mode the caller drives bot dispatch and appends to `calls`.
+    // Nothing for the runner to do here — the step is a marker consumed by
+    // higher-level test helpers that wire up bot.handleUpdate().
+    return;
+  }
+
+  if (node.kind === "branch") {
+    const taken = node.if(calls);
+    const arm = taken ? node.then : (node.else ?? []);
+    runNodes(arm, calls);
+    return;
+  }
+
+  if (node.kind === "repeat") {
+    for (let i = 0; i < node.times; i++) {
+      runNode(node.node, calls);
+    }
+  }
 }
 
 // ─── Assertions ───────────────────────────────────────────────────────────────
