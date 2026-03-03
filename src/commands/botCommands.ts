@@ -254,6 +254,7 @@ export function registerCommands(bot: Bot, options: CommandOptions): void {
 
   // /help - show available commands (excluded from short-term memory)
   bot.command("help", async (ctx) => {
+    if (process.env.E2E_DEBUG) console.log("[e2e:command:help]", JSON.stringify({ message: ctx.message, chat: ctx.chat, from: ctx.from, match: ctx.match }));
     const help = [
       "Available commands:",
       "",
