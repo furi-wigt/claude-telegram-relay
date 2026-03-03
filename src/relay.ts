@@ -46,7 +46,7 @@ import { enqueueExtraction } from "./memory/extractionQueue.ts";
 import { callOllama, checkOllamaAvailable } from "./fallback.ts";
 import { getAgentForChat, autoDiscoverGroup, loadGroupMappings } from "./routing/groupRouter.ts";
 // Router removed: always use Sonnet for simplicity and predictable latency
-import { loadSession as loadGroupSession, updateSessionIdGuarded, initSessions, loadAllSessions, saveSession, isResumeReliable, didResumeFail, lockActiveCwd } from "./session/groupSessions.ts";
+import { loadSession as loadGroupSession, updateSessionIdGuarded, initSessions, loadAllSessions, saveSession, isResumeReliable, didResumeFail, lockActiveCwd, resetSession } from "./session/groupSessions.ts";
 import { buildAgentPrompt } from "./agents/promptBuilder.ts";
 import { GroupQueueManager } from "./queue/groupQueueManager.ts";
 import { registerCommands, registerContextSwitchCallbackHandler } from "./commands/botCommands.ts";
@@ -1556,7 +1556,15 @@ async function processAlbum(acc: AlbumAccumulator): Promise<void> {
     return;
   }
 
-  const caption = acc.caption || "Describe these images in detail.";
+  let caption = acc.caption || "Describe these images in detail.";
+
+  // Handle /new prefix in caption — reset session before processing, same as text /new command.
+  const albumNewMatch = caption.match(/^\/new\s*(.*)/is);
+  if (albumNewMatch) {
+    await resetSession(acc.chatId, acc.threadId);
+    caption = albumNewMatch[1].trim() || "Describe these images in detail.";
+  }
+
   enqueuePhotoJob(acc.ctx, acc.chatId, acc.threadId, buffers, caption);
 }
 
@@ -1620,7 +1628,15 @@ bot.on("message:photo", async (ctx) => {
     return;
   }
 
-  const caption = ctx.message.caption || "Describe this image in detail.";
+  let caption = ctx.message.caption || "Describe this image in detail.";
+
+  // Handle /new prefix in caption — reset session before processing, same as text /new command.
+  const newMatch = caption.match(/^\/new\s*(.*)/is);
+  if (newMatch) {
+    await resetSession(chatId, threadId);
+    caption = newMatch[1].trim() || "Describe this image in detail.";
+  }
+
   enqueuePhotoJob(ctx, chatId, threadId, [imageBuffer], caption);
 });
 
