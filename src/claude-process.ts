@@ -457,14 +457,22 @@ export async function claudeStream(
     resetSoftCeiling();
 
     // Inject tool_result into stdin so Claude receives the answers.
-    // content must be an object (not a JSON string) per the plan spec:
-    //   {"type":"tool_result","tool_use_id":"...","content":{"answers":{...}}}
+    // The stream-json input format requires ALL messages to be wrapped in a user envelope:
+    //   {"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"...","content":"<string>"}]}}
+    // Sending a bare {"type":"tool_result",...} causes the CLI to echo is_error:true,
+    // making Claude think the question was unanswered and re-ask it (the repeat-questions bug).
     console.debug("[handleAskUserQuestion] answers:", JSON.stringify(answers));
     const stdinWriter = proc.stdin as { write?: (data: Uint8Array) => void } | null | undefined;
     const toolResult = JSON.stringify({
-      type: "tool_result",
-      tool_use_id: toolUseId,
-      content: { answers },
+      type: "user",
+      message: {
+        role: "user",
+        content: [{
+          type: "tool_result",
+          tool_use_id: toolUseId,
+          content: JSON.stringify({ answers }),
+        }],
+      },
     }) + "\n";
     console.debug("[handleAskUserQuestion] writing tool_result to stdin:", toolResult.slice(0, 200));
     stdinWriter?.write?.(new TextEncoder().encode(toolResult));

@@ -452,7 +452,10 @@ describe("claudeStream — AskUserQuestion as top-level tool_use", () => {
 // ═══════════════════════════════════════════════════════════════
 
 describe("claudeStream — tool_result injected after onQuestion resolves", () => {
-  test("tool_result with correct tool_use_id and answers written to stdin", async () => {
+  test("tool_result wrapped in user message envelope with stringified content", async () => {
+    // Regression test for "repeat questions" bug:
+    // Sending a bare {"type":"tool_result",...} causes the CLI to echo is_error:true,
+    // making Claude re-ask the same questions. The correct format is a user message envelope.
     const cs = controllableStream();
     const encoder = new TextEncoder();
     const stdin = mockStdin();
@@ -489,13 +492,63 @@ describe("claudeStream — tool_result injected after onQuestion resolves", () =
       .map((l) => { try { return JSON.parse(l); } catch { return null; } })
       .filter(Boolean) as Array<Record<string, unknown>>;
 
-    const toolResult = parsed.find((e) => e.type === "tool_result");
-    expect(toolResult).toBeDefined();
-    expect(toolResult!.tool_use_id).toBe("tool-abc");
+    // Must be a user-envelope message (not a bare tool_result at top level)
+    const bareToolResult = parsed.find((e) => e.type === "tool_result");
+    expect(bareToolResult).toBeUndefined(); // bare tool_result must NOT exist
 
-    // content is an object (not JSON-encoded string) per the tool_result spec
-    const content = toolResult!.content as { answers: Record<string, string> };
-    expect(content.answers).toEqual(answers);
+    // Find the user envelope that contains a tool_result block (not the initial prompt)
+    const userEnvelope = parsed.find((e) => {
+      if (e.type !== "user") return false;
+      const msg = (e as Record<string, unknown>).message as Record<string, unknown> | undefined;
+      return Array.isArray(msg?.content);
+    }) as
+      | { type: string; message: { role: string; content: Array<{ type: string; tool_use_id: string; content: string }> } }
+      | undefined;
+    expect(userEnvelope).toBeDefined();
+    expect(userEnvelope!.message.role).toBe("user");
+
+    const contentBlocks = userEnvelope!.message.content;
+    const toolResultBlock = contentBlocks.find((b) => b.type === "tool_result");
+    expect(toolResultBlock).toBeDefined();
+    expect(toolResultBlock!.tool_use_id).toBe("tool-abc");
+
+    // content must be a JSON string (not a nested object) — CLI rejects objects with is_error:true
+    expect(typeof toolResultBlock!.content).toBe("string");
+    const parsed2 = JSON.parse(toolResultBlock!.content) as { answers: Record<string, string> };
+    expect(parsed2.answers).toEqual(answers);
+  });
+
+  test("no bare top-level tool_result message written (is_error:true guard)", async () => {
+    // The old format {"type":"tool_result",...} causes the CLI to respond with is_error:true.
+    // Verify it is never written.
+    const cs = controllableStream();
+    const encoder = new TextEncoder();
+    const stdin = mockStdin();
+
+    spawnMock.mockImplementation(() =>
+      mockProc({ stdout: cs, exitCode: 0, exitDelay: 3000, stdin: stdin.writer })
+    );
+
+    const streamPromise = claudeStream("prompt", {
+      onQuestion: async () => { cs.close(); return { Q: "A" }; },
+    });
+
+    cs.enqueue(encoder.encode(
+      assistantWithAskUserQuestion("t1", [
+        { question: "Q", header: "H", options: [{ label: "A", description: "a" }] },
+      ]) + "\n"
+    ));
+
+    await streamPromise.catch(() => {});
+
+    const allWrites = stdin.writes.join("");
+    const lines = allWrites.split("\n").filter(Boolean);
+    for (const line of lines) {
+      try {
+        const msg = JSON.parse(line) as { type: string };
+        expect(msg.type).not.toBe("tool_result"); // bare tool_result must never appear
+      } catch { /* skip non-JSON */ }
+    }
   });
 });
 
