@@ -136,7 +136,7 @@ interface RelayQuestionForm {
   /** message_id of the Telegram form message to edit in-place. */
   formMessageId: number;
   resolve: (answers: Record<string, string>) => void;
-  reject: () => void;
+  reject: (reason?: Error) => void;
   timeoutId: ReturnType<typeof setTimeout>;
   /** Called just before resolve() so the onQuestion closure can update the indicator. */
   onResolve?: () => void;
@@ -611,7 +611,14 @@ bot.on("callback_query:data", async (ctx) => {
     const threadId = tid === 0 ? null : tid;
     const key = streamKey(chatId, threadId);
     const form = pendingRelayForms.get(key);
-    if (!form) return; // form already resolved/cancelled
+
+    const dbgRq = process.env.INTERACTIVE_DEBUG === "1";
+    if (dbgRq) console.log(`[rq:DEBUG] action=${action} key=${key} formFound=${!!form} pendingFormsCount=${pendingRelayForms.size} data=${data}`);
+
+    if (!form) {
+      console.warn(`[rq] no pending form for key=${key} action=${action} — form may have already resolved/cancelled or process was killed`);
+      return;
+    }
 
     if (action === "s") {
       // Select/toggle option: rq:s:{chatId}:{tid}:{qIdx}:{oIdx}
@@ -680,6 +687,7 @@ bot.on("callback_query:data", async (ctx) => {
       // Submit All: rq:sub:{chatId}:{tid}
       const submittedAnswers = collectAnswers(form);
       console.debug(`[relay-form] rq:sub key=${key} answers:`, JSON.stringify(submittedAnswers));
+      if (dbgRq) console.log(`[rq:DEBUG] rq:sub — submittedAnswers=${JSON.stringify(submittedAnswers)} toolUseId=${form.toolUseId} selectionsSize=${form.selections.size}`);
       pendingRelayForms.delete(key);
       clearTimeout(form.timeoutId);
 
@@ -694,6 +702,7 @@ bot.on("callback_query:data", async (ctx) => {
 
     } else if (action === "cxl") {
       // Cancel: rq:cxl:{chatId}:{tid}
+      if (dbgRq) console.log(`[rq:DEBUG] rq:cxl — cancelling form key=${key} toolUseId=${form.toolUseId}`);
       pendingRelayForms.delete(key);
       clearTimeout(form.timeoutId);
 
@@ -703,7 +712,8 @@ bot.on("callback_query:data", async (ctx) => {
         });
       } catch { /* ignore */ }
 
-      form.reject();
+      console.warn(`[relay-form] rq:cxl key=${key} — user cancelled form, rejecting onQuestion promise`);
+      form.reject(new Error("user cancelled"));
     }
     return;
   } else if (data.startsWith("iq:")) {
@@ -858,6 +868,8 @@ async function processTextMessage(
     // Builds and manages a Telegram form while claudeStream is suspended.
     const onQuestion = async (event: AskUserQuestionEvent): Promise<Record<string, string>> => {
       const formKey = streamKey(chatId, threadId);
+      const dbg = process.env.INTERACTIVE_DEBUG === "1";
+      if (dbg) console.log(`[onQuestion:DEBUG] called — toolUseId=${event.toolUseId} questionCount=${event.questions.length} formKey=${formKey} pendingFormsCount=${pendingRelayForms.size}`);
 
       void indicator.update("⏳ Waiting for your answer...", { immediate: true });
 
@@ -909,6 +921,7 @@ async function processTextMessage(
       }, RELAY_FORM_TIMEOUT_MS);
 
       pendingRelayForms.set(formKey, form);
+      if (dbg) console.log(`[onQuestion:DEBUG] form registered key=${formKey} formMessageId=${form.formMessageId}`);
       return answerPromise;
     };
 

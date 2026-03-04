@@ -334,6 +334,85 @@ describe("repeat()", () => {
   });
 });
 
+// ─── AskUserQuestion Telegram fixtures ───────────────────────────────────────
+
+describe("askuserquestion-select-option payload shape", () => {
+  const f = loadFixture("askuserquestion-select-option");
+
+  it("loads with source=derived", () => {
+    expect(f.source).toBe("derived");
+    expect(f.boundary).toBe("grammy-ctx");
+  });
+
+  it("has callbackQuery.data matching rq:s format", () => {
+    const cq = f.payload.callbackQuery as Record<string, unknown>;
+    // rq:s:{chatId}:{tid}:{qIdx}:{oIdx}
+    expect(typeof cq.data).toBe("string");
+    expect((cq.data as string).startsWith("rq:s:")).toBe(true);
+    const parts = (cq.data as string).split(":");
+    expect(parts.length).toBe(6); // rq, s, chatId, tid, qIdx, oIdx
+  });
+
+  it("encodes first question first option (qIdx=0, oIdx=0)", () => {
+    const cq = f.payload.callbackQuery as Record<string, unknown>;
+    const parts = (cq.data as string).split(":");
+    expect(parts[4]).toBe("0"); // qIdx
+    expect(parts[5]).toBe("0"); // oIdx
+  });
+
+  it("has callbackQuery.message.reply_markup with inline_keyboard", () => {
+    const cq = f.payload.callbackQuery as Record<string, unknown>;
+    const msg = cq.message as Record<string, unknown>;
+    const markup = msg.reply_markup as Record<string, unknown>;
+    expect(Array.isArray(markup.inline_keyboard)).toBe(true);
+  });
+
+  it("keyboard contains rq:sub and rq:cxl buttons", () => {
+    const cq = f.payload.callbackQuery as Record<string, unknown>;
+    const msg = cq.message as Record<string, unknown>;
+    const markup = msg.reply_markup as Record<string, unknown>;
+    const keyboard = markup.inline_keyboard as Array<Array<Record<string, unknown>>>;
+    const allData = keyboard.flat().map(btn => btn.callback_data as string);
+    expect(allData.some(d => d.startsWith("rq:sub:"))).toBe(true);
+    expect(allData.some(d => d.startsWith("rq:cxl:"))).toBe(true);
+  });
+
+  it("maps to Update.callback_query via fixtureToUpdate", () => {
+    const update = fixtureToUpdate(f) as Record<string, unknown>;
+    expect(update.callback_query).toBeDefined();
+    expect(update.message).toBeUndefined();
+  });
+});
+
+describe("askuserquestion-cancel payload shape", () => {
+  const f = loadFixture("askuserquestion-cancel");
+
+  it("loads with source=derived", () => {
+    expect(f.source).toBe("derived");
+    expect(f.boundary).toBe("grammy-ctx");
+  });
+
+  it("has callbackQuery.data matching rq:cxl format", () => {
+    const cq = f.payload.callbackQuery as Record<string, unknown>;
+    expect(typeof cq.data).toBe("string");
+    expect((cq.data as string).startsWith("rq:cxl:")).toBe(true);
+    const parts = (cq.data as string).split(":");
+    expect(parts.length).toBe(4); // rq, cxl, chatId, tid
+  });
+
+  it("tid is '0' for private chat (no forum topic)", () => {
+    const cq = f.payload.callbackQuery as Record<string, unknown>;
+    const parts = (cq.data as string).split(":");
+    expect(parts[3]).toBe("0");
+  });
+
+  it("maps to Update.callback_query via fixtureToUpdate", () => {
+    const update = fixtureToUpdate(f) as Record<string, unknown>;
+    expect(update.callback_query).toBeDefined();
+    expect(update.message).toBeUndefined();
+  });
+});
+
 // ─── runNodes() ───────────────────────────────────────────────────────────────
 
 describe("runNodes()", () => {

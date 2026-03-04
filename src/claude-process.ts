@@ -426,12 +426,18 @@ export async function claudeStream(
   // ── AskUserQuestion handler (interactive mode only) ──────────────────────────
   // Suspends both timers, awaits the onQuestion callback, then injects the
   // tool_result answer to stdin and restarts the timers.
+  //
+  // DEBUG: set INTERACTIVE_DEBUG=1 in .env to emit verbose logs at every step.
+  //   Captures: toolUseId, question count, answer map, exact bytes written to stdin,
+  //   stdin writer availability, and whether the process is still alive at write time.
   const handleAskUserQuestion = async (
     toolUseId: string,
     input: Record<string, unknown>,
   ): Promise<void> => {
+    const dbg = process.env.INTERACTIVE_DEBUG === "1";
+
     if (!options?.onQuestion) {
-      console.debug("[stream] AskUserQuestion fired but onQuestion not set — ignoring");
+      console.debug("[handleAskUserQuestion] no onQuestion handler — ignoring");
       return;
     }
 
@@ -446,11 +452,29 @@ export async function claudeStream(
       multiSelect: (q.multiSelect as boolean) ?? false,
     }));
 
+    if (dbg) console.log(`[handleAskUserQuestion:DEBUG] toolUseId=${toolUseId} questionCount=${questions.length} questions=${JSON.stringify(questions.map((q) => q.header))}`);
+
     // Suspend both timers while waiting for the user's answer
     clearTimeout(idleTimerId);
     clearTimeout(softCeilingId);
 
-    const answers = await options.onQuestion({ toolUseId, questions });
+    if (dbg) console.log("[handleAskUserQuestion:DEBUG] timers suspended — awaiting onQuestion()");
+
+    let answers: Record<string, string>;
+    try {
+      answers = await options.onQuestion({ toolUseId, questions });
+    } catch (err) {
+      // User cancelled (form.reject() called) or relay timed out.
+      // Kill the process so proc.exited resolves and claudeStream can return
+      // rather than hanging indefinitely waiting for more stdin.
+      const reason = err instanceof Error ? err.message : String(err);
+      console.warn(`[handleAskUserQuestion] onQuestion rejected — reason: ${reason || "(no reason)"}`);
+      if (dbg) console.log("[handleAskUserQuestion:DEBUG] killing process after cancel/timeout");
+      proc.kill();
+      return;
+    }
+
+    if (dbg) console.log("[handleAskUserQuestion:DEBUG] answers received:", JSON.stringify(answers));
 
     // Restart both timers now that Claude is about to resume
     resetIdleTimer();
@@ -461,8 +485,9 @@ export async function claudeStream(
     //   {"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"...","content":"<string>"}]}}
     // Sending a bare {"type":"tool_result",...} causes the CLI to echo is_error:true,
     // making Claude think the question was unanswered and re-ask it (the repeat-questions bug).
-    console.debug("[handleAskUserQuestion] answers:", JSON.stringify(answers));
     const stdinWriter = proc.stdin as { write?: (data: Uint8Array) => void } | null | undefined;
+    const hasStdinWriter = typeof stdinWriter?.write === "function";
+
     const toolResult = JSON.stringify({
       type: "user",
       message: {
@@ -474,8 +499,23 @@ export async function claudeStream(
         }],
       },
     }) + "\n";
+
+    console.debug("[handleAskUserQuestion] answers:", JSON.stringify(answers));
     console.debug("[handleAskUserQuestion] writing tool_result to stdin:", toolResult.slice(0, 200));
-    stdinWriter?.write?.(new TextEncoder().encode(toolResult));
+
+    if (dbg) {
+      console.log(`[handleAskUserQuestion:DEBUG] stdinWriter available=${hasStdinWriter}`);
+      console.log(`[handleAskUserQuestion:DEBUG] FULL tool_result payload:\n${toolResult}`);
+    }
+
+    if (!hasStdinWriter) {
+      console.error("[handleAskUserQuestion] ERROR: stdin writer not available — tool_result NOT sent! (process may have been killed or stdin not piped)");
+      return;
+    }
+
+    stdinWriter.write!(new TextEncoder().encode(toolResult));
+
+    if (dbg) console.log("[handleAskUserQuestion:DEBUG] tool_result written to stdin successfully");
   };
 
   const parseStream = async (): Promise<void> => {
@@ -563,6 +603,10 @@ export async function claudeStream(
           } else if (type === "result" && event.subtype === "success") {
             resultText = (event.result as string) ?? "";
             console.debug(`[stream] result received, length=${resultText.length}`);
+            if (process.env.INTERACTIVE_DEBUG === "1") {
+              console.log(`[stream:DEBUG] result:success fired — interactiveMode=${interactiveMode} resultText.length=${resultText.length}`);
+              console.log(`[stream:DEBUG] result preview: ${resultText.slice(0, 120)}`);
+            }
             // After receiving the result the process must be terminated so proc.exited
             // resolves promptly.  Without this, claudeStream blocks until the 5-min
             // idle timer fires and returns a 45-char error string instead of the result.
@@ -573,7 +617,10 @@ export async function claudeStream(
               try {
                 const stdinEnd = proc.stdin as { end?: () => void } | null | undefined;
                 stdinEnd?.end?.();
-              } catch { /* ignore close errors */ }
+                if (process.env.INTERACTIVE_DEBUG === "1") console.log("[stream:DEBUG] stdin closed (stdinEnd.end())");
+              } catch (e) {
+                console.warn("[stream] stdinEnd.end() threw:", e);
+              }
             } else {
               proc.kill();
             }
@@ -623,6 +670,12 @@ export async function claudeStream(
   });
 
   const exitCode = await proc.exited;
+  const dbgExit = process.env.INTERACTIVE_DEBUG === "1";
+  if (dbgExit) {
+    console.log(`[claudeStream:DEBUG] proc.exited=${exitCode} resultText.length=${resultText.length} lastAssistantText.length=${lastAssistantText.length} interactiveMode=${interactiveMode}`);
+    if (stderrText) console.log(`[claudeStream:DEBUG] stderr: ${stderrText.slice(0, 400)}`);
+  }
+
   // Exit 130 = SIGINT (PM2 shutdown / Ctrl-C forwarded to process group)
   // Exit 143 = SIGTERM — both are graceful cancellations, not real errors.
   // Return whatever partial result accumulated rather than throwing.
@@ -630,6 +683,7 @@ export async function claudeStream(
     return (resultText || lastAssistantText).trim();
   }
   if (exitCode !== 0) {
+    console.error(`[claudeStream] non-zero exit=${exitCode} resultText.length=${resultText.length} stderr=${stderrText.slice(0, 200)}`);
     throw new Error(`claudeStream: exit ${exitCode} — ${stderrText.trim()}`);
   }
 

@@ -172,3 +172,131 @@ describe("mockClaudeStream — error-generation", () => {
     await expect(stub("ignored")).rejects.toThrow("claudeStream: exit 1");
   });
 });
+
+// ─── AskUserQuestion interactive fixtures ─────────────────────────────────────
+
+describe("loadClaudeCliFixture — askuserquestion-loop (stream-json-interactive)", () => {
+  it("loads the fixture", () => {
+    const f = loadClaudeCliFixture("askuserquestion-loop", "stream-json-interactive");
+    expect(f.id).toBe("askuserquestion-loop");
+    expect(f.source).toBe("derived");
+    expect(f.boundary).toBe("claude-cli-stdout");
+    expect(f.mode).toBe("stream-json-interactive");
+  });
+
+  it("has a tools list containing AskUserQuestion in system:init", () => {
+    const f = loadClaudeCliFixture("askuserquestion-loop", "stream-json-interactive");
+    const payload = f.payload as ClaudeCliStreamPayload;
+    const initLine = payload.lines.find(l => l.type === "system" && l.subtype === "init");
+    expect(initLine).toBeDefined();
+    const tools = initLine!.tools as string[];
+    expect(tools).toContain("AskUserQuestion");
+  });
+
+  it("contains exactly two AskUserQuestion tool_use events (the loop pattern)", () => {
+    const f = loadClaudeCliFixture("askuserquestion-loop", "stream-json-interactive");
+    const payload = f.payload as ClaudeCliStreamPayload;
+
+    const askEvents = payload.lines.filter(l => {
+      if (l.type !== "assistant") return false;
+      const msg = l.message as { content?: Array<{ type: string; name?: string }> } | undefined;
+      return msg?.content?.some(b => b.type === "tool_use" && b.name === "AskUserQuestion") ?? false;
+    });
+
+    expect(askEvents.length).toBe(2); // loop: Claude re-asks the same question
+  });
+
+  it("two AskUserQuestion tool_use events have different toolUseIds (loop iterations)", () => {
+    const f = loadClaudeCliFixture("askuserquestion-loop", "stream-json-interactive");
+    const payload = f.payload as ClaudeCliStreamPayload;
+
+    const toolUseIds: string[] = [];
+    for (const line of payload.lines) {
+      if (line.type !== "assistant") continue;
+      const msg = line.message as { content?: Array<{ type: string; id?: string; name?: string }> } | undefined;
+      for (const block of msg?.content ?? []) {
+        if (block.type === "tool_use" && block.name === "AskUserQuestion") {
+          toolUseIds.push(block.id ?? "");
+        }
+      }
+    }
+
+    expect(toolUseIds.length).toBe(2);
+    expect(toolUseIds[0]).not.toBe(toolUseIds[1]);
+  });
+
+  it("user event between first and second AskUserQuestion has is_error=true (root cause of loop)", () => {
+    const f = loadClaudeCliFixture("askuserquestion-loop", "stream-json-interactive");
+    const payload = f.payload as ClaudeCliStreamPayload;
+
+    const userLines = payload.lines.filter(l => l.type === "user");
+    expect(userLines.length).toBeGreaterThan(0);
+
+    const errorLine = userLines.find(l => {
+      const msg = l.message as { content?: Array<{ is_error?: boolean }> } | undefined;
+      return msg?.content?.some(b => b.is_error === true);
+    });
+
+    expect(errorLine).toBeDefined();
+  });
+
+  it("has stdin_messages_sent (wrong bare format) and stdin_messages_correct (envelope format)", () => {
+    const f = loadClaudeCliFixture("askuserquestion-loop", "stream-json-interactive");
+    const payload = f.payload as Record<string, unknown>;
+    expect(Array.isArray(payload.stdin_messages_sent)).toBe(true);
+    expect(Array.isArray(payload.stdin_messages_correct)).toBe(true);
+
+    const wrong = (payload.stdin_messages_sent as Array<Record<string, unknown>>)[0];
+    const correct = (payload.stdin_messages_correct as Array<Record<string, unknown>>)[0];
+
+    // Wrong: bare type=tool_result (not wrapped in user envelope)
+    expect((wrong.sent as Record<string, unknown>).type).toBe("tool_result");
+    // Correct: wrapped in type=user with message.role=user
+    expect((correct.sent as Record<string, unknown>).type).toBe("user");
+  });
+});
+
+describe("loadClaudeCliFixture — askuserquestion-cancel (stream-json-interactive)", () => {
+  it("loads the fixture", () => {
+    const f = loadClaudeCliFixture("askuserquestion-cancel", "stream-json-interactive");
+    expect(f.id).toBe("askuserquestion-cancel");
+    expect(f.source).toBe("derived");
+    expect(f.boundary).toBe("claude-cli-stdout");
+    expect(f.mode).toBe("stream-json-interactive");
+  });
+
+  it("has exactly one AskUserQuestion event (no loop — stream was killed)", () => {
+    const f = loadClaudeCliFixture("askuserquestion-cancel", "stream-json-interactive");
+    const payload = f.payload as ClaudeCliStreamPayload;
+
+    const askEvents = payload.lines.filter(l => {
+      if (l.type !== "assistant") return false;
+      const msg = l.message as { content?: Array<{ type: string; name?: string }> } | undefined;
+      return msg?.content?.some(b => b.type === "tool_use" && b.name === "AskUserQuestion") ?? false;
+    });
+
+    expect(askEvents.length).toBe(1);
+  });
+
+  it("has no result:success line (proc was killed before Claude could respond)", () => {
+    const f = loadClaudeCliFixture("askuserquestion-cancel", "stream-json-interactive");
+    const payload = f.payload as ClaudeCliStreamPayload;
+
+    const successLine = payload.lines.find(l => l.type === "result" && l.subtype === "success");
+    expect(successLine).toBeUndefined();
+  });
+
+  it("has no user event after AskUserQuestion (no tool_result written to stdin)", () => {
+    const f = loadClaudeCliFixture("askuserquestion-cancel", "stream-json-interactive");
+    const payload = f.payload as ClaudeCliStreamPayload;
+
+    const userLines = payload.lines.filter(l => l.type === "user");
+    expect(userLines.length).toBe(0);
+  });
+
+  it("exitCode is -1 (SIGTERM from proc.kill())", () => {
+    const f = loadClaudeCliFixture("askuserquestion-cancel", "stream-json-interactive");
+    const payload = f.payload as ClaudeCliStreamPayload;
+    expect(payload.exitCode).toBe(-1);
+  });
+});
