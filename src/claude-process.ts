@@ -322,7 +322,10 @@ export async function claudeStream(
   const interactiveMode = !!options?.onQuestion;
 
   const args = [claudePath];
-  if (options?.dangerouslySkipPermissions) {
+  if (options?.dangerouslySkipPermissions || interactiveMode) {
+    // AskUserQuestion requires --dangerously-skip-permissions to be available
+    // as a tool. Interactive mode always needs it, coding sessions pass it
+    // explicitly. Without it, Claude reports "AskUserQuestion isn't rendering".
     args.push("--dangerously-skip-permissions");
   }
 
@@ -519,6 +522,7 @@ export async function claudeStream(
   };
 
   const parseStream = async (): Promise<void> => {
+    const dbg = process.env.INTERACTIVE_DEBUG === "1";
     const reader = proc.stdout.getReader();
     const decoder = new TextDecoder();
     let buf = "";
@@ -546,7 +550,21 @@ export async function claudeStream(
           const type = event.type as string;
           console.debug(`[stream] event type=${type}${event.subtype ? ` subtype=${event.subtype}` : ""}`);
 
+          if (type === "user" && dbg) {
+            // Log full echoed user event so we can verify tool_result content was parsed correctly
+            const msg = event.message as { content?: unknown } | undefined;
+            const blocks = Array.isArray(msg?.content) ? msg.content as Array<Record<string, unknown>> : [];
+            for (const b of blocks) {
+              if (b.type === "tool_result") {
+                console.log(`[stream:DEBUG] echoed user event — tool_result is_error=${b.is_error ?? false} content-type=${typeof b.content} content=${JSON.stringify(b.content).slice(0, 300)}`);
+              }
+            }
+          }
+
           if (type === "system" && event.subtype === "init" && typeof event.session_id === "string") {
+            if (dbg) {
+              console.log(`[stream:DEBUG] system:init tools=${JSON.stringify(event.tools)} model=${event.model}`);
+            }
             options?.onSessionId?.(event.session_id as string);
           } else if (type === "assistant") {
             const message = event.message as {
