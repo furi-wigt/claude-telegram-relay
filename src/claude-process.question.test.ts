@@ -452,10 +452,10 @@ describe("claudeStream — AskUserQuestion as top-level tool_use", () => {
 // ═══════════════════════════════════════════════════════════════
 
 describe("claudeStream — tool_result injected after onQuestion resolves", () => {
-  test("tool_result wrapped in user message envelope with stringified content", async () => {
-    // Regression test for "repeat questions" bug:
-    // Sending a bare {"type":"tool_result",...} causes the CLI to echo is_error:true,
-    // making Claude re-ask the same questions. The correct format is a user message envelope.
+  test("tool_result wrapped in user message envelope with object content keyed by index", async () => {
+    // Regression test for Ollama-takeover bug:
+    // content must be an object {answers:{"0":"..."}} (not a JSON string).
+    // A stringified content causes CLI to echo is_error:true → API 400 → exit 1 → Ollama fires.
     const cs = controllableStream();
     const encoder = new TextEncoder();
     const stdin = mockStdin();
@@ -502,7 +502,7 @@ describe("claudeStream — tool_result injected after onQuestion resolves", () =
       const msg = (e as Record<string, unknown>).message as Record<string, unknown> | undefined;
       return Array.isArray(msg?.content);
     }) as
-      | { type: string; message: { role: string; content: Array<{ type: string; tool_use_id: string; content: string }> } }
+      | { type: string; message: { role: string; content: Array<{ type: string; tool_use_id: string; content: unknown }> } }
       | undefined;
     expect(userEnvelope).toBeDefined();
     expect(userEnvelope!.message.role).toBe("user");
@@ -512,10 +512,11 @@ describe("claudeStream — tool_result injected after onQuestion resolves", () =
     expect(toolResultBlock).toBeDefined();
     expect(toolResultBlock!.tool_use_id).toBe("tool-abc");
 
-    // content must be a JSON string (not a nested object) — CLI rejects objects with is_error:true
-    expect(typeof toolResultBlock!.content).toBe("string");
-    const parsed2 = JSON.parse(toolResultBlock!.content) as { answers: Record<string, string> };
-    expect(parsed2.answers).toEqual(answers);
+    // content must be an object (not a JSON string) — CLI rejects strings with is_error:true
+    expect(typeof toolResultBlock!.content).toBe("object");
+    const contentObj = toolResultBlock!.content as { answers: Record<string, string> };
+    // answers keyed by string index ("0", "1", ...) matching question order
+    expect(contentObj.answers).toEqual({ "0": "React" });
   });
 
   test("no bare top-level tool_result message written (is_error:true guard)", async () => {

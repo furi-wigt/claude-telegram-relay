@@ -485,11 +485,22 @@ export async function claudeStream(
 
     // Inject tool_result into stdin so Claude receives the answers.
     // The stream-json input format requires ALL messages to be wrapped in a user envelope:
-    //   {"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"...","content":"<string>"}]}}
-    // Sending a bare {"type":"tool_result",...} causes the CLI to echo is_error:true,
-    // making Claude think the question was unanswered and re-ask it (the repeat-questions bug).
+    //   {"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"...","content":{"answers":{"0":"..."}}]}}}
+    // content must be an object (not a JSON string), with answers keyed by string index.
+    // A JSON-stringified content causes Claude to echo is_error:true ("Answer questions?"),
+    // which triggers API 400 → exit code 1 → Ollama fallback fires.
     const stdinWriter = proc.stdin as { write?: (data: Uint8Array) => void } | null | undefined;
     const hasStdinWriter = typeof stdinWriter?.write === "function";
+
+    // Claude CLI expects tool_result content as an object (not a JSON string)
+    // with answers keyed by string index ("0", "1", ...) matching question order.
+    // The relay's `answers` map is keyed by question text — convert it here.
+    const answersById: Record<string, string> = {};
+    questions.forEach((q, i) => {
+      if (answers[q.question] !== undefined) {
+        answersById[String(i)] = answers[q.question];
+      }
+    });
 
     const toolResult = JSON.stringify({
       type: "user",
@@ -498,7 +509,7 @@ export async function claudeStream(
         content: [{
           type: "tool_result",
           tool_use_id: toolUseId,
-          content: JSON.stringify({ answers }),
+          content: { answers: answersById },
         }],
       },
     }) + "\n";
