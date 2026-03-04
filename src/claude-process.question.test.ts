@@ -118,7 +118,28 @@ function assistantLine(text: string): string {
   });
 }
 
-/** An AskUserQuestion tool_use embedded inside assistant.message.content */
+/** A control_request for AskUserQuestion (the real CLI mechanism) */
+function controlRequestAskUserQuestion(
+  requestId: string,
+  questions: Array<{
+    question: string;
+    header: string;
+    options: Array<{ label: string; description: string }>;
+    multiSelect?: boolean;
+  }>
+): string {
+  return JSON.stringify({
+    type: "control_request",
+    request_id: requestId,
+    request: {
+      subtype: "can_use_tool",
+      tool_name: "AskUserQuestion",
+      input: { questions },
+    },
+  });
+}
+
+/** An assistant event with AskUserQuestion tool_use (emitted alongside control_request) */
 function assistantWithAskUserQuestion(
   toolId: string,
   questions: Array<{
@@ -143,7 +164,7 @@ function assistantWithAskUserQuestion(
   });
 }
 
-/** A top-level AskUserQuestion tool_use event */
+/** A top-level AskUserQuestion tool_use event (legacy, no longer triggers handler) */
 function topLevelAskUserQuestion(
   toolId: string,
   questions: Array<{
@@ -294,11 +315,11 @@ describe("claudeStream — interactive mode initial prompt via stdin", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════
-// Suite 3: AskUserQuestion detection in assistant.content blocks
+// Suite 3: AskUserQuestion via control_request (correct CLI mechanism)
 // ═══════════════════════════════════════════════════════════════
 
-describe("claudeStream — AskUserQuestion in assistant.content", () => {
-  test("onQuestion called with parsed questions array", async () => {
+describe("claudeStream — AskUserQuestion via control_request", () => {
+  test("onQuestion called with parsed questions array from control_request", async () => {
     const cs = controllableStream();
     const encoder = new TextEncoder();
     const stdin = mockStdin();
@@ -312,14 +333,13 @@ describe("claudeStream — AskUserQuestion in assistant.content", () => {
     const streamPromise = claudeStream("prompt", {
       onQuestion: async (event) => {
         capturedEvent = event;
-        cs.close(); // close stream so claudeStream can finish
+        cs.close();
         return { "Which framework?": "React" };
       },
     });
 
-    // Emit AskUserQuestion event
     cs.enqueue(encoder.encode(
-      assistantWithAskUserQuestion("tool-123", [
+      controlRequestAskUserQuestion("req-123", [
         {
           question: "Which framework?",
           header: "Framework",
@@ -335,7 +355,7 @@ describe("claudeStream — AskUserQuestion in assistant.content", () => {
 
     expect(capturedEvent).not.toBeNull();
     const ev = capturedEvent as { toolUseId: string; questions: unknown[] };
-    expect(ev.toolUseId).toBe("tool-123");
+    expect(ev.toolUseId).toBe("req-123");
     expect(ev.questions).toHaveLength(1);
     const q = (ev.questions as Array<{ question: string; header: string; options: unknown[] }>)[0];
     expect(q.question).toBe("Which framework?");
@@ -366,7 +386,7 @@ describe("claudeStream — AskUserQuestion in assistant.content", () => {
     });
 
     cs.enqueue(encoder.encode(
-      assistantWithAskUserQuestion("tid", [
+      controlRequestAskUserQuestion("req-multi", [
         { question: "Q1", header: "H1", options: [{ label: "A", description: "a" }, { label: "B", description: "b" }] },
         { question: "Q2", header: "H2", options: [{ label: "C", description: "c" }, { label: "D", description: "d" }] },
         { question: "Q3", header: "H3", options: [{ label: "E", description: "e" }, { label: "F", description: "f" }] },
@@ -397,7 +417,7 @@ describe("claudeStream — AskUserQuestion in assistant.content", () => {
     });
 
     cs.enqueue(encoder.encode(
-      assistantWithAskUserQuestion("t1", [
+      controlRequestAskUserQuestion("req-multi-select", [
         {
           question: "Pick all that apply",
           header: "Pick",
@@ -413,49 +433,73 @@ describe("claudeStream — AskUserQuestion in assistant.content", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════
-// Suite 4: AskUserQuestion as top-level tool_use event
+// Suite 4: AskUserQuestion assistant/tool_use events are ignored (control_request handles it)
 // ═══════════════════════════════════════════════════════════════
 
-describe("claudeStream — AskUserQuestion as top-level tool_use", () => {
-  test("onQuestion called when AskUserQuestion appears as top-level tool_use", async () => {
+describe("claudeStream — AskUserQuestion assistant/tool_use events do NOT trigger onQuestion", () => {
+  test("assistant content AskUserQuestion does NOT call onQuestion (control_request required)", async () => {
+    // The real CLI emits control_request for permission — the assistant event alone is not sufficient.
+    // onQuestion must NOT fire from assistant content blocks.
     const cs = controllableStream();
     const encoder = new TextEncoder();
     const stdin = mockStdin();
-
-    let capturedId: string | undefined;
+    let questionCalled = false;
 
     spawnMock.mockImplementation(() =>
       mockProc({ stdout: cs, exitCode: 0, exitDelay: 3000, stdin: stdin.writer })
     );
 
     const streamPromise = claudeStream("prompt", {
-      onQuestion: async (event) => {
-        capturedId = event.toolUseId;
+      onQuestion: async () => {
+        questionCalled = true;
         cs.close();
         return {};
       },
     });
 
+    // Emit assistant event (no control_request) then close
     cs.enqueue(encoder.encode(
-      topLevelAskUserQuestion("top-tool-456", [
-        { question: "Top level Q?", header: "TL", options: [{ label: "Yes", description: "yes" }, { label: "No", description: "no" }] },
+      assistantWithAskUserQuestion("tool-ignored", [
+        { question: "Ignored?", header: "Ignored", options: [{ label: "Yes", description: "y" }, { label: "No", description: "n" }] },
       ]) + "\n"
     ));
+    cs.enqueue(encoder.encode(resultLine("done") + "\n"));
+    cs.close();
 
     await streamPromise.catch(() => {});
-    expect(capturedId).toBe("top-tool-456");
+    expect(questionCalled).toBe(false);
+  });
+
+  test("top-level tool_use AskUserQuestion does NOT call onQuestion (control_request required)", async () => {
+    const ndjson = [
+      topLevelAskUserQuestion("top-ignored", [
+        { question: "Q?", header: "Q", options: [{ label: "A", description: "a" }, { label: "B", description: "b" }] },
+      ]),
+      resultLine("result"),
+    ].join("\n") + "\n";
+
+    let questionCalled = false;
+
+    spawnMock.mockImplementation(() =>
+      mockProc({ stdout: ndjson, exitCode: 0 })
+    );
+
+    await claudeStream("prompt", {
+      onQuestion: async () => { questionCalled = true; return {}; },
+    });
+
+    expect(questionCalled).toBe(false);
   });
 });
 
 // ═══════════════════════════════════════════════════════════════
-// Suite 5: tool_result written to stdin after answer
+// Suite 5: control_response written to stdin after answer
 // ═══════════════════════════════════════════════════════════════
 
-describe("claudeStream — tool_result injected after onQuestion resolves", () => {
-  test("tool_result wrapped in user message envelope with object content keyed by index", async () => {
-    // Regression test for Ollama-takeover bug:
-    // content must be an object {answers:{"0":"..."}} (not a JSON string).
-    // A stringified content causes CLI to echo is_error:true → API 400 → exit 1 → Ollama fires.
+describe("claudeStream — control_response injected after onQuestion resolves", () => {
+  test("control_response written with behavior:allow and answers keyed by question text", async () => {
+    // The correct mechanism: relay responds to control_request with control_response.
+    // answers must be keyed by question text (not index) — matches CLI's JTH schema.
     const cs = controllableStream();
     const encoder = new TextEncoder();
     const stdin = mockStdin();
@@ -474,7 +518,7 @@ describe("claudeStream — tool_result injected after onQuestion resolves", () =
     });
 
     cs.enqueue(encoder.encode(
-      assistantWithAskUserQuestion("tool-abc", [
+      controlRequestAskUserQuestion("req-abc", [
         {
           question: "Which framework?",
           header: "FW",
@@ -492,36 +536,24 @@ describe("claudeStream — tool_result injected after onQuestion resolves", () =
       .map((l) => { try { return JSON.parse(l); } catch { return null; } })
       .filter(Boolean) as Array<Record<string, unknown>>;
 
-    // Must be a user-envelope message (not a bare tool_result at top level)
+    // Must NOT write bare tool_result or user-envelope tool_result
     const bareToolResult = parsed.find((e) => e.type === "tool_result");
-    expect(bareToolResult).toBeUndefined(); // bare tool_result must NOT exist
+    expect(bareToolResult).toBeUndefined();
 
-    // Find the user envelope that contains a tool_result block (not the initial prompt)
-    const userEnvelope = parsed.find((e) => {
-      if (e.type !== "user") return false;
-      const msg = (e as Record<string, unknown>).message as Record<string, unknown> | undefined;
-      return Array.isArray(msg?.content);
-    }) as
-      | { type: string; message: { role: string; content: Array<{ type: string; tool_use_id: string; content: unknown }> } }
+    // Must write a control_response
+    const ctrlResp = parsed.find((e) => e.type === "control_response") as
+      | { type: string; response: { request_id: string; response: { behavior: string; updatedInput: { questions: unknown[]; answers: Record<string, string> } } } }
       | undefined;
-    expect(userEnvelope).toBeDefined();
-    expect(userEnvelope!.message.role).toBe("user");
+    expect(ctrlResp).toBeDefined();
+    expect(ctrlResp!.response.request_id).toBe("req-abc");
+    expect(ctrlResp!.response.response.behavior).toBe("allow");
 
-    const contentBlocks = userEnvelope!.message.content;
-    const toolResultBlock = contentBlocks.find((b) => b.type === "tool_result");
-    expect(toolResultBlock).toBeDefined();
-    expect(toolResultBlock!.tool_use_id).toBe("tool-abc");
-
-    // content must be an object (not a JSON string) — CLI rejects strings with is_error:true
-    expect(typeof toolResultBlock!.content).toBe("object");
-    const contentObj = toolResultBlock!.content as { answers: Record<string, string> };
-    // answers keyed by string index ("0", "1", ...) matching question order
-    expect(contentObj.answers).toEqual({ "0": "React" });
+    // answers keyed by question text
+    const updatedInput = ctrlResp!.response.response.updatedInput;
+    expect(updatedInput.answers).toEqual({ "Which framework?": "React" });
   });
 
-  test("no bare top-level tool_result message written (is_error:true guard)", async () => {
-    // The old format {"type":"tool_result",...} causes the CLI to respond with is_error:true.
-    // Verify it is never written.
+  test("no bare top-level tool_result ever written", async () => {
     const cs = controllableStream();
     const encoder = new TextEncoder();
     const stdin = mockStdin();
@@ -535,7 +567,7 @@ describe("claudeStream — tool_result injected after onQuestion resolves", () =
     });
 
     cs.enqueue(encoder.encode(
-      assistantWithAskUserQuestion("t1", [
+      controlRequestAskUserQuestion("req-t1", [
         { question: "Q", header: "H", options: [{ label: "A", description: "a" }] },
       ]) + "\n"
     ));
@@ -547,7 +579,7 @@ describe("claudeStream — tool_result injected after onQuestion resolves", () =
     for (const line of lines) {
       try {
         const msg = JSON.parse(line) as { type: string };
-        expect(msg.type).not.toBe("tool_result"); // bare tool_result must never appear
+        expect(msg.type).not.toBe("tool_result");
       } catch { /* skip non-JSON */ }
     }
   });
