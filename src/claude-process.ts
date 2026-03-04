@@ -648,19 +648,13 @@ export async function claudeStream(
             // resolves promptly.  Without this, claudeStream blocks until the 5-min
             // idle timer fires and returns a 45-char error string instead of the result.
             //
-            // Interactive mode: Claude waits for more stdin — close the pipe so it exits.
-            // One-shot mode:    Claude doesn't exit promptly on its own — kill it.
-            if (interactiveMode) {
-              try {
-                const stdinEnd = proc.stdin as { end?: () => void } | null | undefined;
-                stdinEnd?.end?.();
-                if (process.env.INTERACTIVE_DEBUG === "1") console.log("[stream:DEBUG] stdin closed (stdinEnd.end())");
-              } catch (e) {
-                console.warn("[stream] stdinEnd.end() threw:", e);
-              }
-            } else {
-              proc.kill();
-            }
+            // Kill in both modes — resultText is already captured above.
+            // Previously, interactive mode used stdinEnd.end() (EOF) but this caused a
+            // race: the CLI buffers a second system:init turn before seeing EOF, then
+            // fails with "This model does not support assistant" (invalid messages array
+            // for the new turn), exits with code 1, and falls through to Ollama.
+            // SIGTERM (exit 143) is handled gracefully at the exit-code check below.
+            proc.kill();
           }
         }
       }
