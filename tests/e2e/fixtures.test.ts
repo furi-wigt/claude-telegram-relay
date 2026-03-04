@@ -339,8 +339,8 @@ describe("repeat()", () => {
 describe("askuserquestion-select-option payload shape", () => {
   const f = loadFixture("askuserquestion-select-option");
 
-  it("loads with source=derived", () => {
-    expect(f.source).toBe("derived");
+  it("loads with source=real", () => {
+    expect(f.source).toBe("real");
     expect(f.boundary).toBe("grammy-ctx");
   });
 

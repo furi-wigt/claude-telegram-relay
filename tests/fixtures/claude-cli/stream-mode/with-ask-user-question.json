@@ -1,6 +1,6 @@
 {
   "id": "with-ask-user-question",
-  "description": "claudeStream interactive mode — Claude calls AskUserQuestion, capture script injects tool_result via stdin. Note: tool_result content format was rejected (is_error:true); the correct relay format is { type:\"tool_result\", tool_use_id, content: { answers } }. The fixture captures the exact AskUserQuestion input shape and the user line carrying the tool_result.",
+  "description": "claudeStream interactive mode — Claude calls AskUserQuestion, relay injects tool_result via stdin. Confirmed correct format (2026-03-04): tool_result.content is an object {answers:{\"0\":\"...\"}} keyed by string index. Content must NOT be a JSON string — Claude CLI rejects strings with is_error:true (\\\"Answer questions?\\\"). tool_result wrapped in user message envelope.",
   "source": "real",
   "captured_at": "2026-03-03T14:20:31.865Z",
   "trigger": "claudeStream(\"Use the AskUserQuestion tool to ask me one question: what is my favourite colour? Then tell me my answer.\", { onQuestion: async (e) => answers })",
@@ -858,12 +858,20 @@
         }
       },
       {
-        "type": "tool_result",
-        "tool_use_id": "toolu_012WG1Rnt6rJ4r3J2RqLdqTU",
-        "content": {
-          "answers": {
-            "0": "Blue"
-          }
+        "type": "user",
+        "message": {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "toolu_012WG1Rnt6rJ4r3J2RqLdqTU",
+              "content": {
+                "answers": {
+                  "0": "Blue"
+                }
+              }
+            }
+          ]
         }
       }
     ],

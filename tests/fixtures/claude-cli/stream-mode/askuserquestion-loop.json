@@ -9,12 +9,12 @@
   "boundary": "claude-cli-stdout",
   "mode": "stream-json-interactive",
   "notes": [
-    "The bug: tool_result sent as {type:'tool_result',...} instead of {type:'user',message:{role:'user',content:[{type:'tool_result',...}]}}",
-    "Claude CLI echoes the malformed message back with is_error:true",
-    "Claude then re-asks the same AskUserQuestion (question loop)",
-    "After 6ce2d73 fix: tool_result is wrapped in user envelope → no is_error → no re-ask",
-    "The fixture shows TWO AskUserQuestion events for the same question (loop iteration)",
-    "Detect: if onQuestion is called more than once for the same toolUseId, the loop is active"
+    "The bug (pre-62fd530): tool_result.content sent as JSON string \"{\\\"answers\\\":{\\\"Environment\\\":\\\"Staging\\\"}}\"",
+    "Claude CLI parses the string, can't extract answers, echoes is_error:true with content='Answer questions?'",
+    "Then Claude re-asks the same question (question loop) AND triggers API 400 -> exit 1 -> Ollama fires",
+    "After 62fd530 fix: content sent as object {answers:{\"0\":\"Staging\"}} keyed by string index",
+    "Claude CLI parses correctly, no is_error, no re-ask, Claude resumes normally",
+    "Confirmed from 11:41:53 log: [stream:DEBUG] echoed user event — tool_result is_error=true content-type=string content=\"Answer questions?\""
   ],
   "payload": {
     "lines": [
@@ -23,7 +23,9 @@
         "subtype": "init",
         "session_id": "loop-test-session-001",
         "cwd": "/tmp",
-        "tools": ["AskUserQuestion"],
+        "tools": [
+          "AskUserQuestion"
+        ],
         "model": "claude-sonnet-4-6"
       },
       {
@@ -41,9 +43,18 @@
                     "question": "Which environment are you targeting?",
                     "header": "Environment",
                     "options": [
-                      { "label": "Development", "description": "Local dev environment" },
-                      { "label": "Staging", "description": "Pre-production" },
-                      { "label": "Production", "description": "Live environment" }
+                      {
+                        "label": "Development",
+                        "description": "Local dev environment"
+                      },
+                      {
+                        "label": "Staging",
+                        "description": "Pre-production"
+                      },
+                      {
+                        "label": "Production",
+                        "description": "Live environment"
+                      }
                     ],
                     "multiSelect": false
                   }
@@ -61,7 +72,7 @@
           "content": [
             {
               "type": "tool_result",
-              "content": "{\"answers\":{\"Environment\":\"Staging\"}}",
+              "content": "Answer questions?",
               "is_error": true,
               "tool_use_id": "toolu_looptest_001"
             }
@@ -85,9 +96,18 @@
                     "question": "Which environment are you targeting?",
                     "header": "Environment",
                     "options": [
-                      { "label": "Development", "description": "Local dev environment" },
-                      { "label": "Staging", "description": "Pre-production" },
-                      { "label": "Production", "description": "Live environment" }
+                      {
+                        "label": "Development",
+                        "description": "Local dev environment"
+                      },
+                      {
+                        "label": "Staging",
+                        "description": "Pre-production"
+                      },
+                      {
+                        "label": "Production",
+                        "description": "Live environment"
+                      }
                     ],
                     "multiSelect": false
                   }
@@ -105,7 +125,7 @@
           "content": [
             {
               "type": "tool_result",
-              "content": "{\"answers\":{\"Environment\":\"Staging\"}}",
+              "content": "Answer questions?",
               "is_error": true,
               "tool_use_id": "toolu_looptest_002"
             }
@@ -136,7 +156,7 @@
     ],
     "stdin_messages_correct": [
       {
-        "description": "CORRECT FORMAT — wrapped in user envelope (post-6ce2d73 fix)",
+        "description": "CORRECT FORMAT — user envelope, content as object {answers:{\"0\":\"...\"}} (post-62fd530 fix)",
         "sent": {
           "type": "user",
           "message": {
@@ -145,7 +165,11 @@
               {
                 "type": "tool_result",
                 "tool_use_id": "toolu_looptest_001",
-                "content": "{\"answers\":{\"Environment\":\"Staging\"}}"
+                "content": {
+                  "answers": {
+                    "0": "Staging"
+                  }
+                }
               }
             ]
           }
