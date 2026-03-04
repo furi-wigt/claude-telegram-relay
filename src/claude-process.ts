@@ -332,6 +332,11 @@ export async function claudeStream(
   if (interactiveMode) {
     // Interactive mode: no prompt in args — initial message is sent via stdin.
     // This mirrors how SessionRunner works for coding sessions.
+    // Disable AskUserQuestion: in no-tty subprocess mode the CLI immediately
+    // auto-denies AskUserQuestion calls (is_error=true) before our stdin write
+    // can arrive. Disabling the tool forces Claude to ask questions as plain
+    // text instead, which is handled cleanly by the caller.
+    args.push("--disallowed-tools", "AskUserQuestion");
     args.push("-p", "--input-format", "stream-json");
   } else {
     args.push("-p", prompt);
