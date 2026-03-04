@@ -441,23 +441,13 @@ export async function claudeStream(
   //
   // DEBUG: set INTERACTIVE_DEBUG=1 in .env to emit verbose logs at every step.
   const handleAskUserQuestion = async (
-    requestId: string,
+    toolUseId: string,
     input: Record<string, unknown>,
   ): Promise<void> => {
     const dbg = process.env.INTERACTIVE_DEBUG === "1";
 
     if (!options?.onQuestion) {
-      console.debug("[handleAskUserQuestion] no onQuestion handler — sending deny");
-      // Deny so the CLI can continue rather than hanging
-      const denyResponse = JSON.stringify({
-        type: "control_response",
-        response: {
-          request_id: requestId,
-          response: { behavior: "deny", message: "No question handler configured" },
-        },
-      }) + "\n";
-      const stdinWriter = proc.stdin as { write?: (data: Uint8Array) => void } | null | undefined;
-      stdinWriter?.write?.(new TextEncoder().encode(denyResponse));
+      console.debug("[handleAskUserQuestion] no onQuestion handler — ignoring");
       return;
     }
 
@@ -472,16 +462,13 @@ export async function claudeStream(
       multiSelect: (q.multiSelect as boolean) ?? false,
     }));
 
-    if (dbg) console.log(`[handleAskUserQuestion:DEBUG] requestId=${requestId} questionCount=${questions.length} questions=${JSON.stringify(questions.map((q) => q.header))}`);
+    if (dbg) console.log(`[handleAskUserQuestion:DEBUG] toolUseId=${toolUseId} questionCount=${questions.length} questions=${JSON.stringify(questions.map((q) => q.header))}`);
 
     // Suspend both timers while waiting for the user's answer
     clearTimeout(idleTimerId);
     clearTimeout(softCeilingId);
 
     if (dbg) console.log("[handleAskUserQuestion:DEBUG] timers suspended — awaiting onQuestion()");
-
-    // Use a synthetic toolUseId for the onQuestion event (not used in the response)
-    const toolUseId = requestId;
     let answers: Record<string, string>;
     try {
       answers = await options.onQuestion({ toolUseId, questions });
@@ -500,43 +487,41 @@ export async function claudeStream(
     resetIdleTimer();
     resetSoftCeiling();
 
-    // Send control_response to stdin.
-    // updatedInput must include the original questions array plus answers keyed by question text.
-    // The CLI's mapToolResultToToolResultBlockParam uses Object.entries(answers) to build the
-    // content string — keys must be question texts, not numeric indices.
+    // Send tool_result to stdin as a user message envelope.
+    // answers must be keyed by question TEXT (not index) so Claude can parse them.
+    // The CLI's mapToolResultToToolResultBlockParam uses Object.entries(answers) to build
+    // the content string — keys are question texts, values are selected answers.
     const stdinWriter = proc.stdin as { write?: (data: Uint8Array) => void } | null | undefined;
     const hasStdinWriter = typeof stdinWriter?.write === "function";
 
-    const controlResponse = JSON.stringify({
-      type: "control_response",
-      response: {
-        request_id: requestId,
-        response: {
-          behavior: "allow",
-          updatedInput: {
-            questions: rawQs,
-            answers,  // keyed by question text — matches CLI's JTH schema
-          },
-        },
+    const toolResult = JSON.stringify({
+      type: "user",
+      message: {
+        role: "user",
+        content: [{
+          type: "tool_result",
+          tool_use_id: toolUseId,
+          content: { answers },  // answers keyed by question text
+        }],
       },
     }) + "\n";
 
     console.debug("[handleAskUserQuestion] answers:", JSON.stringify(answers));
-    console.debug("[handleAskUserQuestion] writing control_response to stdin:", controlResponse.slice(0, 200));
+    console.debug("[handleAskUserQuestion] writing tool_result to stdin:", toolResult.slice(0, 200));
 
+    if (dbg) console.log(`[handleAskUserQuestion:DEBUG] stdinWriter available=${hasStdinWriter}`);
     if (dbg) {
-      console.log(`[handleAskUserQuestion:DEBUG] stdinWriter available=${hasStdinWriter}`);
-      console.log(`[handleAskUserQuestion:DEBUG] FULL control_response payload:\n${controlResponse}`);
+      console.log(`[handleAskUserQuestion:DEBUG] FULL tool_result payload:\n${toolResult}`);
     }
 
     if (!hasStdinWriter) {
-      console.error("[handleAskUserQuestion] ERROR: stdin writer not available — control_response NOT sent!");
+      console.error("[handleAskUserQuestion] ERROR: stdin writer not available — tool_result NOT sent!");
       return;
     }
 
-    stdinWriter.write!(new TextEncoder().encode(controlResponse));
+    stdinWriter.write!(new TextEncoder().encode(toolResult));
 
-    if (dbg) console.log("[handleAskUserQuestion:DEBUG] control_response written to stdin successfully");
+    if (dbg) console.log("[handleAskUserQuestion:DEBUG] tool_result written to stdin successfully");
   };
 
   const parseStream = async (): Promise<void> => {
@@ -569,16 +554,14 @@ export async function claudeStream(
           console.debug(`[stream] event type=${type}${event.subtype ? ` subtype=${event.subtype}` : ""}`);
 
           if (type === "control_request") {
-            // The CLI sends control_request for permission prompts.
-            // AskUserQuestion uses this channel because requiresUserInteraction=true
-            // bypasses --dangerously-skip-permissions.
+            // control_request is only emitted in WebSocket/remote sessions (not local stream-json).
+            // Handled here as a fallback in case CLI behaviour changes.
             const req = event.request as Record<string, unknown> | undefined;
             const requestId = event.request_id as string ?? "";
             if (req?.subtype === "can_use_tool" && req.tool_name === "AskUserQuestion") {
               if (dbg) console.log(`[stream:DEBUG] control_request can_use_tool AskUserQuestion requestId=${requestId}`);
               await handleAskUserQuestion(requestId, (req.input as Record<string, unknown>) ?? {});
             }
-            // Other control_requests (e.g. other tools) are ignored — the CLI handles them internally
             continue;
           }
 
@@ -621,11 +604,12 @@ export async function claudeStream(
               options?.onProgress?.(preview);
             }
             // Tool-use blocks are embedded inside assistant.message.content.
-            // AskUserQuestion is handled via control_request (see above) — just show progress here.
             for (const block of content) {
               if (block.type === "tool_use") {
                 resetIdleTimer();
-                if (block.name !== "AskUserQuestion") {
+                if (block.name === "AskUserQuestion") {
+                  await handleAskUserQuestion(block.id ?? "", block.input ?? {});
+                } else {
                   const summary = formatToolSummary(block.name ?? "unknown", block.input ?? {});
                   console.debug(`[stream] onProgress tool_use (in content): ${summary}`);
                   options?.onProgress?.(summary);
@@ -633,9 +617,14 @@ export async function claudeStream(
               }
             }
           } else if (type === "tool_use") {
-            // Top-level tool_use events. AskUserQuestion is handled via control_request.
+            // Top-level tool_use events.
             resetIdleTimer();
-            if (event.name !== "AskUserQuestion") {
+            if (event.name === "AskUserQuestion") {
+              await handleAskUserQuestion(
+                event.id as string ?? "",
+                (event.input as Record<string, unknown>) ?? {}
+              );
+            } else {
               const summary = formatToolSummary(
                 event.name as string,
                 (event.input as Record<string, unknown>) ?? {}
