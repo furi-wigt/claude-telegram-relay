@@ -510,9 +510,10 @@ describe("claudeStream — AskUserQuestion via control_request (fallback path)",
 // ═══════════════════════════════════════════════════════════════
 
 describe("claudeStream — tool_result injected after onQuestion resolves", () => {
-  test("tool_result user envelope written with answers keyed by question text", async () => {
+  test("tool_result user envelope written with string content (API-compatible format)", async () => {
     // Primary mechanism: relay detects AskUserQuestion in assistant content, sends
-    // tool_result user envelope via stdin. answers keyed by question text (not index).
+    // tool_result user envelope via stdin. content is a STRING (not an object) —
+    // the Anthropic API rejects objects as tool_result content.
     //
     // The onQuestion callback returns answers; handleAskUserQuestion then writes the
     // tool_result to stdin. We keep the stream alive long enough to capture the write
@@ -566,7 +567,7 @@ describe("claudeStream — tool_result injected after onQuestion resolves", () =
       .filter(Boolean) as Array<Record<string, unknown>>;
 
     // Must write a user envelope containing tool_result
-    type UserEnvelope = { type: string; message: { role: string; content: Array<{ type: string; tool_use_id?: string; content?: { answers: Record<string, string> } }> } };
+    type UserEnvelope = { type: string; message: { role: string; content: Array<{ type: string; tool_use_id?: string; content?: string }> } };
     const userEnvelopes = parsed.filter((e) => e.type === "user") as UserEnvelope[];
     const toolResultEnvelope = userEnvelopes.find((e) =>
       Array.isArray(e.message?.content) &&
@@ -579,8 +580,10 @@ describe("claudeStream — tool_result injected after onQuestion resolves", () =
     expect(toolResult).toBeDefined();
     expect(toolResult!.tool_use_id).toBe("tool-abc");
 
-    // answers keyed by question text, not index
-    expect(toolResult!.content?.answers).toEqual({ "Which framework?": "React" });
+    // content must be a string matching the CLI's mapToolResultToToolResultBlockParam format
+    expect(typeof toolResult!.content).toBe("string");
+    expect(toolResult!.content).toContain('"Which framework?"="React"');
+    expect(toolResult!.content).toContain("You can now continue with the user's answers in mind.");
   });
 
   test("no bare top-level control_response written (tool_result is the response)", async () => {

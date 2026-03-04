@@ -488,11 +488,16 @@ export async function claudeStream(
     resetSoftCeiling();
 
     // Send tool_result to stdin as a user message envelope.
-    // answers must be keyed by question TEXT (not index) so Claude can parse them.
-    // The CLI's mapToolResultToToolResultBlockParam uses Object.entries(answers) to build
-    // the content string — keys are question texts, values are selected answers.
+    // The content MUST be a string — the Anthropic API rejects objects as tool_result content.
+    // Format matches what the CLI's mapToolResultToToolResultBlockParam would produce:
+    //   `User has answered your questions: "Q1"="A1", "Q2"="A2". You can now continue…`
     const stdinWriter = proc.stdin as { write?: (data: Uint8Array) => void } | null | undefined;
     const hasStdinWriter = typeof stdinWriter?.write === "function";
+
+    const answersText = Object.entries(answers)
+      .map(([q, a]) => `"${q}"="${a}"`)
+      .join(", ");
+    const contentStr = `User has answered your questions: ${answersText}. You can now continue with the user's answers in mind.`;
 
     const toolResult = JSON.stringify({
       type: "user",
@@ -501,7 +506,7 @@ export async function claudeStream(
         content: [{
           type: "tool_result",
           tool_use_id: toolUseId,
-          content: { answers },  // answers keyed by question text
+          content: contentStr,  // must be a string, not an object
         }],
       },
     }) + "\n";
