@@ -144,16 +144,6 @@
         "num_turns": 3
       }
     ],
-    "stdin_messages_sent": [
-      {
-        "description": "WRONG FORMAT — bare tool_result, not wrapped in user envelope",
-        "sent": {
-          "type": "tool_result",
-          "tool_use_id": "toolu_looptest_001",
-          "content": "{\"answers\":{\"Environment\":\"Staging\"}}"
-        }
-      }
-    ],
     "stdin_messages_correct": [
       {
         "description": "CORRECT FORMAT — user envelope, content as object {answers:{\"0\":\"...\"}} (post-62fd530 fix)",

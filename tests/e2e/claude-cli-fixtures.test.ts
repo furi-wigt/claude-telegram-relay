@@ -240,19 +240,27 @@ describe("loadClaudeCliFixture — askuserquestion-loop (stream-json-interactive
     expect(errorLine).toBeDefined();
   });
 
-  it("has stdin_messages_sent (wrong bare format) and stdin_messages_correct (envelope format)", () => {
+  it("stdin_messages_correct entry wraps tool_result in user envelope with object content keyed by index", () => {
     const f = loadClaudeCliFixture("askuserquestion-loop", "stream-json-interactive");
     const payload = f.payload as Record<string, unknown>;
-    expect(Array.isArray(payload.stdin_messages_sent)).toBe(true);
     expect(Array.isArray(payload.stdin_messages_correct)).toBe(true);
 
-    const wrong = (payload.stdin_messages_sent as Array<Record<string, unknown>>)[0];
-    const correct = (payload.stdin_messages_correct as Array<Record<string, unknown>>)[0];
+    const entry = (payload.stdin_messages_correct as Array<Record<string, unknown>>)[0];
+    const sent = entry.sent as Record<string, unknown>;
 
-    // Wrong: bare type=tool_result (not wrapped in user envelope)
-    expect((wrong.sent as Record<string, unknown>).type).toBe("tool_result");
-    // Correct: wrapped in type=user with message.role=user
-    expect((correct.sent as Record<string, unknown>).type).toBe("user");
+    // Must be wrapped in user envelope
+    expect(sent.type).toBe("user");
+    const msg = (sent.message as Record<string, unknown>);
+    expect(msg.role).toBe("user");
+
+    const content = msg.content as Array<Record<string, unknown>>;
+    const toolResultBlock = content.find((b) => b.type === "tool_result");
+    expect(toolResultBlock).toBeDefined();
+
+    // content must be an object {answers:{"0":"..."}} — not a JSON string
+    expect(typeof toolResultBlock!.content).toBe("object");
+    const contentObj = toolResultBlock!.content as { answers: Record<string, string> };
+    expect(contentObj.answers["0"]).toBeDefined();
   });
 });
 
