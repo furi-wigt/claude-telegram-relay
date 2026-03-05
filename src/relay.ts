@@ -68,6 +68,7 @@ import { analyzeImages, combineImageContexts } from "./vision/visionClient.ts";
 import { analyzeDiagnosticImages } from "./documents/diagnosticAnalyzer.ts";
 import { USER_NAME, USER_TIMEZONE } from "./config/userConfig.ts";
 import { buildFooter, extractNextStep, type FooterData } from "./utils/footer.ts";
+import { handleReportText, handleReportCallback } from "./report/reportHandler.ts";
 
 const PROJECT_ROOT = dirname(dirname(import.meta.path));
 
@@ -716,6 +717,9 @@ bot.on("callback_query:data", async (ctx) => {
       form.reject(new Error("user cancelled"));
     }
     return;
+  } else if (data.startsWith("rpt:")) {
+    const rptChatId = ctx.chat?.id ?? ctx.from?.id ?? 0;
+    await handleReportCallback(bot, ctx, rptChatId, data);
   } else if (data.startsWith("iq:")) {
     await interactive.handleCallback(ctx, data);
   } else if (data.startsWith("cancel:")) {
@@ -1092,6 +1096,9 @@ bot.on("message:text", async (ctx) => {
 
   // Priority 3: Interactive Q&A free-text answer (when user is mid-plan session)
   if (await interactive.handleFreeText(ctx, text)) return;
+
+  // Priority 4: Report workflow free-text (trigger detection + mid-workflow answers)
+  if (await handleReportText(bot, chatId, text)) return;
 
   // Priority 3b: Inline tshoot capture (!finding / !discovery)
   if (await handleTshoOtCapture(ctx, text, chatId, threadId, (id) => getAgentForChat(id).id)) return;

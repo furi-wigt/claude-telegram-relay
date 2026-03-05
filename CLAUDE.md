@@ -8,6 +8,8 @@
 > **For LLM agents working on routines:** Before creating, modifying, or debugging any file in `routines/`, read `routines/CLAUDE.md` first. It defines required code patterns (PM2/bun `_isEntry` guard, `process.exit(0)` error handling), deployment safety rules (never ecosystem-wide restart), and a pre-commit checklist. `routines/user_journey.md` covers the user-facing lifecycle and Telegram interface.
 >
 > **For LLM agents writing or reviewing E2E/integration tests:** Read `CLAUDE.e2e.md` before writing any test that touches Telegram bot behavior. It defines the fixture-based mock library, capture protocol, and runner DSL. Do not assume Grammy ctx shapes — use captured fixtures only.
+>
+> **Service restart confirmation (MANDATORY):** Before executing any command that restarts or reloads the `telegram-relay` service (e.g. `npx pm2 restart telegram-relay`, `npx pm2 reload telegram-relay`), you MUST ask the user for explicit confirmation via Telegram inline keyboard — two buttons: ✅ Confirm restart and ❌ Cancel. Do NOT restart without a confirmed Yes. This applies to Claude Code agents operating in this project.
 
 ## What This Is
 
