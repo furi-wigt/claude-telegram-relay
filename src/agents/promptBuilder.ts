@@ -17,6 +17,8 @@ export interface PromptContext {
   timeStr: string;
   /** Injected document chunks from RAG (insurance policies, etc.) */
   documentContext?: string;
+  /** Unique document titles that contributed to documentContext — used for transparency footer */
+  documentTitles?: string[];
   /** Vision analysis from Anthropic SDK for images sent in Telegram */
   imageContext?: string;
   /** Structured domain-specific extraction for diagnostic agents (aws-architect, security-analyst, code-quality-coach) */
@@ -79,6 +81,13 @@ export function buildAgentPrompt(
   // Document RAG context (insurance policies, etc.)
   if (context.documentContext) {
     parts.push(`\n<document_context>\n${context.documentContext}\n</document_context>`);
+    // KB transparency footer instruction — Claude appends this when it uses document context
+    const titles = context.documentTitles?.length
+      ? context.documentTitles.map((t) => `"${t}"`).join(", ")
+      : "the relevant document";
+    parts.push(
+      `\n<kb_footer_instruction>\nIf your response draws on the document context above, end your reply with exactly this line (no extra newlines before it):\n📄 _Based on: ${titles}_\n</kb_footer_instruction>`
+    );
   }
 
   // Vision analysis — injected when user sends a photo (generic vision)

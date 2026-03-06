@@ -1039,6 +1039,9 @@ async function processTextMessage(
       userName: USER_NAME,
       timeStr,
       documentContext: docSearchResult.hasResults ? docSearchResult.context : undefined,
+      documentTitles: docSearchResult.hasResults
+        ? [...new Set(docSearchResult.chunks.map((c) => c.title))]
+        : undefined,
       isResumedSession: session.messageCount > 1 && triedResume && !forceInjectContext,
     });
 
