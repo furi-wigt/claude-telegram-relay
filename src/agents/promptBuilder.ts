@@ -24,6 +24,11 @@ export interface PromptContext {
   /** Structured domain-specific extraction for diagnostic agents (aws-architect, security-analyst, code-quality-coach) */
   diagnosticContext?: string;
   /**
+   * Most recent routine message Claude has not seen in the current context window.
+   * Injected when --resume is active and the last assistant turn the user saw was a routine.
+   */
+  routineContext?: string;
+  /**
    * When true, the Claude session is being resumed via --resume and already has the
    * system prompt in its context window. Skip static parts (agent identity, userName)
    * to avoid redundant accumulation across turns. Dynamic parts (time, memory, message)
@@ -66,6 +71,12 @@ export function buildAgentPrompt(
   // Conversation history (short-term: summaries + last N verbatim messages)
   if (context.shortTermContext) {
     parts.push(`\n<conversation_history>\n${context.shortTermContext}\n</conversation_history>`);
+  }
+
+  // Routine context — the last proactive message the user saw that Claude has not received.
+  // Only present on resumed sessions where the last assistant turn was a routine message.
+  if (context.routineContext) {
+    parts.push(`\n<routine_context>\n${context.routineContext}\n</routine_context>`);
   }
 
   // Memory context (facts, goals) - already filtered by chat_id

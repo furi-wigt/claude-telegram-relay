@@ -93,6 +93,7 @@ export async function sendAndRecord(
       channel: "telegram",
       chat_id: chatId,
       agent_id: options.agentId ?? null,
+      thread_id: options.topicId ?? null,
       metadata: {
         source: "routine",
         routine: options.routineName,

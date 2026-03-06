@@ -14,6 +14,8 @@ export {
   relativeTime,
   formatDateHeader,
   formatMessage,
+  getLastRoutineMessage,
+  getLastRealAssistantTurn,
   type ShortTermContext,
   type ConversationMessage,
   type ConversationSummary,

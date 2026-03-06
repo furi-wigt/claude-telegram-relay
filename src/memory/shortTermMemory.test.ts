@@ -13,6 +13,8 @@ import {
   shouldSummarize,
   getRecentMessages,
   summarizeOldMessages,
+  getLastRoutineMessage,
+  getLastRealAssistantTurn,
   type ConversationMessage,
   type ShortTermContext,
 } from "./shortTermMemory.ts";
@@ -563,5 +565,129 @@ describe("summarizeOldMessages", () => {
     // gt() should have been called on the messages query (to filter by afterTimestamp)
     // We verify by checking that insert was still called (function ran to completion)
     expect(insertFn).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ============================================================
+// getLastRoutineMessage / getLastRealAssistantTurn
+// ============================================================
+
+/**
+ * Build a minimal chainable Supabase mock for single-row queries.
+ * Supports: from, select, eq, is, neq, order, limit
+ */
+function mockSupabaseSingle(data: any[] | null, error: any = null) {
+  const query: any = {};
+  query.select = mock(() => query);
+  query.eq = mock(() => query);
+  query.is = mock(() => query);
+  query.neq = mock(() => query);
+  query.order = mock(() => query);
+  query.limit = mock(() => Promise.resolve({ data, error }));
+  return {
+    from: mock(() => query),
+    _query: query,
+  } as any;
+}
+
+const routineMsg: ConversationMessage = {
+  id: "r1",
+  role: "assistant",
+  content: "Do you need time blocked this week?",
+  created_at: "2026-03-06T09:00:00.000Z",
+  metadata: { source: "routine", routine: "smart-checkin", summary: "Check-in summary" },
+};
+
+const realMsg: ConversationMessage = {
+  id: "a1",
+  role: "assistant",
+  content: "Here is my analysis.",
+  created_at: "2026-03-06T08:00:00.000Z",
+  metadata: { source: undefined },
+};
+
+describe("getLastRoutineMessage", () => {
+  test("returns null when no routine message exists (empty data)", async () => {
+    const sb = mockSupabaseSingle([]);
+    const result = await getLastRoutineMessage(sb, 123);
+    expect(result).toBeNull();
+  });
+
+  test("returns null on DB error", async () => {
+    const sb = mockSupabaseSingle(null, { message: "db error" });
+    const result = await getLastRoutineMessage(sb, 123);
+    expect(result).toBeNull();
+  });
+
+  test("returns the message when a routine message exists", async () => {
+    const sb = mockSupabaseSingle([routineMsg]);
+    const result = await getLastRoutineMessage(sb, 123);
+    expect(result).not.toBeNull();
+    expect(result!.id).toBe("r1");
+    expect(result!.metadata?.source).toBe("routine");
+  });
+
+  test("filters by threadId — passes eq(thread_id) for non-null threadId", async () => {
+    const sb = mockSupabaseSingle([routineMsg]);
+    await getLastRoutineMessage(sb, 123, 456);
+    // eq should have been called with thread_id
+    const eqCalls = sb._query.eq.mock.calls.map((c: any[]) => c[0]);
+    expect(eqCalls).toContain("thread_id");
+  });
+
+  test("filters null threadId — passes is(thread_id, null) for null threadId", async () => {
+    const sb = mockSupabaseSingle([routineMsg]);
+    await getLastRoutineMessage(sb, 123, null);
+    const isCalls = sb._query.is.mock.calls.map((c: any[]) => c[0]);
+    expect(isCalls).toContain("thread_id");
+  });
+
+  test("passes is(thread_id, null) when threadId is undefined", async () => {
+    const sb = mockSupabaseSingle([routineMsg]);
+    await getLastRoutineMessage(sb, 123, undefined);
+    const isCalls = sb._query.is.mock.calls.map((c: any[]) => c[0]);
+    expect(isCalls).toContain("thread_id");
+  });
+});
+
+describe("getLastRealAssistantTurn", () => {
+  test("returns null when no real assistant turn exists (empty data)", async () => {
+    const sb = mockSupabaseSingle([]);
+    const result = await getLastRealAssistantTurn(sb, 123);
+    expect(result).toBeNull();
+  });
+
+  test("returns null on DB error", async () => {
+    const sb = mockSupabaseSingle(null, { message: "db error" });
+    const result = await getLastRealAssistantTurn(sb, 123);
+    expect(result).toBeNull();
+  });
+
+  test("returns the message when a real assistant turn exists", async () => {
+    const sb = mockSupabaseSingle([realMsg]);
+    const result = await getLastRealAssistantTurn(sb, 123);
+    expect(result).not.toBeNull();
+    expect(result!.id).toBe("a1");
+  });
+
+  test("uses neq filter to exclude routine source", async () => {
+    const sb = mockSupabaseSingle([realMsg]);
+    await getLastRealAssistantTurn(sb, 123);
+    const neqCalls = sb._query.neq.mock.calls.map((c: any[]) => c[0]);
+    expect(neqCalls).toContain("metadata->>source");
+  });
+
+  test("filters by threadId — passes eq(thread_id) for non-null threadId", async () => {
+    const sb = mockSupabaseSingle([realMsg]);
+    await getLastRealAssistantTurn(sb, 123, 789);
+    const eqCalls = sb._query.eq.mock.calls.map((c: any[]) => c[0]);
+    expect(eqCalls).toContain("thread_id");
+  });
+
+  test("filters null threadId — passes is(thread_id, null)", async () => {
+    const sb = mockSupabaseSingle([realMsg]);
+    await getLastRealAssistantTurn(sb, 123, null);
+    const isCalls = sb._query.is.mock.calls.map((c: any[]) => c[0]);
+    expect(isCalls).toContain("thread_id");
   });
 });

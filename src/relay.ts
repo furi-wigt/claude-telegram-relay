@@ -32,6 +32,8 @@ import {
   formatShortTermContext,
   shouldSummarize,
   summarizeOldMessages,
+  getLastRoutineMessage,
+  getLastRealAssistantTurn,
 } from "./memory/shortTermMemory.ts";
 import {
   extractAndStore,
@@ -436,6 +438,8 @@ const MAX_RECENT_BUNDLES = 500;
 const recentBundles = new Map<string, { text: string; ts: number }>();
 /** TTL for orphan-sponge bundle cache. Configurable via DEBOUNCE_MS env var (default 10s). */
 const ORPHAN_SPONGE_TTL_MS = parseInt(process.env.DEBOUNCE_MS || "10000", 10);
+/** TTL for routine context injection — only inject routine messages within this window. */
+const ROUTINE_INJECT_TTL_MS = parseInt(process.env.ROUTINE_INJECT_TTL_MS || String(4 * 60 * 60 * 1000), 10);
 
 /** Tracks the most recent large paste (>200 chars) per chatId for /doc save. */
 const lastLargePastes = new Map<number, string>();
@@ -1025,6 +1029,26 @@ async function processTextMessage(
       ? formatShortTermContext(shortTermCtxRaw, USER_TIMEZONE)
       : "";
 
+    // Routine context injection — fires when resume is reliable (shortTermContext skipped)
+    // but the last assistant turn the user saw was a routine message Claude never received.
+    let routineContext: string | undefined;
+    if (supabase && isResumeReliable(session)) {
+      const [lastRoutine, lastRealTurn] = await Promise.all([
+        getLastRoutineMessage(supabase, chatId, threadId),
+        getLastRealAssistantTurn(supabase, chatId, threadId),
+      ]);
+      const routineIsNewer =
+        lastRoutine &&
+        (!lastRealTurn || lastRoutine.created_at > lastRealTurn.created_at);
+      const routineIsFresh =
+        lastRoutine &&
+        Date.now() - new Date(lastRoutine.created_at).getTime() < ROUTINE_INJECT_TTL_MS;
+      if (routineIsNewer && routineIsFresh) {
+        const label = lastRoutine.metadata?.routine ?? "routine";
+        routineContext = `[${label}]: ${lastRoutine.content}`;
+      }
+    }
+
     const now = new Date();
     const timeStr = now.toLocaleString("en-US", {
       timeZone: USER_TIMEZONE,
@@ -1048,6 +1072,7 @@ async function processTextMessage(
       documentTitles: docSearchResult.hasResults
         ? [...new Set(docSearchResult.chunks.map((c) => c.title))]
         : undefined,
+      routineContext,
       isResumedSession: session.messageCount > 1 && triedResume && !forceInjectContext,
     });
 

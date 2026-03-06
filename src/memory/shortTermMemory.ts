@@ -276,6 +276,69 @@ export async function getShortTermContext(
   return { verbatimMessages, summaries, totalMessages };
 }
 
+// ─── Routine Context Queries ────────────────────────────────────────────────
+
+/**
+ * Returns the most recent routine assistant message for (chatId, threadId), or null.
+ * Used to detect when a routine message is the last thing the user saw and Claude
+ * has not received it in the current context window.
+ */
+export async function getLastRoutineMessage(
+  supabase: SupabaseClient,
+  chatId: number,
+  threadId?: number | null
+): Promise<ConversationMessage | null> {
+  let query = supabase
+    .from("messages")
+    .select("id, role, content, created_at, metadata")
+    .eq("chat_id", chatId)
+    .eq("role", "assistant")
+    .eq("metadata->>source", "routine");
+
+  if (threadId != null) {
+    query = query.eq("thread_id", threadId);
+  } else {
+    query = query.is("thread_id", null);
+  }
+
+  const { data, error } = await query
+    .order("created_at", { ascending: false })
+    .limit(1);
+
+  if (error || !data || data.length === 0) return null;
+  return data[0] as ConversationMessage;
+}
+
+/**
+ * Returns the most recent non-routine assistant turn for (chatId, threadId), or null.
+ * Used to determine whether the last real Claude response predates the last routine message.
+ */
+export async function getLastRealAssistantTurn(
+  supabase: SupabaseClient,
+  chatId: number,
+  threadId?: number | null
+): Promise<ConversationMessage | null> {
+  let query = supabase
+    .from("messages")
+    .select("id, role, content, created_at, metadata")
+    .eq("chat_id", chatId)
+    .eq("role", "assistant")
+    .neq("metadata->>source", "routine");
+
+  if (threadId != null) {
+    query = query.eq("thread_id", threadId);
+  } else {
+    query = query.is("thread_id", null);
+  }
+
+  const { data, error } = await query
+    .order("created_at", { ascending: false })
+    .limit(1);
+
+  if (error || !data || data.length === 0) return null;
+  return data[0] as ConversationMessage;
+}
+
 // ─── Formatting ────────────────────────────────────────────────────────────
 
 /**

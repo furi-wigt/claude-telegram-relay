@@ -227,3 +227,40 @@ describe("promptBuilder — isResumedSession", () => {
     expect(result).toContain("You are a helpful assistant.");
   });
 });
+
+// ---------------------------------------------------------------------------
+// routineContext injection
+// ---------------------------------------------------------------------------
+
+describe("promptBuilder — routineContext", () => {
+  test("includes <routine_context> block when routineContext is provided", () => {
+    const ctx: PromptContext = {
+      ...baseContext,
+      routineContext: "[smart-checkin]: Do you need time blocked this week?",
+    };
+    const result = buildAgentPrompt(agent, "Yes", ctx);
+    expect(result).toContain("<routine_context>");
+    expect(result).toContain("[smart-checkin]: Do you need time blocked this week?");
+    expect(result).toContain("</routine_context>");
+  });
+
+  test("omits <routine_context> block when routineContext is undefined", () => {
+    const ctx: PromptContext = { ...baseContext };
+    const result = buildAgentPrompt(agent, "Yes", ctx);
+    expect(result).not.toContain("<routine_context>");
+  });
+
+  test("<routine_context> appears after conversation_history and before memory_management", () => {
+    const ctx: PromptContext = {
+      ...baseContext,
+      shortTermContext: "some history",
+      routineContext: "[morning-summary]: Weather is sunny.",
+    };
+    const result = buildAgentPrompt(agent, "Thanks", ctx);
+    const routineIdx = result.indexOf("<routine_context>");
+    const historyIdx = result.indexOf("<conversation_history>");
+    const memMgmtIdx = result.indexOf("<memory_management>");
+    expect(historyIdx).toBeLessThan(routineIdx);
+    expect(routineIdx).toBeLessThan(memMgmtIdx);
+  });
+});
