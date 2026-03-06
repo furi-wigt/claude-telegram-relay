@@ -27,7 +27,7 @@ import { registerDirectMemoryCommands } from "./directMemoryCommands.ts";
 import { saveCommandInteraction } from "../utils/saveMessage.ts";
 import { searchDocumentsByTitles, type DocumentSearchResult } from "../rag/documentSearch.ts";
 import { invalidateManifestCache } from "./tshoOtCommands.ts";
-import { listDocuments, deleteDocument } from "../documents/documentProcessor.ts";
+import { listDocuments, deleteDocument, ingestText, resolveUniqueTitle } from "../documents/documentProcessor.ts";
 import { isTROQAActive } from "../tro/troQAState.ts";
 import { handleCwdCommand } from "./cwdCommand.ts";
 
@@ -74,6 +74,8 @@ export interface CommandOptions {
   userId?: number;
   /** Called by /new <prompt> to process the follow-up text as a user message */
   onMessage?: (chatId: number, text: string, ctx: Context) => Promise<void>;
+  /** Returns the most recent large paste (>200 chars) for the given chatId, used by /doc save */
+  getLastPaste?: (chatId: number) => string | undefined;
   /** Fallback working directory (PROJECT_DIR) shown in /cwd display output */
   projectDir?: string;
   /**
@@ -148,7 +150,10 @@ export async function handleDocCommand(
   supabase: SupabaseClient | null,
   listFn: (sb: SupabaseClient) => ReturnType<typeof listDocuments> = listDocuments,
   deleteFn: (sb: SupabaseClient, title: string) => ReturnType<typeof deleteDocument> = deleteDocument,
-  searchFn: (sb: SupabaseClient, question: string, titles: string[]) => Promise<DocumentSearchResult> = searchDocumentsByTitles
+  searchFn: (sb: SupabaseClient, question: string, titles: string[]) => Promise<DocumentSearchResult> = searchDocumentsByTitles,
+  lastPaste?: string,
+  ingestFn: typeof ingestText = ingestText,
+  resolveTitleFn: typeof resolveUniqueTitle = resolveUniqueTitle
 ): Promise<string> {
   if (!supabase) {
     return "Document management requires Supabase. Please configure your database first.";
@@ -232,9 +237,34 @@ export async function handleDocCommand(
     return `🗑️ Deleted "${title}" (${result.deleted} chunk${result.deleted === 1 ? "" : "s"} removed).`;
   }
 
+  if (subcmd === "save") {
+    if (!lastPaste) {
+      return (
+        "No recent paste found.\n\n" +
+        "Send a text message (>200 chars) first, then use /doc save [title] to store it."
+      );
+    }
+    const title = rest.join(" ").trim() || `Note: ${lastPaste.slice(0, 60).trim()}…`;
+    try {
+      const result = await ingestFn(supabase, lastPaste, title);
+      if (result.duplicate) {
+        return `ℹ️ Already in your knowledge base as "${result.title}". Nothing changed.`;
+      }
+      if (result.conflict === "title") {
+        const versionTitle = await resolveTitleFn(supabase, title);
+        const versioned = await ingestFn(supabase, lastPaste, versionTitle);
+        return `✅ Saved as "${versionTitle}" — ${versioned.chunksInserted} chunk${versioned.chunksInserted !== 1 ? "s" : ""}.`;
+      }
+      return `✅ Saved as "${title}" — ${result.chunksInserted} chunk${result.chunksInserted !== 1 ? "s" : ""}.`;
+    } catch (err) {
+      return `❌ Save failed: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
+
   return (
     "Usage:\n" +
     "  /doc list — list all indexed documents\n" +
+    "  /doc save [title] — save most recent large paste to knowledge base\n" +
     "  /doc query <question> — search all documents\n" +
     "  /doc query <question> | <title> — search specific document(s)\n" +
     "  /doc delete <title> — remove a document\n" +
@@ -290,6 +320,7 @@ export function registerCommands(bot: Bot, options: CommandOptions): void {
       "/cwd /path/to/dir - Set working directory (takes effect after /new)",
       "/cwd reset - Clear working directory (reverts to default after /new)",
       "/doc list - List all indexed documents",
+      "/doc save [title] - Save most recent large paste to knowledge base",
       "/doc query <question> - Search all indexed documents",
       "/doc query <question> | <title> - Search specific document(s)",
       "/doc delete <title> - Remove a document from the index",
@@ -431,7 +462,8 @@ export function registerCommands(bot: Bot, options: CommandOptions): void {
     if (!chatId) return;
 
     const args = (ctx.match ?? "").trim();
-    const result = await handleDocCommand(args, supabase);
+    const lastPaste = options.getLastPaste?.(chatId);
+    const result = await handleDocCommand(args, supabase, listDocuments, deleteDocument, searchDocumentsByTitles, lastPaste);
     await sendLongMessage(ctx, result);
   });
 

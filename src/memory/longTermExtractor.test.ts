@@ -606,3 +606,98 @@ describe("hasMemoryItems", () => {
     expect(hasMemoryItems({ dates: ["Birthday March 15"] })).toBe(true);
   });
 });
+
+// ============================================================
+// Truncation warnings
+// ============================================================
+
+describe("extractMemoriesFromExchange — truncation warnings", () => {
+  let warnSpy: ReturnType<typeof mock>;
+  let originalWarn: typeof console.warn;
+
+  beforeEach(() => {
+    originalWarn = console.warn;
+    warnSpy = mock((..._args: unknown[]) => {});
+    console.warn = warnSpy as any;
+    _callOllamaGenerateMock.mockImplementation(async () => "{}");
+  });
+
+  afterEach(() => {
+    console.warn = originalWarn;
+  });
+
+  test("no warning when user message is within 1000 chars", async () => {
+    const shortMsg = "A".repeat(500);
+    await extractMemoriesFromExchange(shortMsg, undefined, 1, "trace1");
+    const warnCalls = warnSpy.mock.calls.filter((c: unknown[]) =>
+      typeof c[0] === "string" && c[0].includes("[ltm] user message truncated")
+    );
+    expect(warnCalls.length).toBe(0);
+  });
+
+  test("warns when user message exceeds 1000 chars", async () => {
+    const longMsg = "A".repeat(1200);
+    await extractMemoriesFromExchange(longMsg, undefined, 1, "trace2");
+    const warnCalls = warnSpy.mock.calls.filter((c: unknown[]) =>
+      typeof c[0] === "string" && c[0].includes("[ltm] user message truncated")
+    );
+    expect(warnCalls.length).toBeGreaterThan(0);
+    expect(warnCalls[0][0]).toContain("1200");
+    expect(warnCalls[0][0]).toContain("1000");
+  });
+
+  test("warns when assistant response exceeds 2000 chars", async () => {
+    const longResponse = "B".repeat(2500);
+    await extractMemoriesFromExchange("short user msg", longResponse, 1, "trace3");
+    const warnCalls = warnSpy.mock.calls.filter((c: unknown[]) =>
+      typeof c[0] === "string" && c[0].includes("[ltm] assistant response truncated")
+    );
+    expect(warnCalls.length).toBeGreaterThan(0);
+    expect(warnCalls[0][0]).toContain("2500");
+    expect(warnCalls[0][0]).toContain("2000");
+  });
+
+  test("no assistant truncation warning when response is within 2000 chars", async () => {
+    await extractMemoriesFromExchange("short", "B".repeat(1000), 1, "trace4");
+    const warnCalls = warnSpy.mock.calls.filter((c: unknown[]) =>
+      typeof c[0] === "string" && c[0].includes("[ltm] assistant response truncated")
+    );
+    expect(warnCalls.length).toBe(0);
+  });
+});
+
+// ============================================================
+// LTM NRR skip guard (tested as pure condition logic)
+// ============================================================
+
+describe("LTM NRR skip guard", () => {
+  const NRR = "No response requested.";
+
+  function shouldSkipLtm(assistantText: string): boolean {
+    return !assistantText.trim() || assistantText.trim() === NRR;
+  }
+
+  test("skips on empty string", () => {
+    expect(shouldSkipLtm("")).toBe(true);
+  });
+
+  test("skips on whitespace-only string", () => {
+    expect(shouldSkipLtm("   \n  ")).toBe(true);
+  });
+
+  test("skips on exact NRR sentinel", () => {
+    expect(shouldSkipLtm(NRR)).toBe(true);
+  });
+
+  test("skips on NRR with surrounding whitespace", () => {
+    expect(shouldSkipLtm(`  ${NRR}  `)).toBe(true);
+  });
+
+  test("does NOT skip on normal assistant response", () => {
+    expect(shouldSkipLtm("Here is your answer.")).toBe(false);
+  });
+
+  test("does NOT skip on response that merely contains NRR substring", () => {
+    expect(shouldSkipLtm(`Sure! No response requested. Just kidding, here's info.`)).toBe(false);
+  });
+});

@@ -168,8 +168,14 @@ export async function extractMemoriesFromExchange(
 
   // Strip {placeholder} template variables that appear when profile.md or system prompts
   // contain unsubstituted variables and the assistant echoes them back.
+  if (userMessage.length > 1000) {
+    console.warn(`[ltm] user message truncated from ${userMessage.length} to 1000 chars for extraction`);
+  }
   const cleanUser = filterPlaceholders(userMessage.slice(0, 1000));
   const MAX_ASSISTANT_CHARS = 2000;
+  if (assistantResponse && assistantResponse.length > MAX_ASSISTANT_CHARS) {
+    console.warn(`[ltm] assistant response truncated from ${assistantResponse.length} to ${MAX_ASSISTANT_CHARS} chars for extraction`);
+  }
   const cleanAssistant = assistantResponse
     ? filterPlaceholders(assistantResponse.slice(0, MAX_ASSISTANT_CHARS))
     : undefined;

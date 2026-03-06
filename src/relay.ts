@@ -434,6 +434,11 @@ const pendingResumeContext = new Map<string, string>(); // key → formatted con
 // FM-1: Orphan-sponge — catches late fragments from Telegram's message splitting
 const MAX_RECENT_BUNDLES = 500;
 const recentBundles = new Map<string, { text: string; ts: number }>();
+/** TTL for orphan-sponge bundle cache. Configurable via DEBOUNCE_MS env var (default 10s). */
+const ORPHAN_SPONGE_TTL_MS = parseInt(process.env.DEBOUNCE_MS || "10000", 10);
+
+/** Tracks the most recent large paste (>200 chars) per chatId for /doc save. */
+const lastLargePastes = new Map<number, string>();
 
 function resumeCtxKey(chatId: number, threadId: number | null): string {
   return `${chatId}_${threadId ?? ""}`;
@@ -502,6 +507,7 @@ registerCommands(bot, {
       run: () => processTextMessage(chatId, threadId, text, ctx),
     });
   },
+  getLastPaste: (chatId: number) => lastLargePastes.get(chatId),
 });
 
 // Register tshoot commands (/scan, /ts-new, /ts-sessions, /ts-resume, /ts-status)
@@ -1186,11 +1192,17 @@ async function processTextMessage(
       const db = supabase;
       const msgCount = session.messageCount;
       const assistantText = response || rawWithoutNext;
+      // Skip LTM extraction when the assistant produced no usable response.
+      // "No response requested." is the sentinel for messages intentionally routed to
+      // group channels only; empty strings indicate a silent stream completion.
+      const NRR = "No response requested.";
+      const skipLtm = !assistantText.trim() || assistantText.trim() === NRR;
       // Snapshot of injected system context: tells LTM extractor what to ignore so it
       // doesn't re-store facts that the assistant merely echoed back from the profile/memory.
       const ltmInjectedContext = [userProfile, memoryContext, relevantContext, profileContext]
         .filter(Boolean)
         .join("\n\n") || undefined;
+      if (!skipLtm) {
       trace({ event: "ltm_enqueued", traceId, chatId, userTextLength: text.length, assistantResponseLength: assistantText.length, queueDepth: 0 });
       enqueueExtraction({ chatId, userId, text, assistantResponse: assistantText, threadId, injectedContext: ltmInjectedContext }, async (item) => {
         const { uncertain, inserted } = await extractAndStore(db, item.chatId, item.userId, item.text, item.assistantResponse, traceId, item.injectedContext);
@@ -1205,6 +1217,7 @@ async function processTextMessage(
           await offerKBSave(bot, item.chatId, item.threadId, item.text).catch(() => {});
         }
       });
+      } // end if (!skipLtm)
     }
 
     // Async STM summarization (independent, every 5 messages)
@@ -1255,7 +1268,7 @@ function cacheRecentBundle(chatId: number, threadId: number | null, text: string
     recentBundles.delete(recentBundles.keys().next().value!);
   }
   recentBundles.set(key, { text, ts: Date.now() });
-  setTimeout(() => recentBundles.delete(key), 10_000);
+  setTimeout(() => recentBundles.delete(key), ORPHAN_SPONGE_TTL_MS);
 }
 
 /**
@@ -1338,7 +1351,7 @@ bot.on("message:text", async (ctx) => {
   {
     const key = `${chatId}:${threadId ?? "null"}`;
     const recent = recentBundles.get(key);
-    if (recent && Date.now() - recent.ts < 10_000 && isLikelyContinuation(text)) {
+    if (recent && Date.now() - recent.ts < ORPHAN_SPONGE_TTL_MS && isLikelyContinuation(text)) {
       // Merge with cached bundle and re-process as unified message
       const merged = recent.text + "\n\n" + text;
       recentBundles.set(key, { text: merged, ts: recent.ts }); // update cached text, keep original ts
@@ -1366,6 +1379,11 @@ bot.on("message:text", async (ctx) => {
 
   // FM-1: Cache this message as a recent bundle for orphan-sponge
   cacheRecentBundle(chatId, threadId, text);
+
+  // /doc save: track last large paste per chatId (>200 chars qualifies as KB content)
+  if (text.length > 200) {
+    lastLargePastes.set(chatId, text);
+  }
 });
 
 // Voice messages

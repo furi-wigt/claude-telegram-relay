@@ -181,6 +181,79 @@ describe("handleDocCommand — query", () => {
   });
 });
 
+// ─── handleDocCommand — save subcmd ───────────────────────────────────────────
+
+describe("handleDocCommand — save", () => {
+  const mockSupabase = {} as any;
+  const mockListFn = mock(async (): Promise<any[]> => []);
+  const mockDeleteFn = mock(async () => ({ deleted: 0 }));
+  const mockSearchFn = mock(async (): Promise<any> => ({ chunks: [], context: "", hasResults: false }));
+
+  const LARGE_TEXT = "A".repeat(300);
+
+  test("no recent paste — returns guidance message", async () => {
+    const result = await handleDocCommand("save", mockSupabase, mockListFn, mockDeleteFn, mockSearchFn, undefined);
+    expect(result).toContain("No recent paste found");
+    expect(result).toContain("/doc save");
+  });
+
+  test("save with paste and no title — auto-generates title from content", async () => {
+    const mockIngestFn = mock(async (_sb: any, _text: string, title: string) => ({ chunksInserted: 2, title }));
+    const mockResolveFn = mock(async (_sb: any, t: string) => t);
+    const result = await handleDocCommand("save", mockSupabase, mockListFn, mockDeleteFn, mockSearchFn, LARGE_TEXT, mockIngestFn, mockResolveFn);
+    expect(result).toContain("✅ Saved");
+    expect(result).toContain("2 chunks");
+    expect(mockIngestFn.mock.calls.length).toBe(1);
+    const [, , title] = mockIngestFn.mock.calls[0] as [any, string, string];
+    expect(title).toContain("Note:");
+  });
+
+  test("save with paste and custom title — uses provided title", async () => {
+    const mockIngestFn = mock(async (_sb: any, _text: string, title: string) => ({ chunksInserted: 3, title }));
+    const mockResolveFn = mock(async (_sb: any, t: string) => t);
+    const result = await handleDocCommand("save My Custom Title", mockSupabase, mockListFn, mockDeleteFn, mockSearchFn, LARGE_TEXT, mockIngestFn, mockResolveFn);
+    expect(result).toContain("My Custom Title");
+    expect(result).toContain("3 chunks");
+    const [, , title] = mockIngestFn.mock.calls[0] as [any, string, string];
+    expect(title).toBe("My Custom Title");
+  });
+
+  test("save with duplicate content — returns info message", async () => {
+    const mockIngestFn = mock(async (_sb: any, _text: string, _title: string) => ({
+      chunksInserted: 0,
+      title: "Existing Title",
+      duplicate: true,
+    }));
+    const mockResolveFn = mock(async (_sb: any, t: string) => t);
+    const result = await handleDocCommand("save", mockSupabase, mockListFn, mockDeleteFn, mockSearchFn, LARGE_TEXT, mockIngestFn, mockResolveFn);
+    expect(result).toContain("Already in your knowledge base");
+    expect(result).toContain("Existing Title");
+  });
+
+  test("save with title conflict — auto-versions the title", async () => {
+    let callCount = 0;
+    const mockIngestFn = mock(async (_sb: any, _text: string, title: string) => {
+      callCount++;
+      if (callCount === 1) return { chunksInserted: 0, title, conflict: "title" as const };
+      return { chunksInserted: 4, title };
+    });
+    const mockResolveFn = mock(async (_sb: any, t: string) => `${t} (2)`);
+    const result = await handleDocCommand("save My Title", mockSupabase, mockListFn, mockDeleteFn, mockSearchFn, LARGE_TEXT, mockIngestFn, mockResolveFn);
+    expect(result).toContain("My Title (2)");
+    expect(result).toContain("4 chunks");
+    expect(mockResolveFn.mock.calls.length).toBe(1);
+    expect(mockIngestFn.mock.calls.length).toBe(2);
+  });
+
+  test("save with ingest error — returns error message", async () => {
+    const mockIngestFn = mock(async () => { throw new Error("DB connection failed"); });
+    const mockResolveFn = mock(async (_sb: any, t: string) => t);
+    const result = await handleDocCommand("save", mockSupabase, mockListFn, mockDeleteFn, mockSearchFn, LARGE_TEXT, mockIngestFn, mockResolveFn);
+    expect(result).toContain("❌ Save failed");
+    expect(result).toContain("DB connection failed");
+  });
+});
+
 describe("buildContextSwitchKeyboard", () => {
   test("returns keyboard with new and continue buttons", () => {
     const keyboard = buildContextSwitchKeyboard(12345);
