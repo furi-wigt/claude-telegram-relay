@@ -12,6 +12,7 @@ import { writeFile, mkdir, readFile, unlink } from "fs/promises";
 import { readFileSync } from "fs";
 import { join, dirname, basename, extname } from "path";
 import { supabase } from "./utils/supabase.ts";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import {
   activeStreams,
   streamKey,
@@ -154,6 +155,89 @@ interface PendingCustomReply {
 const pendingRelayCustomReplies = new Map<number, PendingCustomReply>();
 
 const RELAY_FORM_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+
+// ============================================================
+// FM-8: TOKEN GUARD UTILITIES
+// ============================================================
+
+/** Rough token estimator: ~3.5 chars per token for English */
+function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 3.5);
+}
+
+const CONTEXT_TOKEN_LIMIT = 160_000; // 80% of 200k — leaves room for response
+
+// ============================================================
+// FM-2+3: PENDING KB SAVES
+// ============================================================
+
+/** Pending KB save state, keyed by saveId = "{chatId}:{timestamp}" */
+const pendingKBSaves = new Map<string, { text: string; title: string; chatId: number; threadId: number | null }>();
+
+/** FM-2+3: Offer to save large unparseable content to the knowledge base */
+async function offerKBSave(
+  bot: Bot,
+  _supabase: SupabaseClient,
+  chatId: number,
+  threadId: number | null,
+  text: string
+): Promise<void> {
+  const saveId = `${chatId}:${Date.now()}`;
+  const title = `Note: ${text.slice(0, 60).trim()}…`;
+  pendingKBSaves.set(saveId, { text, title, chatId, threadId });
+  // Auto-expire after 10 minutes
+  setTimeout(() => pendingKBSaves.delete(saveId), 600_000);
+
+  const keyboard = new InlineKeyboard()
+    .text("💾 Save to KB", `save_to_kb:${saveId}`)
+    .text("❌ Discard", `discard_kb_save:${saveId}`);
+
+  const msgOpts: Parameters<typeof bot.api.sendMessage>[2] = {
+    reply_markup: keyboard,
+  };
+  if (threadId) (msgOpts as Record<string, unknown>).message_thread_id = threadId;
+
+  await bot.api.sendMessage(
+    chatId,
+    `ℹ️ This message had no personal facts to remember.\n\nSave to knowledge base for future search?\n\n_"${text.slice(0, 80).trim()}…"_`,
+    msgOpts
+  );
+}
+
+/**
+ * FM-6: Verify embeddings were generated ~6s after save confirmation.
+ * Non-blocking — fires and forgets. Warns user if NULL embeddings found.
+ */
+function scheduleEmbedVerification(
+  bot: Bot,
+  supabase: SupabaseClient,
+  chatId: number,
+  threadId: number | null,
+  title: string,
+  totalChunks: number
+): void {
+  setTimeout(async () => {
+    try {
+      const { count: nullCount } = await supabase
+        .from("documents")
+        .select("*", { count: "exact", head: true })
+        .eq("title", title)
+        .is("embedding", null);
+
+      if (nullCount && nullCount > 0) {
+        const msgOpts: Parameters<typeof bot.api.sendMessage>[2] = {};
+        if (threadId) (msgOpts as Record<string, unknown>).message_thread_id = threadId;
+        await bot.api.sendMessage(
+          chatId,
+          `⚠️ ${nullCount}/${totalChunks} chunks in "${title}" are missing embeddings — search may return incomplete results.\n\nFix: Supabase → Project Settings → Edge Functions → Secrets → OPENAI_API_KEY`,
+          msgOpts
+        );
+      }
+    } catch {
+      // Silently ignore verification errors — don't spam user
+    }
+  }, 6000);
+}
 
 /** Build the form message text for a RelayQuestionForm. */
 function buildFormText(form: RelayQuestionForm): string {
@@ -351,6 +435,9 @@ const bot = new Bot(BOT_TOKEN);
 // shortTermContext into the next call. The formatted context is held here until
 // the user responds (or the entry is garbage-collected by restart).
 const pendingResumeContext = new Map<string, string>(); // key → formatted context
+
+// FM-1: Orphan-sponge — catches late fragments from Telegram's message splitting
+const recentBundles = new Map<string, { text: string; ts: number }>();
 
 function resumeCtxKey(chatId: number, threadId: number | null): string {
   return `${chatId}_${threadId ?? ""}`;
@@ -765,6 +852,125 @@ bot.on("callback_query:data", async (ctx) => {
 });
 
 // ============================================================
+// FM-2+3: KB SAVE CALLBACK HANDLERS
+// ============================================================
+
+// Save to KB
+bot.callbackQuery(/^save_to_kb:/, async (ctx) => {
+  const saveId = ctx.callbackQuery.data.replace("save_to_kb:", "");
+  const pending = pendingKBSaves.get(saveId);
+  if (!pending || !supabase) {
+    await ctx.answerCallbackQuery("Session expired — please resend your message.");
+    return;
+  }
+  pendingKBSaves.delete(saveId);
+
+  try {
+    const { ingestText } = await import("./documents/documentProcessor.ts");
+    const result = await ingestText(supabase, pending.text, pending.title);
+
+    if (result.duplicate) {
+      await ctx.editMessageText(`ℹ️ Already in knowledge base as "${result.title}". Nothing changed.`);
+    } else if (result.conflict === "title") {
+      const replaceId = `replace:${saveId}`;
+      pendingKBSaves.set(replaceId, pending);
+      setTimeout(() => pendingKBSaves.delete(replaceId), 600_000);
+
+      const keyboard = new InlineKeyboard()
+        .text("🔄 Replace existing", `kb_replace:${replaceId}`)
+        .text("➕ New version", `kb_new_version:${replaceId}`)
+        .row()
+        .text("❌ Cancel", `kb_conflict_cancel:${replaceId}`);
+
+      await ctx.editMessageText(
+        `⚠️ A document named "${pending.title}" already exists.\n\nWhat would you like to do?`,
+        { reply_markup: keyboard }
+      );
+    } else {
+      await ctx.editMessageText(
+        `✅ Saved "${pending.title}" — ${result.chunksInserted} chunk${result.chunksInserted !== 1 ? "s" : ""} indexed.\n\nSearch with /doc query`
+      );
+      scheduleEmbedVerification(bot, supabase, pending.chatId, pending.threadId, pending.title, result.chunksInserted);
+    }
+    await ctx.answerCallbackQuery();
+  } catch (err) {
+    await ctx.editMessageText(`❌ Save failed: ${err instanceof Error ? err.message : String(err)}`);
+    await ctx.answerCallbackQuery();
+  }
+});
+
+// Discard KB save
+bot.callbackQuery(/^discard_kb_save:/, async (ctx) => {
+  const saveId = ctx.callbackQuery.data.replace("discard_kb_save:", "");
+  pendingKBSaves.delete(saveId);
+  await ctx.editMessageText("❌ Discarded — content not saved.");
+  await ctx.answerCallbackQuery();
+});
+
+// Replace existing KB document
+bot.callbackQuery(/^kb_replace:/, async (ctx) => {
+  const replaceId = ctx.callbackQuery.data.replace("kb_replace:", "");
+  const pending = pendingKBSaves.get(replaceId);
+  if (!pending || !supabase) {
+    await ctx.answerCallbackQuery("Session expired.");
+    return;
+  }
+  pendingKBSaves.delete(replaceId);
+
+  try {
+    await supabase.from("documents").delete().eq("title", pending.title);
+    const { ingestText } = await import("./documents/documentProcessor.ts");
+    const result = await ingestText(supabase, pending.text, pending.title);
+    await ctx.editMessageText(`✅ Replaced "${pending.title}" — ${result.chunksInserted} chunks updated.`);
+    scheduleEmbedVerification(bot, supabase, pending.chatId, pending.threadId, pending.title, result.chunksInserted);
+    await ctx.answerCallbackQuery();
+  } catch (err) {
+    await ctx.editMessageText(`❌ Replace failed: ${err instanceof Error ? err.message : String(err)}`);
+    await ctx.answerCallbackQuery();
+  }
+});
+
+// Save as new version (auto-suffix title)
+bot.callbackQuery(/^kb_new_version:/, async (ctx) => {
+  const replaceId = ctx.callbackQuery.data.replace("kb_new_version:", "");
+  const pending = pendingKBSaves.get(replaceId);
+  if (!pending || !supabase) {
+    await ctx.answerCallbackQuery("Session expired.");
+    return;
+  }
+  pendingKBSaves.delete(replaceId);
+
+  try {
+    const { ingestText } = await import("./documents/documentProcessor.ts");
+    let versionTitle = pending.title;
+    let version = 2;
+    while (true) {
+      const { count } = await supabase
+        .from("documents")
+        .select("*", { count: "exact", head: true })
+        .eq("title", versionTitle);
+      if (!count) break;
+      versionTitle = `${pending.title} (${version++})`;
+    }
+    const result = await ingestText(supabase, pending.text, versionTitle);
+    await ctx.editMessageText(`✅ Saved as "${versionTitle}" — ${result.chunksInserted} chunks.`);
+    scheduleEmbedVerification(bot, supabase, pending.chatId, pending.threadId, versionTitle, result.chunksInserted);
+    await ctx.answerCallbackQuery();
+  } catch (err) {
+    await ctx.editMessageText(`❌ Save failed: ${err instanceof Error ? err.message : String(err)}`);
+    await ctx.answerCallbackQuery();
+  }
+});
+
+// Cancel conflict resolution
+bot.callbackQuery(/^kb_conflict_cancel:/, async (ctx) => {
+  const replaceId = ctx.callbackQuery.data.replace("kb_conflict_cancel:", "");
+  pendingKBSaves.delete(replaceId);
+  await ctx.editMessageText("❌ Cancelled — no changes made.");
+  await ctx.answerCallbackQuery();
+});
+
+// ============================================================
 // MESSAGE HANDLERS
 // ============================================================
 
@@ -851,6 +1057,18 @@ async function processTextMessage(
       documentContext: docSearchResult.hasResults ? docSearchResult.context : undefined,
       isResumedSession: session.messageCount > 1 && triedResume && !forceInjectContext,
     });
+
+    // FM-8: Token guard — warn user if conversation is large
+    {
+      const estTokens = estimateTokens(enrichedPrompt);
+      if (estTokens > CONTEXT_TOKEN_LIMIT) {
+        await bot.api.sendMessage(
+          chatId,
+          "⚠️ Conversation history condensed to fit context. Recent messages preserved. Use /new to start fresh.",
+          threadId ? { message_thread_id: threadId } : undefined
+        );
+      }
+    }
 
     // Start indicator before model routing so it's visible during the classifier call (3-8s)
     const cancelKey = streamKey(chatId, threadId);
@@ -995,6 +1213,10 @@ async function processTextMessage(
         if (msgCount % 5 === 0 && inserted > 0) {
           await rebuildProfileSummary(db, item.userId);
         }
+        // FM-2+3: After extraction, if nothing was stored and message is large → offer KB save
+        if (inserted === 0 && item.text.length > 800) {
+          await offerKBSave(bot, db, item.chatId, item.threadId, item.text).catch(() => {});
+        }
       });
     }
 
@@ -1036,6 +1258,24 @@ async function processTextMessage(
   } finally {
     clearInterval(typingInterval);
   }
+}
+
+// FM-1: Cache bundled text for 10s to catch slow-arriving Telegram fragments
+function cacheRecentBundle(chatId: number, threadId: number | null, text: string): void {
+  const key = `${chatId}:${threadId ?? "null"}`;
+  recentBundles.set(key, { text, ts: Date.now() });
+  setTimeout(() => recentBundles.delete(key), 10_000);
+}
+
+/**
+ * FM-1: Heuristic — is this short message likely a continuation rather than a new question?
+ * Returns true if:
+ *  - message is shorter than 300 chars
+ *  - does not start with a question word or command
+ */
+function isLikelyContinuation(msg: string): boolean {
+  if (msg.length >= 300) return false;
+  return !/^(hi|hey|hello|what|how|why|when|where|who|can |could |would |should |is |are |do |does |\//i.test(msg.trimStart());
 }
 
 // Text messages
@@ -1103,6 +1343,26 @@ bot.on("message:text", async (ctx) => {
   // Priority 3b: Inline tshoot capture (!finding / !discovery)
   if (await handleTshoOtCapture(ctx, text, chatId, threadId, (id) => getAgentForChat(id).id)) return;
 
+  // FM-1: Orphan-sponge — check if this is a late fragment from a previous bundle
+  {
+    const key = `${chatId}:${threadId ?? "null"}`;
+    const recent = recentBundles.get(key);
+    if (recent && Date.now() - recent.ts < 10_000 && isLikelyContinuation(text)) {
+      // Merge with cached bundle and re-process as unified message
+      const merged = recent.text + "\n\n" + text;
+      recentBundles.set(key, { text: merged, ts: recent.ts }); // update cached text, keep original ts
+      if (!queueManager.hasCapacity(chatId, threadId)) {
+        await ctx.reply("Too many pending messages. Please wait for the current ones to complete.");
+        return;
+      }
+      queueManager.getOrCreate(chatId, threadId).enqueue({
+        label: `[chat:${chatId}] [merged] ${merged.substring(0, 30)}`,
+        run: () => processTextMessage(chatId, threadId, merged, ctx),
+      });
+      return;
+    }
+  }
+
   if (!queueManager.hasCapacity(chatId, threadId)) {
     await ctx.reply("Too many pending messages. Please wait for the current ones to complete.");
     return;
@@ -1112,6 +1372,9 @@ bot.on("message:text", async (ctx) => {
     label: `[chat:${chatId}] ${text.substring(0, 30)}`,
     run: () => processTextMessage(chatId, threadId, text, ctx),
   });
+
+  // FM-1: Cache this message as a recent bundle for orphan-sponge
+  cacheRecentBundle(chatId, threadId, text);
 });
 
 // Voice messages

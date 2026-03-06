@@ -70,7 +70,7 @@ export async function searchDocuments(
 ): Promise<DocumentSearchResult> {
   const {
     filterTitle,
-    matchCount = 5,
+    matchCount = parseInt(process.env.DOCS_MATCH_COUNT ?? "10"),
     matchThreshold = 0.65,
     timeoutMs = 8000,
   } = options;

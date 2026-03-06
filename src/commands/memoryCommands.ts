@@ -21,6 +21,19 @@ export interface MemoryCommandOptions {
 
 const TELEGRAM_MAX_LENGTH = 4096;
 
+// FM-9: Route long content to documents table for searchable KB
+const REMEMBER_KB_THRESHOLD = 200; // chars; above this → documents table
+
+// FM-9: Pending KB saves for /remember routing (title conflict resolution)
+const pendingRememberSaves = new Map<string, { text: string; title: string }>();
+
+function encodeKBPayload(text: string, title: string): string {
+  const id = `${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  pendingRememberSaves.set(id, { text, title });
+  setTimeout(() => pendingRememberSaves.delete(id), 600_000);
+  return id;
+}
+
 async function sendLong(ctx: Context, text: string): Promise<void> {
   if (text.length <= TELEGRAM_MAX_LENGTH) {
     await ctx.reply(text);
@@ -80,6 +93,41 @@ export function registerMemoryCommands(
       await ctx.reply(
         "Usage: /remember [fact]\n\nExample: /remember My AWS account is 123456789012"
       );
+      return;
+    }
+
+    // FM-9: Route long content to documents table for searchable KB
+    if (fact.length > REMEMBER_KB_THRESHOLD) {
+      const title = `Note: ${fact.slice(0, 60).trim()}…`;
+      try {
+        const { ingestText } = await import("../documents/documentProcessor.ts");
+        const result = await ingestText(supabase, fact, title, { source: "telegram-remember" });
+
+        if (result.duplicate) {
+          await ctx.reply(`ℹ️ This is already in your knowledge base as "${result.title}". Nothing was changed.`);
+          return;
+        }
+
+        if (result.conflict === "title") {
+          const keyboard = new InlineKeyboard()
+            .text("🔄 Replace existing", `remember_replace:${encodeKBPayload(fact, title)}`)
+            .text("➕ Save as new version", `remember_new_version:${encodeKBPayload(fact, title)}`)
+            .row()
+            .text("❌ Cancel", "remember_cancel");
+
+          await ctx.reply(
+            `⚠️ A document named "${title}" already exists.\n\nWhat would you like to do?`,
+            { reply_markup: keyboard }
+          );
+          return;
+        }
+
+        await ctx.reply(
+          `📚 Saved to knowledge base as "${title}" — ${result.chunksInserted} chunk${result.chunksInserted !== 1 ? "s" : ""}.\n\nUse /doc query to search it.\n\n_Tip: /remember is for short facts (≤200 chars). For longer content, paste directly and I'll offer to save it._`
+        );
+      } catch (err) {
+        await ctx.reply(`❌ Save failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
       return;
     }
 
@@ -332,5 +380,55 @@ export function registerMemoryCommands(
   bot.callbackQuery(/^forget_keep:/, async (ctx) => {
     await ctx.editMessageText("✅ Kept.");
     await ctx.answerCallbackQuery("Kept");
+  });
+
+  // FM-9: /remember large content conflict resolution callbacks
+  bot.callbackQuery(/^remember_replace:/, async (ctx) => {
+    if (!supabase) { await ctx.answerCallbackQuery("Not configured"); return; }
+    const id = ctx.callbackQuery.data.replace("remember_replace:", "");
+    const pending = pendingRememberSaves.get(id);
+    if (!pending) { await ctx.editMessageText("Session expired — please resend /remember command."); await ctx.answerCallbackQuery(); return; }
+    pendingRememberSaves.delete(id);
+
+    try {
+      await supabase.from("documents").delete().eq("title", pending.title);
+      const { ingestText } = await import("../documents/documentProcessor.ts");
+      const result = await ingestText(supabase, pending.text, pending.title, { source: "telegram-remember" });
+      await ctx.editMessageText(`✅ Replaced "${pending.title}" — ${result.chunksInserted} chunks updated.`);
+      await ctx.answerCallbackQuery();
+    } catch (err) {
+      await ctx.editMessageText(`❌ Failed: ${err instanceof Error ? err.message : String(err)}`);
+      await ctx.answerCallbackQuery();
+    }
+  });
+
+  bot.callbackQuery(/^remember_new_version:/, async (ctx) => {
+    if (!supabase) { await ctx.answerCallbackQuery("Not configured"); return; }
+    const id = ctx.callbackQuery.data.replace("remember_new_version:", "");
+    const pending = pendingRememberSaves.get(id);
+    if (!pending) { await ctx.editMessageText("Session expired."); await ctx.answerCallbackQuery(); return; }
+    pendingRememberSaves.delete(id);
+
+    try {
+      const { ingestText } = await import("../documents/documentProcessor.ts");
+      let versionTitle = pending.title;
+      let version = 2;
+      while (true) {
+        const { count } = await supabase.from("documents").select("*", { count: "exact", head: true }).eq("title", versionTitle);
+        if (!count) break;
+        versionTitle = `${pending.title} (${version++})`;
+      }
+      const result = await ingestText(supabase, pending.text, versionTitle, { source: "telegram-remember" });
+      await ctx.editMessageText(`✅ Saved as "${versionTitle}" — ${result.chunksInserted} chunks.`);
+      await ctx.answerCallbackQuery();
+    } catch (err) {
+      await ctx.editMessageText(`❌ Failed: ${err instanceof Error ? err.message : String(err)}`);
+      await ctx.answerCallbackQuery();
+    }
+  });
+
+  bot.callbackQuery("remember_cancel", async (ctx) => {
+    await ctx.editMessageText("❌ Cancelled — no changes made.");
+    await ctx.answerCallbackQuery();
   });
 }

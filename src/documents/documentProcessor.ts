@@ -10,6 +10,7 @@
 
 import { readFileSync } from "fs";
 import { basename } from "path";
+import { createHash } from "crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { analyzeImage } from "../vision/visionClient.ts";
 import { trace } from "../utils/tracer.ts";
@@ -54,7 +55,9 @@ export function chunkText(
         for (let i = 0; i < trimmed.length; i += chunkSize - overlap) {
           chunks.push(trimmed.slice(i, i + chunkSize));
         }
-        current = "";
+        // Carry overlap from last hard-split chunk into next paragraph
+        const lastHardChunk = chunks[chunks.length - 1];
+        current = lastHardChunk ? lastHardChunk.slice(-overlap) : "";
       }
     } else {
       current = current ? current + "\n\n" + trimmed : trimmed;
@@ -66,6 +69,98 @@ export function chunkText(
   }
 
   return chunks.filter((c) => c.trim().length > 0);
+}
+
+// ─── ingestText ───────────────────────────────────────────────────────────────
+
+export interface IngestResult {
+  chunksInserted: number;
+  title: string;
+  duplicate?: boolean;
+  conflict?: "title";
+}
+
+/**
+ * Ingest raw text into Supabase `documents` table.
+ * Used for pasted text, /remember large content, and post-response save offers.
+ *
+ * Guards:
+ *  1. Content hash dedup — same text already stored → returns { duplicate: true }
+ *  2. Title conflict — same name, different content → returns { conflict: "title" }
+ *     (caller shows 3-option inline keyboard)
+ *
+ * Embeddings are generated automatically via the `embed` Edge Function webhook on INSERT.
+ *
+ * Emits: doc_ingest_text_start, doc_ingest_text_complete, doc_ingest_text_empty,
+ *        doc_ingest_text_duplicate, doc_ingest_text_title_conflict.
+ */
+export async function ingestText(
+  supabase: SupabaseClient,
+  text: string,
+  title: string,
+  opts: { source?: string; chunkSize?: number; overlap?: number } = {}
+): Promise<IngestResult> {
+  const { source = "telegram-paste", chunkSize = 1800, overlap = 200 } = opts;
+
+  trace({ event: "doc_ingest_text_start", title, source, textLength: text.length });
+
+  if (!text.trim()) {
+    trace({ event: "doc_ingest_text_empty", title });
+    return { chunksInserted: 0, title };
+  }
+
+  // Guard 1: Content hash dedup — exact same text already stored
+  const contentHash = createHash("sha256").update(text.slice(0, 2000)).digest("hex");
+  const { data: hashMatch } = await supabase
+    .from("documents")
+    .select("title")
+    .eq("metadata->>content_hash", contentHash)
+    .limit(1);
+
+  if (hashMatch?.length) {
+    trace({ event: "doc_ingest_text_duplicate", title, existingTitle: hashMatch[0].title });
+    return { chunksInserted: 0, title: hashMatch[0].title, duplicate: true };
+  }
+
+  // Guard 2: Title conflict — same name, different content
+  const { count: titleCount } = await supabase
+    .from("documents")
+    .select("*", { count: "exact", head: true })
+    .eq("title", title);
+
+  if (titleCount && titleCount > 0) {
+    trace({ event: "doc_ingest_text_title_conflict", title });
+    return { chunksInserted: 0, title, conflict: "title" };
+  }
+
+  // No conflicts — chunk and insert
+  const chunks = chunkText(text, chunkSize, overlap);
+  if (!chunks.length) {
+    trace({ event: "doc_ingest_text_empty", title });
+    return { chunksInserted: 0, title };
+  }
+
+  const rows = chunks.map((content, chunk_index) => ({
+    title,
+    source,
+    chunk_index,
+    content,
+    metadata: {
+      total_chunks: chunks.length,
+      original_length: text.length,
+      content_hash: contentHash,
+      pasted_at: new Date().toISOString(),
+    },
+  }));
+
+  const { error } = await supabase.from("documents").insert(rows);
+  if (error) {
+    throw new Error(`Failed to insert text chunks: ${error.message}`);
+  }
+
+  trace({ event: "doc_ingest_text_complete", title, source, chunksInserted: chunks.length });
+
+  return { chunksInserted: chunks.length, title };
 }
 
 // ─── extractTextFromFile ──────────────────────────────────────────────────────

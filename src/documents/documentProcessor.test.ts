@@ -56,19 +56,46 @@ function makeEqChain(resultFn: () => Promise<{ count: number; error: null }>) {
   return chain;
 }
 
+// Controls for ingestText guard mocks — tests may override per-test
+let hashMatchResult: { data: { title: string }[] | null; error: null } = { data: [], error: null };
+let titleCountResult: { count: number; error: null } = { count: 0, error: null };
+
+/**
+ * Chainable builder for select() calls used by ingestText:
+ *   - hash dedup:   .select("title").eq("metadata->>content_hash", h).limit(1)
+ *   - title count:  .select("*", {count:"exact",head:true}).eq("title", t)
+ *   - list docs:    .select("title, source, ...").order(...)
+ */
+function makeSelectChain(cols: string, opts?: Record<string, unknown>) {
+  const isCount = opts && opts.count === "exact";
+  const chain: any = {
+    order: (_col: string, _opts: unknown) => mockSelect(),
+    eq: (_col: string, _val: string) => {
+      if (isCount) {
+        // title conflict check
+        return Promise.resolve(titleCountResult);
+      }
+      // hash dedup — supports .limit()
+      return {
+        limit: (_n: number) => Promise.resolve(hashMatchResult),
+      };
+    },
+    limit: (_n: number) => Promise.resolve(hashMatchResult),
+  };
+  return chain;
+}
+
 const mockFrom = mock((_table: string) => ({
   insert: mockInsert,
   delete: (_opts?: unknown) => makeEqChain(mockDelete),
-  select: () => ({
-    order: (_col: string, _opts: unknown) => mockSelect(),
-  }),
+  select: (cols: string = "*", opts?: Record<string, unknown>) => makeSelectChain(cols, opts),
 }));
 
 const mockSupabase = { from: mockFrom } as unknown as import("@supabase/supabase-js").SupabaseClient;
 
 // ─── Import module under test ─────────────────────────────────────────────────
 // Must import after mock.module() calls.
-const { chunkText, extractTextFromFile, ingestDocument, deleteDocument, listDocuments } =
+const { chunkText, extractTextFromFile, ingestDocument, deleteDocument, listDocuments, ingestText } =
   await import("./documentProcessor.ts");
 
 // ─── Test fixtures ────────────────────────────────────────────────────────────
@@ -311,6 +338,120 @@ describe("deleteDocument — trace events", () => {
     expect(deleteCall).toBeDefined();
     expect((deleteCall![0] as any).title).toBe("Budget Report Q1");
     expect(typeof (deleteCall![0] as any).deleted).toBe("number");
+  });
+});
+
+// ─── chunkText — hard-split overlap (FM-5) ────────────────────────────────────
+
+describe("chunkText — hard-split overlap", () => {
+  test("carries overlap after hard-split single paragraph", () => {
+    const longPara = "A".repeat(4000); // single paragraph > chunkSize=1800
+    const nextPara = "Next paragraph content here.";
+    const chunks = chunkText(longPara + "\n\n" + nextPara);
+    // Final chunk comes from nextPara — it should contain overlap from the hard-split paragraph
+    const nextParaChunk = chunks[chunks.length - 1];
+    expect(nextParaChunk).toContain("Next paragraph content here.");
+    // Overlap carried in means length > bare nextPara length
+    expect(nextParaChunk.length).toBeGreaterThan(nextPara.length);
+  });
+});
+
+// ─── ingestText (FM-4) ────────────────────────────────────────────────────────
+
+describe("ingestText", () => {
+  beforeEach(() => {
+    mockInsert.mockClear();
+    mockTrace.mockClear();
+    // Reset guard mocks to defaults (no duplicate, no conflict)
+    hashMatchResult = { data: [], error: null };
+    titleCountResult = { count: 0, error: null };
+  });
+
+  test("inserts correct chunk count for 5000-char text", async () => {
+    const text = "Word sentence. ".repeat(333); // ~5000 chars
+    const result = await ingestText(mockSupabase, text, "Test Doc");
+    expect(result.chunksInserted).toBeGreaterThanOrEqual(2);
+    expect(result.title).toBe("Test Doc");
+    expect(result.duplicate).toBeUndefined();
+    expect(result.conflict).toBeUndefined();
+  });
+
+  test("returns duplicate:true for same content hash", async () => {
+    hashMatchResult = { data: [{ title: "Existing Doc" }], error: null };
+    const text = "Some content that matches an existing hash.";
+    const result = await ingestText(mockSupabase, text, "New Title");
+    expect(result.duplicate).toBe(true);
+    expect(result.chunksInserted).toBe(0);
+    expect(result.title).toBe("Existing Doc");
+    expect(mockInsert.mock.calls.length).toBe(0);
+  });
+
+  test("returns conflict:title for same title different content", async () => {
+    titleCountResult = { count: 1, error: null };
+    const text = "Different content from what is stored.";
+    const result = await ingestText(mockSupabase, text, "Conflicting Title");
+    expect(result.conflict).toBe("title");
+    expect(result.chunksInserted).toBe(0);
+    expect(mockInsert.mock.calls.length).toBe(0);
+  });
+
+  test("empty text returns chunksInserted=0", async () => {
+    const result = await ingestText(mockSupabase, "  ", "Empty Doc");
+    expect(result.chunksInserted).toBe(0);
+    expect(mockInsert.mock.calls.length).toBe(0);
+  });
+
+  test("metadata includes content_hash, total_chunks, original_length, pasted_at", async () => {
+    const text = "Hello world. ".repeat(50);
+    await ingestText(mockSupabase, text, "Meta Test");
+    expect(mockInsert.mock.calls.length).toBeGreaterThan(0);
+    const insertedRows = mockInsert.mock.calls[mockInsert.mock.calls.length - 1][0] as any[];
+    expect(insertedRows[0].metadata).toHaveProperty("content_hash");
+    expect(insertedRows[0].metadata).toHaveProperty("total_chunks");
+    expect(insertedRows[0].metadata).toHaveProperty("original_length");
+    expect(insertedRows[0].metadata).toHaveProperty("pasted_at");
+  });
+
+  test("uses telegram-paste as default source", async () => {
+    const text = "Some pasted text. ".repeat(20);
+    await ingestText(mockSupabase, text, "Paste Doc");
+    const rows = mockInsert.mock.calls[0][0] as any[];
+    expect(rows[0].source).toBe("telegram-paste");
+  });
+
+  test("accepts custom source override", async () => {
+    const text = "Content. ".repeat(20);
+    await ingestText(mockSupabase, text, "Custom Source Doc", { source: "notion-export" });
+    const rows = mockInsert.mock.calls[0][0] as any[];
+    expect(rows[0].source).toBe("notion-export");
+  });
+
+  test("emits doc_ingest_text_start and doc_ingest_text_complete trace events", async () => {
+    const text = "Traceable content. ".repeat(30);
+    await ingestText(mockSupabase, text, "Trace Text Doc");
+    const events = mockTrace.mock.calls.map((c) => (c[0] as any).event);
+    expect(events).toContain("doc_ingest_text_start");
+    expect(events).toContain("doc_ingest_text_complete");
+  });
+
+  test("emits doc_ingest_text_empty for blank input", async () => {
+    await ingestText(mockSupabase, "   ", "Blank Doc");
+    const events = mockTrace.mock.calls.map((c) => (c[0] as any).event);
+    expect(events).toContain("doc_ingest_text_empty");
+  });
+
+  test("emits doc_ingest_text_duplicate when hash matches", async () => {
+    hashMatchResult = { data: [{ title: "Already Stored" }], error: null };
+    await ingestText(mockSupabase, "Duplicate content.", "Dup Doc");
+    const events = mockTrace.mock.calls.map((c) => (c[0] as any).event);
+    expect(events).toContain("doc_ingest_text_duplicate");
+  });
+
+  test("emits doc_ingest_text_title_conflict when title already exists", async () => {
+    titleCountResult = { count: 1, error: null };
+    await ingestText(mockSupabase, "Fresh content.", "Taken Title");
+    const events = mockTrace.mock.calls.map((c) => (c[0] as any).event);
+    expect(events).toContain("doc_ingest_text_title_conflict");
   });
 });
 
