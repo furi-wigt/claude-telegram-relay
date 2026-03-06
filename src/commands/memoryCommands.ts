@@ -13,13 +13,13 @@ import { InlineKeyboard } from "grammy";
 import { saveCommandInteraction } from "../utils/saveMessage.ts";
 import { checkSemanticDuplicate } from "../utils/semanticDuplicateChecker.ts";
 import { findPotentialDuplicates } from "../utils/duplicateDetector.ts";
+import { ingestText, resolveUniqueTitle } from "../documents/documentProcessor.ts";
+import { chunkMessage } from "../utils/sendToGroup.ts";
 
 export interface MemoryCommandOptions {
   supabase: SupabaseClient | null;
   userId: number;  // Telegram user ID for profile operations
 }
-
-const TELEGRAM_MAX_LENGTH = 4096;
 
 // FM-9: Route long content to documents table for searchable KB
 const REMEMBER_KB_THRESHOLD = 200; // chars; above this → documents table
@@ -32,28 +32,6 @@ function encodeKBPayload(text: string, title: string): string {
   pendingRememberSaves.set(id, { text, title });
   setTimeout(() => pendingRememberSaves.delete(id), 600_000);
   return id;
-}
-
-async function sendLong(ctx: Context, text: string): Promise<void> {
-  if (text.length <= TELEGRAM_MAX_LENGTH) {
-    await ctx.reply(text);
-    return;
-  }
-  const lines = text.split("\n");
-  let chunk = "";
-  for (const line of lines) {
-    const addition = chunk ? "\n" + line : line;
-    if (chunk.length + addition.length > TELEGRAM_MAX_LENGTH) {
-      if (chunk) { await ctx.reply(chunk); chunk = line; }
-      else {
-        for (let i = 0; i < line.length; i += TELEGRAM_MAX_LENGTH) {
-          await ctx.reply(line.substring(i, i + TELEGRAM_MAX_LENGTH));
-        }
-        chunk = "";
-      }
-    } else { chunk = chunk ? chunk + "\n" + line : line; }
-  }
-  if (chunk) await ctx.reply(chunk);
 }
 
 /** Detect category from fact text */
@@ -100,7 +78,6 @@ export function registerMemoryCommands(
     if (fact.length > REMEMBER_KB_THRESHOLD) {
       const title = `Note: ${fact.slice(0, 60).trim()}…`;
       try {
-        const { ingestText } = await import("../documents/documentProcessor.ts");
         const result = await ingestText(supabase, fact, title, { source: "telegram-remember" });
 
         if (result.duplicate) {
@@ -331,7 +308,9 @@ export function registerMemoryCommands(
         lines.push(`\n💬 Current session (${currentSessionCount} messages, ongoing)`);
       }
 
-      await sendLong(ctx, lines.join("\n"));
+      for (const chunk of chunkMessage(lines.join("\n"))) {
+        await ctx.reply(chunk);
+      }
     } catch (err) {
       console.error("/summary error:", err);
       await ctx.reply("Failed to load conversation summary. Please try again.");
@@ -392,7 +371,6 @@ export function registerMemoryCommands(
 
     try {
       await supabase.from("documents").delete().eq("title", pending.title);
-      const { ingestText } = await import("../documents/documentProcessor.ts");
       const result = await ingestText(supabase, pending.text, pending.title, { source: "telegram-remember" });
       await ctx.editMessageText(`✅ Replaced "${pending.title}" — ${result.chunksInserted} chunks updated.`);
       await ctx.answerCallbackQuery();
@@ -410,14 +388,7 @@ export function registerMemoryCommands(
     pendingRememberSaves.delete(id);
 
     try {
-      const { ingestText } = await import("../documents/documentProcessor.ts");
-      let versionTitle = pending.title;
-      let version = 2;
-      while (true) {
-        const { count } = await supabase.from("documents").select("*", { count: "exact", head: true }).eq("title", versionTitle);
-        if (!count) break;
-        versionTitle = `${pending.title} (${version++})`;
-      }
+      const versionTitle = await resolveUniqueTitle(supabase, pending.title);
       const result = await ingestText(supabase, pending.text, versionTitle, { source: "telegram-remember" });
       await ctx.editMessageText(`✅ Saved as "${versionTitle}" — ${result.chunksInserted} chunks.`);
       await ctx.answerCallbackQuery();

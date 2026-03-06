@@ -109,25 +109,28 @@ export async function ingestText(
     return { chunksInserted: 0, title };
   }
 
-  // Guard 1: Content hash dedup — exact same text already stored
+  // Guards run in parallel: content hash dedup + title conflict check
+  // Hash covers first 2000 chars — sufficient for dedup of typical pasted content
   const contentHash = createHash("sha256").update(text.slice(0, 2000)).digest("hex");
-  const { data: hashMatch } = await supabase
-    .from("documents")
-    .select("title")
-    .eq("metadata->>content_hash", contentHash)
-    .limit(1);
+  const [{ data: hashMatch }, { count: titleCount }] = await Promise.all([
+    supabase
+      .from("documents")
+      .select("title")
+      .eq("metadata->>content_hash", contentHash)
+      .limit(1),
+    supabase
+      .from("documents")
+      .select("id", { count: "exact", head: true })
+      .eq("title", title),
+  ]);
 
+  // Guard 1: Content hash dedup — exact same text already stored
   if (hashMatch?.length) {
     trace({ event: "doc_ingest_text_duplicate", title, existingTitle: hashMatch[0].title });
     return { chunksInserted: 0, title: hashMatch[0].title, duplicate: true };
   }
 
   // Guard 2: Title conflict — same name, different content
-  const { count: titleCount } = await supabase
-    .from("documents")
-    .select("*", { count: "exact", head: true })
-    .eq("title", title);
-
   if (titleCount && titleCount > 0) {
     trace({ event: "doc_ingest_text_title_conflict", title });
     return { chunksInserted: 0, title, conflict: "title" };
@@ -161,6 +164,28 @@ export async function ingestText(
   trace({ event: "doc_ingest_text_complete", title, source, chunksInserted: chunks.length });
 
   return { chunksInserted: chunks.length, title };
+}
+
+// ─── resolveUniqueTitle ───────────────────────────────────────────────────────
+
+/**
+ * Find the first unused variant of `baseTitle` in the documents table.
+ * Returns `baseTitle` if unused, otherwise `baseTitle (2)`, `baseTitle (3)`, etc.
+ */
+export async function resolveUniqueTitle(
+  supabase: SupabaseClient,
+  baseTitle: string
+): Promise<string> {
+  let candidate = baseTitle;
+  let version = 2;
+  while (true) {
+    const { count } = await supabase
+      .from("documents")
+      .select("id", { count: "exact", head: true })
+      .eq("title", candidate);
+    if (!count) return candidate;
+    candidate = `${baseTitle} (${version++})`;
+  }
 }
 
 // ─── extractTextFromFile ──────────────────────────────────────────────────────

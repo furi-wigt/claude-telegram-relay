@@ -64,7 +64,7 @@ import { claudeText, claudeStream, enrichProgressText, type AskUserQuestionItem,
 import { ProgressIndicator } from "./utils/progressIndicator.ts";
 import { trace, generateTraceId } from "./utils/tracer.ts";
 import { searchDocuments } from "./rag/documentSearch.ts";
-import { ingestDocument } from "./documents/documentProcessor.ts";
+import { ingestDocument, ingestText, resolveUniqueTitle } from "./documents/documentProcessor.ts";
 import { analyzeImages, combineImageContexts } from "./vision/visionClient.ts";
 import { analyzeDiagnosticImages } from "./documents/diagnosticAnalyzer.ts";
 import { USER_NAME, USER_TIMEZONE } from "./config/userConfig.ts";
@@ -177,7 +177,6 @@ const pendingKBSaves = new Map<string, { text: string; title: string; chatId: nu
 /** FM-2+3: Offer to save large unparseable content to the knowledge base */
 async function offerKBSave(
   bot: Bot,
-  _supabase: SupabaseClient,
   chatId: number,
   threadId: number | null,
   text: string
@@ -192,15 +191,13 @@ async function offerKBSave(
     .text("💾 Save to KB", `save_to_kb:${saveId}`)
     .text("❌ Discard", `discard_kb_save:${saveId}`);
 
-  const msgOpts: Parameters<typeof bot.api.sendMessage>[2] = {
-    reply_markup: keyboard,
-  };
-  if (threadId) (msgOpts as Record<string, unknown>).message_thread_id = threadId;
-
   await bot.api.sendMessage(
     chatId,
     `ℹ️ This message had no personal facts to remember.\n\nSave to knowledge base for future search?\n\n_"${text.slice(0, 80).trim()}…"_`,
-    msgOpts
+    {
+      reply_markup: keyboard,
+      ...(threadId != null && { message_thread_id: threadId }),
+    }
   );
 }
 
@@ -220,17 +217,15 @@ function scheduleEmbedVerification(
     try {
       const { count: nullCount } = await supabase
         .from("documents")
-        .select("*", { count: "exact", head: true })
+        .select("id", { count: "exact", head: true })
         .eq("title", title)
         .is("embedding", null);
 
       if (nullCount && nullCount > 0) {
-        const msgOpts: Parameters<typeof bot.api.sendMessage>[2] = {};
-        if (threadId) (msgOpts as Record<string, unknown>).message_thread_id = threadId;
         await bot.api.sendMessage(
           chatId,
           `⚠️ ${nullCount}/${totalChunks} chunks in "${title}" are missing embeddings — search may return incomplete results.\n\nFix: Supabase → Project Settings → Edge Functions → Secrets → OPENAI_API_KEY`,
-          msgOpts
+          { ...(threadId != null && { message_thread_id: threadId }) }
         );
       }
     } catch {
@@ -437,6 +432,7 @@ const bot = new Bot(BOT_TOKEN);
 const pendingResumeContext = new Map<string, string>(); // key → formatted context
 
 // FM-1: Orphan-sponge — catches late fragments from Telegram's message splitting
+const MAX_RECENT_BUNDLES = 500;
 const recentBundles = new Map<string, { text: string; ts: number }>();
 
 function resumeCtxKey(chatId: number, threadId: number | null): string {
@@ -866,7 +862,6 @@ bot.callbackQuery(/^save_to_kb:/, async (ctx) => {
   pendingKBSaves.delete(saveId);
 
   try {
-    const { ingestText } = await import("./documents/documentProcessor.ts");
     const result = await ingestText(supabase, pending.text, pending.title);
 
     if (result.duplicate) {
@@ -919,7 +914,6 @@ bot.callbackQuery(/^kb_replace:/, async (ctx) => {
 
   try {
     await supabase.from("documents").delete().eq("title", pending.title);
-    const { ingestText } = await import("./documents/documentProcessor.ts");
     const result = await ingestText(supabase, pending.text, pending.title);
     await ctx.editMessageText(`✅ Replaced "${pending.title}" — ${result.chunksInserted} chunks updated.`);
     scheduleEmbedVerification(bot, supabase, pending.chatId, pending.threadId, pending.title, result.chunksInserted);
@@ -941,17 +935,7 @@ bot.callbackQuery(/^kb_new_version:/, async (ctx) => {
   pendingKBSaves.delete(replaceId);
 
   try {
-    const { ingestText } = await import("./documents/documentProcessor.ts");
-    let versionTitle = pending.title;
-    let version = 2;
-    while (true) {
-      const { count } = await supabase
-        .from("documents")
-        .select("*", { count: "exact", head: true })
-        .eq("title", versionTitle);
-      if (!count) break;
-      versionTitle = `${pending.title} (${version++})`;
-    }
+    const versionTitle = await resolveUniqueTitle(supabase, pending.title);
     const result = await ingestText(supabase, pending.text, versionTitle);
     await ctx.editMessageText(`✅ Saved as "${versionTitle}" — ${result.chunksInserted} chunks.`);
     scheduleEmbedVerification(bot, supabase, pending.chatId, pending.threadId, versionTitle, result.chunksInserted);
@@ -1215,7 +1199,7 @@ async function processTextMessage(
         }
         // FM-2+3: After extraction, if nothing was stored and message is large → offer KB save
         if (inserted === 0 && item.text.length > 800) {
-          await offerKBSave(bot, db, item.chatId, item.threadId, item.text).catch(() => {});
+          await offerKBSave(bot, item.chatId, item.threadId, item.text).catch(() => {});
         }
       });
     }
@@ -1263,6 +1247,10 @@ async function processTextMessage(
 // FM-1: Cache bundled text for 10s to catch slow-arriving Telegram fragments
 function cacheRecentBundle(chatId: number, threadId: number | null, text: string): void {
   const key = `${chatId}:${threadId ?? "null"}`;
+  // Evict oldest entry if at capacity
+  if (recentBundles.size >= MAX_RECENT_BUNDLES) {
+    recentBundles.delete(recentBundles.keys().next().value!);
+  }
   recentBundles.set(key, { text, ts: Date.now() });
   setTimeout(() => recentBundles.delete(key), 10_000);
 }
