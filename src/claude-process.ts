@@ -99,6 +99,9 @@ export function formatToolSummary(toolName: string, input: Record<string, unknow
     const desc  = trunc((input.description as string) ?? "", 60);
     return agent ? `Task(${agent}): ${desc}` : `Task: ${desc}`;
   }
+  if (toolName === "Skill") {
+    return `Skill: ${(input.skill as string) ?? "unknown"}`;
+  }
   return toolName;
 }
 
@@ -113,6 +116,7 @@ export function formatToolSummary(toolName: string, input: Record<string, unknow
  *   🔍  searches (grep, glob)
  *   🌐  web fetches / searches
  *   🤖  agent tasks
+ *   ⚡  skill invocations
  *   💭  thinking / assistant text previews
  *
  * Text previews (assistant reasoning shown mid-stream) are truncated to
@@ -133,6 +137,7 @@ export function enrichProgressText(summary: string): string {
   if (summary.startsWith("WebFetch:"))   return `🌐 ${summary}`;
   if (summary.startsWith("WebSearch:"))  return `🌐 ${summary}`;
   if (summary.startsWith("Task(") || summary.startsWith("Task:")) return `🤖 ${summary}`;
+  if (summary.startsWith("Skill:")) return `⚡ ${summary}`;
 
   // Bare tool name (fallback from formatToolSummary) — single word, no spaces
   if (!/\s/.test(summary)) return `🔧 ${summary}`;

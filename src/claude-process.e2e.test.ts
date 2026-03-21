@@ -194,6 +194,12 @@ describe("formatToolSummary", () => {
     expect(formatToolSummary("Task", { description: "Explore codebase" }))
       .toBe("Task: Explore codebase");
   });
+  test("Skill with skill name", () => {
+    expect(formatToolSummary("Skill", { skill: "commit" })).toBe("Skill: commit");
+  });
+  test("Skill without skill name", () => {
+    expect(formatToolSummary("Skill", {})).toBe("Skill: unknown");
+  });
   test("unknown tool falls back to bare name", () => {
     expect(formatToolSummary("TodoWrite", {})).toBe("TodoWrite");
     expect(formatToolSummary("SomeFutureTool", {})).toBe("SomeFutureTool");
@@ -251,6 +257,10 @@ describe("enrichProgressText", () => {
 
   test("Task: prefix → 🤖", () => {
     expect(enrichProgressText("Task: Explore codebase")).toBe("🤖 Task: Explore codebase");
+  });
+
+  test("Skill: prefix → ⚡", () => {
+    expect(enrichProgressText("Skill: commit")).toBe("⚡ Skill: commit");
   });
 
   test("bare tool name (no spaces) → 🔧", () => {
