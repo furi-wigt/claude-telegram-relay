@@ -29,8 +29,9 @@ import { sendToGroup } from "../src/utils/sendToGroup.ts";
 import { GROUPS, validateGroup } from "../src/config/groups.ts";
 import { USER_NAME, USER_TIMEZONE } from "../src/config/userConfig.ts";
 import { shouldSkipRecently, markRanToday } from "../src/routines/runOnceGuard.ts";
+import { getPm2LogsDir } from "../config/observability.ts";
 
-const LAST_RUN_FILE = join(import.meta.dir, "../logs/night-summary.lastrun");
+const LAST_RUN_FILE = join(getPm2LogsDir(), "night-summary.lastrun");
 
 const CLAUDE_MODEL = "claude-haiku-4-5-20251001";
 const CLAUDE_TIMEOUT_MS = 90_000;

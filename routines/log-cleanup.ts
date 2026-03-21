@@ -2,7 +2,7 @@
 
 /**
  * @routine log-cleanup
- * @description Delete PM2 logs from ./logs/ and observability JSONL logs older than the retention threshold
+ * @description Delete PM2 logs from ~/.claude-relay/logs/ and observability JSONL logs older than the retention threshold
  * @schedule 0 6 * * 1  (Monday 6:00 AM)
  * @target no Telegram message unless files were deleted
  */
@@ -13,14 +13,14 @@
  * Schedule: 6:00 AM every Monday (cron: 0 6 * * 1)
  *
  * Scans two log directories and deletes files older than the retention threshold:
- *   1. ./logs/        — PM2 service logs (*.log)
+ *   1. ~/.claude-relay/logs/ — PM2 service logs (*.log)
  *   2. LOG_DIR        — observability JSONL traces (*.jsonl)
  *
  * Sends a Telegram summary only when files were actually deleted.
  *
  * Configuration (via .env):
  *   LOG_CLEANUP_RETAIN_DAYS  — days to keep log files (default: 7)
- *   LOG_CLEANUP_PM2_DIR      — override PM2 log dir (default: {PROJECT_ROOT}/logs)
+ *   LOG_CLEANUP_PM2_DIR      — override PM2 log dir (default: ~/.claude-relay/logs)
  *   LOG_CLEANUP_OBS_DIR      — override observability log dir (default: LOG_DIR or ~/.claude-relay/logs)
  *   DRY_RUN=true             — preview what would be deleted without deleting
  *

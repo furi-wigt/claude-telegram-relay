@@ -9,13 +9,13 @@ You message it. Claude responds. Text, photos, documents, voice. It remembers ac
 ```
 You ──▶ Telegram ──▶ Relay ──▶ Claude Code CLI ──▶ Response
                                     │
-                              Supabase (memory)
+                      Local Memory (SQLite + Qdrant + Ollama)
 ```
 
 ## What You Get
 
 - **Relay**: Send messages on Telegram, get Claude responses back
-- **Memory**: Semantic search over conversation history, persistent facts and goals via Supabase
+- **Memory**: Semantic search over conversation history, persistent facts and goals via local SQLite + Qdrant
 - **Proactive**: Smart check-ins that know when to reach out (and when not to)
 - **Briefings**: Daily morning summary with goals and schedule
 - **Voice**: Transcribe voice messages (Groq cloud or local Whisper — your choice)
@@ -42,7 +42,7 @@ claude
 Claude Code reads `CLAUDE.md` and walks you through setup conversationally:
 
 1. Create a Telegram bot via BotFather
-2. Set up Supabase for persistent memory
+2. Set up local memory and search (SQLite + Qdrant + Ollama)
 3. Personalize your profile
 4. Test the bot
 5. Configure always-on services
@@ -57,7 +57,6 @@ cd claude-telegram-relay
 bun run setup          # Install deps, create .env
 # Edit .env with your API keys
 bun run test:telegram  # Verify bot token
-bun run test:supabase  # Verify database
 bun run start          # Start the bot
 ```
 
@@ -71,7 +70,6 @@ bun run dev                # Start with auto-reload
 # Setup & Testing
 bun run setup              # Install dependencies, create .env
 bun run test:telegram      # Test Telegram connection
-bun run test:supabase      # Test Supabase connection
 bun run test:fallback      # Test fallback model (optional)
 bun run setup:verify       # Full health check
 
@@ -104,16 +102,9 @@ examples/
   memory.ts                  # Memory persistence patterns
 config/
   profile.example.md         # Personalization template
-db/
-  schema.sql                 # Supabase database schema
-supabase/
-  functions/
-    embed/index.ts           # Auto-embedding Edge Function
-    search/index.ts          # Semantic search Edge Function
 setup/
   install.ts                 # Prerequisites checker
   test-telegram.ts           # Telegram connectivity test
-  test-supabase.ts           # Supabase connectivity test
   test-voice.ts              # Voice transcription test
   configure-launchd.ts       # macOS service setup
   configure-services.ts      # Windows/Linux service setup
@@ -133,7 +124,7 @@ The relay does three things:
 
 Claude Code gives you full power: tools, MCP servers, web search, file access. Not just a model — an AI with hands.
 
-Your bot remembers between sessions via Supabase. Every message gets an embedding (via OpenAI, stored in Supabase) so the bot can semantically search past conversations for relevant context. It also tracks facts and goals — Claude detects when you mention something worth remembering and stores it automatically.
+Your bot remembers between sessions via local storage. Every message gets an embedding (via Ollama, stored in Qdrant) so the bot can semantically search past conversations for relevant context. Structured data — messages, facts, goals — lives in SQLite. Claude detects when you mention something worth remembering and stores it automatically.
 
 ## Multi-Agent Architecture
 
@@ -198,7 +189,7 @@ This means asking "What AWS region do we use?" in the Security group returns not
 3. The matched agent's system prompt, capabilities, and Claude Code agent file are loaded.
 4. Memory queries (semantic search, facts, goals) are filtered to only return results for that `chat_id`.
 5. Claude Code runs with the agent-specific prompt and returns a response.
-6. The response and the original message are saved to Supabase, tagged with `chat_id` and `agent_id`.
+6. The response and the original message are saved to SQLite, tagged with `chat_id` and `agent_id`.
 
 If a message arrives from an unregistered group, it falls back to the General AI Assistant.
 
@@ -210,12 +201,15 @@ See `.env.example` for all options. The essentials:
 # Required
 TELEGRAM_BOT_TOKEN=     # From @BotFather
 TELEGRAM_USER_ID=       # From @userinfobot
-SUPABASE_URL=           # From Supabase dashboard
-SUPABASE_ANON_KEY=      # From Supabase dashboard
 
 # Recommended
 USER_NAME=              # Your first name
 USER_TIMEZONE=          # e.g., America/New_York
+
+# Local Memory Stack
+OLLAMA_URL=http://localhost:11434
+OLLAMA_MODEL=gemma3:4b
+OLLAMA_EMBED_MODEL=nomic-embed-text
 
 # Optional — Voice
 VOICE_PROVIDER=         # "groq" or "local"
@@ -227,9 +221,6 @@ GROUP_SECURITY_CHAT_ID= # "Security & Compliance" group
 GROUP_DOCS_CHAT_ID=     # "Technical Documentation" group
 GROUP_CODE_CHAT_ID=     # "Code Quality & TDD" group
 GROUP_GENERAL_CHAT_ID=  # "General AI Assistant" group
-
-# Note: OpenAI key for embeddings is stored in Supabase
-# (Edge Function secrets), not in this .env file.
 ```
 
 ## Production Features
@@ -238,7 +229,7 @@ This relay includes production-ready features:
 
 - **Watchdog Monitoring** — Automatically monitors all scheduled jobs (morning briefing, night summary) and alerts you via Telegram if anything fails. Runs 6x daily. See [docs/WATCHDOG.md](docs/WATCHDOG.md)
 - **Service Management** — All scripts run as background services via PM2 (cross-platform) or launchd (macOS). Start on boot, restart on crash. See [docs/SERVICE-STATUS.md](docs/SERVICE-STATUS.md)
-- **Semantic Memory** — Conversation history with vector search via Supabase. Bot remembers context from weeks ago.
+- **Semantic Memory** — Conversation history with vector search via Qdrant + Ollama embeddings. Bot remembers context from weeks ago. All data stays local.
 - **Voice Transcription** — Groq (cloud) or local whisper.cpp support for voice messages.
 - **Proactive AI** — Morning briefings and night summaries with context from your actual data.
 

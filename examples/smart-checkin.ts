@@ -54,7 +54,7 @@ async function saveState(state: CheckinState): Promise<void> {
 
 async function getGoals(): Promise<string[]> {
   // Load from your persistence layer
-  // Example: Supabase, JSON file, etc.
+  // Example: SQLite, JSON file, etc.
   return ["Finish video edit by 5pm", "Review PR"];
 }
 

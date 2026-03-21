@@ -13,6 +13,7 @@ import { existsSync } from "fs";
 import { join, dirname } from "path";
 import { spawn } from "bun";
 import type { UserRoutineConfig, CodeRoutineEntry, PM2Status, PM2ProcessInfo } from "./types.ts";
+import { getPm2LogsDir } from "../../config/observability.ts";
 
 const PROJECT_ROOT = join(dirname(dirname(dirname(import.meta.path))));
 const USER_ROUTINES_DIR = join(PROJECT_ROOT, "routines", "user");
@@ -80,8 +81,8 @@ function generateEcosystemEntry(config: UserRoutineConfig): string {
         PATH: "${BUN_PATH.replace("/bun", "")}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
         HOME: "${process.env.HOME || ""}",
       },
-      error_file: "${PROJECT_ROOT}/logs/${config.name}-error.log",
-      out_file: "${PROJECT_ROOT}/logs/${config.name}.log",
+      error_file: "${getPm2LogsDir()}/${config.name}-error.log",
+      out_file: "${getPm2LogsDir()}/${config.name}.log",
       log_date_format: "YYYY-MM-DD HH:mm:ss Z",
     },`;
 }

@@ -13,7 +13,7 @@
  *   the scheduled 11 PM cron run (2h cooldown clears well before 23:00).
  *
  * Usage:
- *   const LAST_RUN_FILE = join(import.meta.dir, "../../logs/night-summary.lastrun");
+ *   const LAST_RUN_FILE = join(getPm2LogsDir(), "night-summary.lastrun");
  *   if (shouldSkipRecently(LAST_RUN_FILE, 2)) { process.exit(0); }
  *   // ... run the routine ...
  *   markRanToday(LAST_RUN_FILE);
