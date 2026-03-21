@@ -1,0 +1,14 @@
+{
+  "id": "multiline-response",
+  "description": "claudeText returns a multi-line plain text answer",
+  "source": "real",
+  "captured_at": "2026-03-03T14:09:59.826Z",
+  "trigger": "claudeText(\"List exactly 3 primary colours, one per line, no bullets or numbers.\", { model: \"claude-haiku-4-5-20251001\" })",
+  "boundary": "claude-cli-stdout",
+  "mode": "text",
+  "payload": {
+    "stdout": "Red\nYellow\nBlue",
+    "stderr": "",
+    "exitCode": 0
+  }
+}

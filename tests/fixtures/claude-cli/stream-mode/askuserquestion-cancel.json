@@ -1,0 +1,68 @@
+{
+  "id": "askuserquestion-cancel",
+  "description": "Claude CLI stream showing the cancel path: AskUserQuestion is emitted, user cancels, relay calls proc.kill(), stream ends without result:success. Regression: pre-fix, proc.kill() was NOT called → proc.exited never resolved → freeze.",
+  "source": "derived",
+  "derived_from": "with-ask-user-question (global ~/.claude/e2e-fixtures/claude-cli/stream-mode/)",
+  "derived_rationale": "The cancel path does not produce a result:success line. After proc.kill(), Claude CLI emits no further events. The stream terminates and proc.exited resolves. This fixture documents the expected short-circuit behavior after fix (6ce2d73 + freeze fix).",
+  "captured_at": "2026-03-04T10:00:00+08:00",
+  "trigger": "claudeStream in interactive mode; user taps '✖ Cancel' on Telegram form → form.reject(new Error('user cancelled')) → handleAskUserQuestion catch block → proc.kill()",
+  "boundary": "claude-cli-stdout",
+  "mode": "stream-json-interactive",
+  "notes": [
+    "The fix: try/catch around onQuestion() in handleAskUserQuestion",
+    "On rejection, proc.kill() is called immediately — no write to stdin",
+    "proc.exited resolves promptly (process was killed)",
+    "claudeStream resolves with resultText='' (no result:success line emitted)",
+    "The relay catches the rejection from onQuestion and kills the process",
+    "Bug to detect: if proc.kill() is NOT called, proc.exited hangs indefinitely",
+    "Stream terminates after the AskUserQuestion tool_use line — no user event, no result",
+    "This is a truncated stream: Claude emits AskUserQuestion, then process is killed externally"
+  ],
+  "payload": {
+    "lines": [
+      {
+        "type": "system",
+        "subtype": "init",
+        "session_id": "cancel-test-session-001",
+        "cwd": "/tmp",
+        "tools": ["AskUserQuestion"],
+        "model": "claude-sonnet-4-6"
+      },
+      {
+        "type": "assistant",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "tool_use",
+              "id": "toolu_canceltest_001",
+              "name": "AskUserQuestion",
+              "input": {
+                "questions": [
+                  {
+                    "question": "Which database should we use?",
+                    "header": "Database",
+                    "options": [
+                      { "label": "PostgreSQL", "description": "Relational, ACID" },
+                      { "label": "MySQL", "description": "Relational, widely used" },
+                      { "label": "SQLite", "description": "Embedded, file-based" }
+                    ],
+                    "multiSelect": false
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "session_id": "cancel-test-session-001"
+      }
+    ],
+    "cancel_event": {
+      "description": "Stream ends here because proc.kill() was called after user cancelled. No further lines emitted by Claude CLI.",
+      "trigger": "form.reject(new Error('user cancelled')) → handleAskUserQuestion catch block → proc.kill()"
+    },
+    "stderr": "",
+    "exitCode": -1,
+    "exitNote": "exitCode -1 represents SIGTERM from proc.kill() — not a Claude CLI error"
+  }
+}

@@ -147,10 +147,31 @@ const SERVICES: Record<string, ServiceConfig> = {
   },
   briefing: {
     label: "com.claude.morning-briefing",
-    script: "examples/morning-briefing.ts",
+    script: "examples/morning-briefing-etf.ts",
     keepAlive: false,
-    calendarIntervals: [{ Hour: 9, Minute: 0 }],
-    description: "Morning briefing (daily at 9am)",
+    calendarIntervals: [{ Hour: 7, Minute: 0 }],
+    description: "ETF morning briefing (daily at 7am)",
+  },
+  summary: {
+    label: "com.claude.night-summary",
+    script: "examples/night-summary.ts",
+    keepAlive: false,
+    calendarIntervals: [{ Hour: 23, Minute: 0 }],
+    description: "Night summary (daily at 11pm)",
+  },
+  watchdog: {
+    label: "com.claude.watchdog",
+    script: "setup/watchdog.ts",
+    keepAlive: false,
+    calendarIntervals: [
+      { Hour: 0, Minute: 15 },
+      { Hour: 6, Minute: 0 },
+      { Hour: 8, Minute: 0 },
+      { Hour: 12, Minute: 0 },
+      { Hour: 18, Minute: 0 },
+      { Hour: 23, Minute: 30 },
+    ],
+    description: "Watchdog (monitors all jobs, runs 6x daily)",
   },
 };
 
@@ -219,7 +240,7 @@ async function main() {
     const config = SERVICES[name];
     if (!config) {
       console.log(`  ${FAIL} Unknown service: ${name}`);
-      console.log(`      ${dim("Available: relay, checkin, briefing, all")}`);
+      console.log(`      ${dim("Available: relay, checkin, briefing, summary, watchdog, all")}`);
       allOk = false;
       continue;
     }

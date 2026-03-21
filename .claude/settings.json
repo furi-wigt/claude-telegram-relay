@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "branch=$(git branch --show-current 2>/dev/null); if [ \"$branch\" = \"master\" ] || [ \"$branch\" = \"main\" ]; then echo \"BLOCKED: Direct edit on protected branch '$branch'. Create a worktree first: git worktree add .claude/worktrees/<branch-name> -b <branch-name>\"; exit 1; fi",
+            "statusMessage": "Checking branch protection..."
+          }
+        ]
+      }
+    ]
+  }
+}

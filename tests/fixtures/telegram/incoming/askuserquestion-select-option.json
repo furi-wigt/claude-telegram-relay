@@ -1,0 +1,104 @@
+{
+  "id": "askuserquestion-select-option",
+  "description": "User taps one option button on an AskUserQuestion inline keyboard (rq:s — select). Real capture from 2026-03-04 11:41.",
+  "source": "real",
+  "captured_at": "2026-03-04T11:41:50+08:00",
+  "trigger": "AskUserQuestion form shown; user taps option button (not Submit All)",
+  "boundary": "grammy-ctx",
+  "handler": "bot.on('callback_query:data')",
+  "notes": [
+    "callbackQuery.data format: rq:s:{chatId}:{tid}:{qIdx}:{oIdx}",
+    "qIdx=0 → first question, oIdx=0 → first option (AskUserQuestion loop bug)",
+    "Real capture from 11:41 session — supergroup forum topic, tid=3",
+    "Bot responds by editing the form message to show ◉ checkmark",
+    "Promoted from derived to real on 2026-03-04"
+  ],
+  "payload": {
+    "callbackQuery": {
+      "id": "4630198445862737018",
+      "from": {
+        "id": 1078052084,
+        "is_bot": false,
+        "first_name": "Furi",
+        "last_name": "Karnapi",
+        "username": "f412i",
+        "language_code": "en"
+      },
+      "message": {
+        "message_id": 2968,
+        "from": {
+          "id": 8599605373,
+          "is_bot": true,
+          "first_name": "ccbot",
+          "username": "f4121_bot"
+        },
+        "chat": {
+          "id": -1003802998454,
+          "title": "Code Quality & TDD",
+          "is_forum": true,
+          "type": "supergroup"
+        },
+        "date": 1772595700,
+        "message_thread_id": 3,
+        "text": "📋 Claude has 1 question for you\nAnswer any or all, then tap Submit.\n\n▶ Q1 — Which bug should we tackle next?   [Next task]\n\n  ○ AskUserQuestion loop bug\n    Fix the regression where Claude re-fires questions after answer is submitted (commit f26ffc2)\n  ○ Footer cwd/branch fix\n    Fix footer showing relay's own dir and branch instead of the active session's project\n  ○ Context % in footer\n    Add ctx: N% to footer using total_input_tokens from Claude CLI result event\n  ○ Memory dedup crash\n    Fix savePendingCandidates ReferenceError in memory-dedup-review routine\n\n0 of 1 answered",
+        "is_topic_message": true,
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "AskUserQuestion loop bug",
+                "callback_data": "rq:s:-1003802998454:3:0:0"
+              },
+              {
+                "text": "Footer cwd/branch fix",
+                "callback_data": "rq:s:-1003802998454:3:0:1"
+              }
+            ],
+            [
+              {
+                "text": "Context % in footer",
+                "callback_data": "rq:s:-1003802998454:3:0:2"
+              },
+              {
+                "text": "Memory dedup crash",
+                "callback_data": "rq:s:-1003802998454:3:0:3"
+              }
+            ],
+            [
+              {
+                "text": "Other...",
+                "callback_data": "rq:o:-1003802998454:3:0"
+              }
+            ],
+            [
+              {
+                "text": "✓ Submit All",
+                "callback_data": "rq:sub:-1003802998454:3"
+              },
+              {
+                "text": "✗ Cancel",
+                "callback_data": "rq:cxl:-1003802998454:3"
+              }
+            ]
+          ]
+        }
+      },
+      "chat_instance": "-1043096026377272903",
+      "data": "rq:s:-1003802998454:3:0:0"
+    },
+    "chat": {
+      "id": -1003802998454,
+      "title": "Code Quality & TDD",
+      "is_forum": true,
+      "type": "supergroup"
+    },
+    "from": {
+      "id": 1078052084,
+      "is_bot": false,
+      "first_name": "Furi",
+      "last_name": "Karnapi",
+      "username": "f412i",
+      "language_code": "en"
+    }
+  }
+}

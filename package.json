@@ -7,16 +7,32 @@
     "dev": "bun run --watch src/relay.ts",
     "setup": "bun run setup/install.ts",
     "test:telegram": "bun run setup/test-telegram.ts",
-    "test:supabase": "bun run setup/test-supabase.ts",
+
     "test:voice": "bun run setup/test-voice.ts",
+    "test:fallback": "bun run setup/test-fallback.ts",
+    "test:groups": "bun run setup/test-groups.ts",
+    "test:weather": "bun run setup/test-weather.ts",
+    "test:observability": "bun run setup/test-observability.ts",
     "setup:launchd": "bun run setup/configure-launchd.ts",
     "setup:services": "bun run setup/configure-services.ts",
-    "setup:verify": "bun run setup/verify.ts"
+    "setup:pm2": "bun run setup/configure-pm2.ts",
+    "setup:routines": "bun run setup/configure-routines.ts",
+    "setup:verify": "bun run setup/verify.ts",
+    "docs:ingest": "bun run scripts/ingest-documents.ts",
+    "docs:list": "bun run scripts/ingest-documents.ts --list"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.45.0",
+    "@anthropic-ai/sdk": "^0.74.0",
+    "@azure/msal-node": "^5.0.4",
+    "@microsoft/microsoft-graph-client": "^3.0.7",
+    "@qdrant/js-client-rest": "^1.17.0",
+
     "grammy": "^1.21.1",
-    "groq-sdk": "^0.8.0"
+    "groq-sdk": "^0.8.0",
+    "isomorphic-fetch": "^3.0.0",
+    "unpdf": "^1.4.0",
+    "xlsx": "^0.18.5",
+    "yahoo-finance2": "^3.13.0"
   },
   "devDependencies": {
     "@types/bun": "latest"

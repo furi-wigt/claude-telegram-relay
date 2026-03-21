@@ -1,0 +1,14 @@
+{
+  "id": "plain-response",
+  "description": "claudeText returns a short single-line plain text answer",
+  "source": "real",
+  "captured_at": "2026-03-03T14:09:45.861Z",
+  "trigger": "claudeText(\"What is 2+2? Reply with only the number.\", { model: \"claude-haiku-4-5-20251001\" })",
+  "boundary": "claude-cli-stdout",
+  "mode": "text",
+  "payload": {
+    "stdout": "4",
+    "stderr": "",
+    "exitCode": 0
+  }
+}

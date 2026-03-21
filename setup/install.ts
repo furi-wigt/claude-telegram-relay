@@ -7,11 +7,13 @@
  * Usage: bun run setup/install.ts
  */
 
-import { existsSync, mkdirSync, copyFileSync } from "fs";
+import { existsSync, mkdirSync, copyFileSync, readdirSync } from "fs";
 import { join, dirname } from "path";
+import { homedir } from "os";
 
 const PROJECT_ROOT = dirname(import.meta.dir);
-const REQUIRED_DIRS = ["logs", "temp", "uploads"];
+const RELAY_USER_DIR = process.env.RELAY_USER_DIR || process.env.RELAY_DIR || join(homedir(), ".claude-relay");
+const REQUIRED_DIRS = ["temp", "uploads"];
 
 // Colors
 const green = (s: string) => `\x1b[32m${s}\x1b[0m`;
@@ -90,6 +92,22 @@ async function installDeps(): Promise<boolean> {
 }
 
 function createDirs(): void {
+  // User-level directories (~/.claude-relay/)
+  const userDirs = [
+    { path: join(RELAY_USER_DIR, "data"), label: "~/.claude-relay/data/" },
+    { path: join(RELAY_USER_DIR, "logs"), label: "~/.claude-relay/logs/" },
+    { path: join(RELAY_USER_DIR, "research"), label: "~/.claude-relay/research/" },
+  ];
+  for (const { path, label } of userDirs) {
+    if (!existsSync(path)) {
+      mkdirSync(path, { recursive: true });
+      console.log(`  ${PASS} Created ${label}`);
+    } else {
+      console.log(`  ${PASS} ${label} ${dim("(exists)")}`);
+    }
+  }
+
+  // Project-local directories
   for (const dir of REQUIRED_DIRS) {
     const fullPath = join(PROJECT_ROOT, dir);
     if (!existsSync(fullPath)) {
@@ -97,6 +115,48 @@ function createDirs(): void {
       console.log(`  ${PASS} Created ${dir}/`);
     } else {
       console.log(`  ${PASS} ${dir}/ ${dim("(exists)")}`);
+    }
+  }
+}
+
+/**
+ * Copy default prompts from config/prompts/ to ~/.claude-relay/prompts/
+ * using no-clobber semantics — existing user files are never overwritten.
+ */
+function seedDefaultPrompts(): void {
+  const repoPromptsDir = join(PROJECT_ROOT, "config", "prompts");
+  const userPromptsDir = join(RELAY_USER_DIR, "prompts");
+
+  if (!existsSync(repoPromptsDir)) return;
+
+  mkdirSync(userPromptsDir, { recursive: true });
+
+  // Copy top-level prompt files
+  for (const file of readdirSync(repoPromptsDir)) {
+    if (!file.endsWith(".md")) continue;
+    const dest = join(userPromptsDir, file);
+    if (existsSync(dest)) {
+      console.log(`  ${PASS} prompts/${file} ${dim("(user copy exists, skipped)")}`);
+    } else {
+      copyFileSync(join(repoPromptsDir, file), dest);
+      console.log(`  ${PASS} Copied prompts/${file}`);
+    }
+  }
+
+  // Copy diagnostics sub-directory
+  const repoDiagDir = join(repoPromptsDir, "diagnostics");
+  const userDiagDir = join(userPromptsDir, "diagnostics");
+  if (existsSync(repoDiagDir)) {
+    mkdirSync(userDiagDir, { recursive: true });
+    for (const file of readdirSync(repoDiagDir)) {
+      if (!file.endsWith(".md")) continue;
+      const dest = join(userDiagDir, file);
+      if (existsSync(dest)) {
+        console.log(`  ${PASS} prompts/diagnostics/${file} ${dim("(user copy exists, skipped)")}`);
+      } else {
+        copyFileSync(join(repoDiagDir, file), dest);
+        console.log(`  ${PASS} Copied prompts/diagnostics/${file}`);
+      }
     }
   }
 }
@@ -131,7 +191,7 @@ async function main() {
   console.log(dim(`  ${platform} • ${process.arch}`));
 
   // 1. Prerequisites
-  console.log(`\n${cyan("  [1/4] Prerequisites")}`);
+  console.log(`\n${cyan("  [1/5] Prerequisites")}`);
   const bunOk = await checkBun();
   if (!bunOk) {
     console.log(`\n  ${red("Bun is required. Install it first.")}`);
@@ -140,16 +200,20 @@ async function main() {
   await checkClaude();
 
   // 2. Dependencies
-  console.log(`\n${cyan("  [2/4] Dependencies")}`);
+  console.log(`\n${cyan("  [2/5] Dependencies")}`);
   const depsOk = await installDeps();
   if (!depsOk) process.exit(1);
 
   // 3. Directories
-  console.log(`\n${cyan("  [3/4] Directories")}`);
+  console.log(`\n${cyan("  [3/5] Directories")}`);
   createDirs();
 
-  // 4. Environment
-  console.log(`\n${cyan("  [4/4] Environment")}`);
+  // 4. Default prompts
+  console.log(`\n${cyan("  [4/5] Default Prompts")}`);
+  seedDefaultPrompts();
+
+  // 5. Environment
+  console.log(`\n${cyan("  [5/5] Environment")}`);
   const envReady = setupEnv();
 
   // Summary
@@ -161,7 +225,7 @@ async function main() {
     steps.push(`Edit .env with your API keys: ${cyan("$EDITOR .env")}`);
   }
   steps.push(`Test Telegram connection: ${cyan("bun run setup/test-telegram.ts")}`);
-  steps.push(`Test Supabase connection: ${cyan("bun run setup/test-supabase.ts")}`);
+  steps.push(`Verify setup: ${cyan("bun run setup:verify")}`);
   steps.push(`Start the bot: ${cyan("bun run start")}`);
 
   steps.forEach((step, i) => console.log(`  ${i + 1}. ${step}`));

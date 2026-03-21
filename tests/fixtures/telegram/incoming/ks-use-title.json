@@ -1,0 +1,65 @@
+{
+  "id": "ks-use-title",
+  "description": "User taps [✅ Use title] in Save-to-KB title suggestion keyboard",
+  "source": "derived",
+  "derived_from": "di-use-title",
+  "rationale": "Same shape; ks_use_title: triggers checkTitleCollision → save",
+  "trigger": "After tapping 💾 Save to KB, tap the suggested title button",
+  "boundary": "grammy-ctx",
+  "handler": "bot.callbackQuery(/^ks_use_title:/)",
+  "payload": {
+    "callbackQuery": {
+      "id": "4630198447950452521",
+      "from": {
+        "id": 1078052084,
+        "is_bot": false,
+        "first_name": "Furi",
+        "last_name": "Karnapi",
+        "username": "f412i",
+        "language_code": "en"
+      },
+      "message": {
+        "message_id": 1111,
+        "from": {
+          "id": 8599605373,
+          "is_bot": true,
+          "first_name": "ccbot",
+          "username": "f4121_bot"
+        },
+        "chat": {
+          "id": 1078052084,
+          "first_name": "Furi",
+          "last_name": "Karnapi",
+          "username": "f412i",
+          "type": "private"
+        },
+        "date": 1772542810,
+        "text": "Suggested title: \"Claude Response Summary\"\n\nUse this title or enter a new one?",
+        "reply_markup": {
+          "inline_keyboard": [
+            [{ "text": "✅ Use title", "callback_data": "ks_use_title:1078052084:" }],
+            [{ "text": "✏️ Enter new title", "callback_data": "ks_new_title:1078052084:" }],
+            [{ "text": "❌ Cancel", "callback_data": "ks_cancel:1078052084:" }]
+          ]
+        }
+      },
+      "chat_instance": "4494821607405375504",
+      "data": "ks_use_title:1078052084:"
+    },
+    "chat": {
+      "id": 1078052084,
+      "first_name": "Furi",
+      "last_name": "Karnapi",
+      "username": "f412i",
+      "type": "private"
+    },
+    "from": {
+      "id": 1078052084,
+      "is_bot": false,
+      "first_name": "Furi",
+      "last_name": "Karnapi",
+      "username": "f412i",
+      "language_code": "en"
+    }
+  }
+}

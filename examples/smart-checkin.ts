@@ -138,9 +138,14 @@ REASON: [Why you decided this]
 `;
 
   try {
+    // Remove CLAUDECODE to prevent nested session detection
+    const env = { ...process.env };
+    delete env.CLAUDECODE;
+
     const proc = spawn([CLAUDE_PATH, "-p", prompt, "--output-format", "text"], {
       stdout: "pipe",
       stderr: "pipe",
+      env: env,
     });
 
     const output = await new Response(proc.stdout).text();
@@ -201,34 +206,34 @@ main();
 // ============================================================
 // SCHEDULING
 // ============================================================
-/*
-Run every 30 minutes:
-
-CRON (Linux):
-*/30 * * * * cd /path/to/relay && bun run examples/smart-checkin.ts
-
-LAUNCHD (macOS) - save as ~/Library/LaunchAgents/com.claude.smart-checkin.plist:
-
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "...">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.claude.smart-checkin</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/Users/YOU/.bun/bin/bun</string>
-        <string>run</string>
-        <string>examples/smart-checkin.ts</string>
-    </array>
-    <key>WorkingDirectory</key>
-    <string>/path/to/relay</string>
-    <key>StartInterval</key>
-    <integer>1800</integer>  <!-- 30 minutes in seconds -->
-</dict>
-</plist>
-
-WINDOWS Task Scheduler:
-- Create task with "Daily" trigger
-- Set to repeat every 30 minutes
-*/
+/**
+ * Run every 30 minutes:
+ *
+ * CRON (Linux):
+ * 0,30 * * * * cd /path/to/relay && bun run examples/smart-checkin.ts
+ *
+ * LAUNCHD (macOS) - save as ~/Library/LaunchAgents/com.claude.smart-checkin.plist:
+ *
+ * <?xml version="1.0" encoding="UTF-8"?>
+ * <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "...">
+ * <plist version="1.0">
+ * <dict>
+ *     <key>Label</key>
+ *     <string>com.claude.smart-checkin</string>
+ *     <key>ProgramArguments</key>
+ *     <array>
+ *         <string>/Users/YOU/.bun/bin/bun</string>
+ *         <string>run</string>
+ *         <string>examples/smart-checkin.ts</string>
+ *     </array>
+ *     <key>WorkingDirectory</key>
+ *     <string>/path/to/relay</string>
+ *     <key>StartInterval</key>
+ *     <integer>1800</integer>
+ * </dict>
+ * </plist>
+ *
+ * WINDOWS Task Scheduler:
+ * - Create task with "Daily" trigger
+ * - Set to repeat every 30 minutes
+ */

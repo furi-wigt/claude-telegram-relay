@@ -1,0 +1,143 @@
+/**
+ * Qdrant vector store wrapper.
+ * CRUD operations for collections: memory, messages, documents, summaries.
+ */
+import { QdrantClient } from "@qdrant/js-client-rest";
+
+const QDRANT_URL = process.env.QDRANT_URL || "http://localhost:6333";
+const VECTOR_DIM = 1024; // BGE-M3 output dimension
+
+export type CollectionName = "memory" | "messages" | "documents" | "summaries";
+
+let _client: QdrantClient | null = null;
+
+export function getQdrantClient(): QdrantClient {
+  if (_client) return _client;
+  _client = new QdrantClient({ url: QDRANT_URL, checkCompatibility: false });
+  return _client;
+}
+
+/**
+ * Ensure a collection exists with the correct vector config.
+ */
+export async function ensureCollection(name: CollectionName): Promise<void> {
+  const client = getQdrantClient();
+  try {
+    await client.getCollection(name);
+  } catch (err: any) {
+    // Only create if collection doesn't exist; re-throw other errors (e.g. network)
+    try {
+      await client.createCollection(name, {
+        vectors: { size: VECTOR_DIM, distance: "Cosine" },
+      });
+    } catch (createErr) {
+      throw new Error(`Failed to ensure Qdrant collection "${name}": ${createErr}`);
+    }
+  }
+}
+
+/**
+ * Initialize all 4 collections.
+ */
+export async function initCollections(): Promise<void> {
+  const collections: CollectionName[] = [
+    "memory",
+    "messages",
+    "documents",
+    "summaries",
+  ];
+  for (const name of collections) {
+    await ensureCollection(name);
+  }
+}
+
+/**
+ * Upsert a single vector with payload.
+ */
+export async function upsert(
+  collection: CollectionName,
+  id: string,
+  vector: number[],
+  payload: Record<string, unknown>
+): Promise<void> {
+  const client = getQdrantClient();
+  await client.upsert(collection, {
+    wait: true,
+    points: [{ id, vector, payload }],
+  });
+}
+
+/**
+ * Upsert multiple vectors in a single batch.
+ */
+export async function upsertBatch(
+  collection: CollectionName,
+  points: Array<{
+    id: string;
+    vector: number[];
+    payload: Record<string, unknown>;
+  }>
+): Promise<void> {
+  if (points.length === 0) return;
+  const client = getQdrantClient();
+  await client.upsert(collection, { wait: true, points });
+}
+
+export interface SearchResult {
+  id: string;
+  score: number;
+  payload: Record<string, unknown>;
+}
+
+/**
+ * Search for similar vectors in a collection.
+ */
+export async function search(
+  collection: CollectionName,
+  vector: number[],
+  opts?: {
+    limit?: number;
+    threshold?: number;
+    filter?: Record<string, unknown>;
+  }
+): Promise<SearchResult[]> {
+  const client = getQdrantClient();
+  const results = await client.search(collection, {
+    vector,
+    limit: opts?.limit ?? 10,
+    score_threshold: opts?.threshold,
+    filter: opts?.filter,
+    with_payload: true,
+  });
+
+  return results.map((r) => ({
+    id: typeof r.id === "string" ? r.id : String(r.id),
+    score: r.score,
+    payload: (r.payload ?? {}) as Record<string, unknown>,
+  }));
+}
+
+/**
+ * Delete points by IDs.
+ */
+export async function deletePoints(
+  collection: CollectionName,
+  ids: string[]
+): Promise<void> {
+  if (ids.length === 0) return;
+  const client = getQdrantClient();
+  await client.delete(collection, { wait: true, points: ids });
+}
+
+/**
+ * Health check — verifies Qdrant is reachable and collections exist.
+ */
+export async function checkQdrantHealth(): Promise<boolean> {
+  try {
+    const client = getQdrantClient();
+    const response = await client.getCollections();
+    return Array.isArray(response.collections);
+  } catch {
+    return false;
+  }
+}

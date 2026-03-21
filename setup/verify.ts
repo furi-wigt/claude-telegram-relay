@@ -1,7 +1,7 @@
 /**
  * Claude Telegram Relay — Verify Setup
  *
- * Runs all health checks in sequence: env, Telegram, Supabase,
+ * Runs all health checks in sequence: env, Telegram, local storage,
  * services, and reports overall status.
  *
  * Usage: bun run setup/verify.ts
@@ -85,27 +85,15 @@ async function main() {
     pass(`User ID: ${userId}`);
   }
 
-  // 3. Supabase
-  console.log(`\n${bold("  Supabase")}`);
-  const supaUrl = env.SUPABASE_URL || "";
-  const supaKey = env.SUPABASE_ANON_KEY || "";
-
-  if (!supaUrl || supaUrl.includes("your_")) {
-    warn("SUPABASE_URL not set (memory won't persist)");
-  } else if (!supaKey || supaKey.includes("your_")) {
-    warn("SUPABASE_ANON_KEY not set");
-  } else {
-    for (const table of ["messages", "memory", "logs"]) {
-      try {
-        const res = await fetch(`${supaUrl}/rest/v1/${table}?select=*&limit=1`, {
-          headers: { apikey: supaKey, Authorization: `Bearer ${supaKey}` },
-        });
-        res.status === 200 ? pass(`Table "${table}" OK`) : fail(`Table "${table}": ${res.status}`);
-      } catch (e: any) {
-        fail(`Supabase unreachable: ${e.message}`);
-        break;
-      }
-    }
+  // 3. Local Storage (SQLite + Qdrant)
+  console.log(`\n${bold("  Local Storage")}`);
+  try {
+    const { existsSync } = await import("fs");
+    const { join } = await import("path");
+    const dbPath = join(process.cwd(), "data", "local.db");
+    existsSync(dbPath) ? pass(`SQLite DB: ${dbPath}`) : warn("SQLite DB not yet created (will be auto-created on first run)");
+  } catch (e: any) {
+    warn(`Could not check local DB: ${e.message}`);
   }
 
   // 4. Services (macOS only)

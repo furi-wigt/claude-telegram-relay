@@ -1,0 +1,63 @@
+{
+  "id": "ks-tap",
+  "description": "User taps [💾 Save to KB] button shown below a bot reply",
+  "source": "derived",
+  "derived_from": "button-tap-cancel",
+  "rationale": "Same callbackQuery shape; data prefix ks_tap: triggers Save-to-KB flow (buildSaveState + showTitleKeyboard)",
+  "trigger": "Tap 💾 Save to KB below any bot response",
+  "boundary": "grammy-ctx",
+  "handler": "bot.callbackQuery(/^ks_tap:/)",
+  "payload": {
+    "callbackQuery": {
+      "id": "4630198447950452520",
+      "from": {
+        "id": 1078052084,
+        "is_bot": false,
+        "first_name": "Furi",
+        "last_name": "Karnapi",
+        "username": "f412i",
+        "language_code": "en"
+      },
+      "message": {
+        "message_id": 1110,
+        "from": {
+          "id": 8599605373,
+          "is_bot": true,
+          "first_name": "ccbot",
+          "username": "f4121_bot"
+        },
+        "chat": {
+          "id": 1078052084,
+          "first_name": "Furi",
+          "last_name": "Karnapi",
+          "username": "f412i",
+          "type": "private"
+        },
+        "date": 1772542800,
+        "text": "Here is the Claude response that the user wants to save.",
+        "reply_markup": {
+          "inline_keyboard": [
+            [{ "text": "💾 Save to KB", "callback_data": "ks_tap:1078052084:" }]
+          ]
+        }
+      },
+      "chat_instance": "4494821607405375504",
+      "data": "ks_tap:1078052084:"
+    },
+    "chat": {
+      "id": 1078052084,
+      "first_name": "Furi",
+      "last_name": "Karnapi",
+      "username": "f412i",
+      "type": "private"
+    },
+    "from": {
+      "id": 1078052084,
+      "is_bot": false,
+      "first_name": "Furi",
+      "last_name": "Karnapi",
+      "username": "f412i",
+      "language_code": "en"
+    }
+  }
+}

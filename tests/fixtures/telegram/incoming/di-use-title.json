@@ -1,0 +1,65 @@
+{
+  "id": "di-use-title",
+  "description": "User taps [✅ Use title] in /doc ingest title suggestion keyboard",
+  "source": "derived",
+  "derived_from": "button-tap-cancel",
+  "rationale": "Same callbackQuery shape; data prefix di_use_title: is stable per relay.ts handler",
+  "trigger": "After pasting content in /doc ingest, tap the suggested title button",
+  "boundary": "grammy-ctx",
+  "handler": "bot.callbackQuery(/^di_use_title:/)",
+  "payload": {
+    "callbackQuery": {
+      "id": "4630198447950452510",
+      "from": {
+        "id": 1078052084,
+        "is_bot": false,
+        "first_name": "Furi",
+        "last_name": "Karnapi",
+        "username": "f412i",
+        "language_code": "en"
+      },
+      "message": {
+        "message_id": 1101,
+        "from": {
+          "id": 8599605373,
+          "is_bot": true,
+          "first_name": "ccbot",
+          "username": "f4121_bot"
+        },
+        "chat": {
+          "id": 1078052084,
+          "first_name": "Furi",
+          "last_name": "Karnapi",
+          "username": "f412i",
+          "type": "private"
+        },
+        "date": 1772542700,
+        "text": "Suggested title: \"My Document\"\n\nUse this title or enter a new one?",
+        "reply_markup": {
+          "inline_keyboard": [
+            [{ "text": "✅ Use title", "callback_data": "di_use_title:1078052084:" }],
+            [{ "text": "✏️ Enter new title", "callback_data": "di_new_title:1078052084:" }],
+            [{ "text": "❌ Cancel", "callback_data": "di_cancel:1078052084:" }]
+          ]
+        }
+      },
+      "chat_instance": "4494821607405375504",
+      "data": "di_use_title:1078052084:"
+    },
+    "chat": {
+      "id": 1078052084,
+      "first_name": "Furi",
+      "last_name": "Karnapi",
+      "username": "f412i",
+      "type": "private"
+    },
+    "from": {
+      "id": 1078052084,
+      "is_bot": false,
+      "first_name": "Furi",
+      "last_name": "Karnapi",
+      "username": "f412i",
+      "language_code": "en"
+    }
+  }
+}

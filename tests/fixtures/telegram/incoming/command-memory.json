@@ -1,0 +1,26 @@
+{
+  "id": "command-memory",
+  "description": "User sends /memory command in private chat — opens the memory browser",
+  "source": "real",
+  "captured_at": "2026-03-03T21:45:31+08:00",
+  "trigger": "Send /memory in private chat",
+  "boundary": "grammy-ctx",
+  "payload": {
+    "message": {
+      "message_id": 1032,
+      "text": "/memory",
+      "entities": [
+        { "offset": 0, "length": 7, "type": "bot_command" }
+      ]
+    },
+    "chat": {
+      "id": 1078052084,
+      "type": "private"
+    },
+    "from": {
+      "id": 1078052084,
+      "username": "f412i"
+    },
+    "match": ""
+  }
+}

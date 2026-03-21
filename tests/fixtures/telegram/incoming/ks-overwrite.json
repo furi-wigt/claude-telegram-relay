@@ -1,0 +1,64 @@
+{
+  "id": "ks-overwrite",
+  "description": "User taps [🔄 Overwrite] in Save-to-KB title collision keyboard",
+  "source": "derived",
+  "derived_from": "di-overwrite",
+  "rationale": "Same shape; ks_overwrite: triggers delete+save path in Save-to-KB flow",
+  "trigger": "After Save-to-KB detects title collision, tap Overwrite",
+  "boundary": "grammy-ctx",
+  "handler": "bot.callbackQuery(/^ks_overwrite:/)",
+  "payload": {
+    "callbackQuery": {
+      "id": "4630198447950452522",
+      "from": {
+        "id": 1078052084,
+        "is_bot": false,
+        "first_name": "Furi",
+        "last_name": "Karnapi",
+        "username": "f412i",
+        "language_code": "en"
+      },
+      "message": {
+        "message_id": 1112,
+        "from": {
+          "id": 8599605373,
+          "is_bot": true,
+          "first_name": "ccbot",
+          "username": "f4121_bot"
+        },
+        "chat": {
+          "id": 1078052084,
+          "first_name": "Furi",
+          "last_name": "Karnapi",
+          "username": "f412i",
+          "type": "private"
+        },
+        "date": 1772542820,
+        "text": "⚠️ A document named \"Claude Response Summary\" already exists.\n\nOverwrite it?",
+        "reply_markup": {
+          "inline_keyboard": [
+            [{ "text": "🔄 Overwrite", "callback_data": "ks_overwrite:1078052084:" }],
+            [{ "text": "❌ Cancel", "callback_data": "ks_cancel:1078052084:" }]
+          ]
+        }
+      },
+      "chat_instance": "4494821607405375504",
+      "data": "ks_overwrite:1078052084:"
+    },
+    "chat": {
+      "id": 1078052084,
+      "first_name": "Furi",
+      "last_name": "Karnapi",
+      "username": "f412i",
+      "type": "private"
+    },
+    "from": {
+      "id": 1078052084,
+      "is_bot": false,
+      "first_name": "Furi",
+      "last_name": "Karnapi",
+      "username": "f412i",
+      "language_code": "en"
+    }
+  }
+}

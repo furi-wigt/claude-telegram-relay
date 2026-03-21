@@ -1,0 +1,54 @@
+{
+  "id": "command-help",
+  "description": "User sends /help command in a private chat",
+  "source": "real",
+  "captured_at": "2026-03-03T20:38:05+08:00",
+  "trigger": "/help sent in private chat",
+  "boundary": "grammy-ctx",
+  "handler": "bot.command('help')",
+  "payload": {
+    "message": {
+      "message_id": 983,
+      "from": {
+        "id": 1078052084,
+        "is_bot": false,
+        "first_name": "Furi",
+        "last_name": "Karnapi",
+        "username": "f412i",
+        "language_code": "en"
+      },
+      "chat": {
+        "id": 1078052084,
+        "first_name": "Furi",
+        "last_name": "Karnapi",
+        "username": "f412i",
+        "type": "private"
+      },
+      "date": 1772541485,
+      "text": "/help",
+      "entities": [
+        {
+          "offset": 0,
+          "length": 5,
+          "type": "bot_command"
+        }
+      ]
+    },
+    "chat": {
+      "id": 1078052084,
+      "first_name": "Furi",
+      "last_name": "Karnapi",
+      "username": "f412i",
+      "type": "private"
+    },
+    "from": {
+      "id": 1078052084,
+      "is_bot": false,
+      "first_name": "Furi",
+      "last_name": "Karnapi",
+      "username": "f412i",
+      "language_code": "en"
+    },
+    "match": ""
+  }
+}

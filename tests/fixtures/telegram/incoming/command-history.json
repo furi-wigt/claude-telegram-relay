@@ -1,0 +1,49 @@
+{
+  "id": "command-history",
+  "description": "User sends /history command in private chat — shows recent messages in current session",
+  "source": "real",
+  "captured_at": "2026-03-03T21:49:25+08:00",
+  "trigger": "Send /history in private chat",
+  "boundary": "grammy-ctx",
+  "payload": {
+    "message": {
+      "message_id": 1070,
+      "from": {
+        "id": 1078052084,
+        "is_bot": false,
+        "first_name": "Furi",
+        "last_name": "Karnapi",
+        "username": "f412i",
+        "language_code": "en"
+      },
+      "chat": {
+        "id": 1078052084,
+        "first_name": "Furi",
+        "last_name": "Karnapi",
+        "username": "f412i",
+        "type": "private"
+      },
+      "date": 1772545765,
+      "text": "/history",
+      "entities": [
+        { "offset": 0, "length": 8, "type": "bot_command" }
+      ]
+    },
+    "chat": {
+      "id": 1078052084,
+      "first_name": "Furi",
+      "last_name": "Karnapi",
+      "username": "f412i",
+      "type": "private"
+    },
+    "from": {
+      "id": 1078052084,
+      "is_bot": false,
+      "first_name": "Furi",
+      "last_name": "Karnapi",
+      "username": "f412i",
+      "language_code": "en"
+    },
+    "match": ""
+  }
+}

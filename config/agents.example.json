@@ -1,0 +1,67 @@
+[
+  {
+    "id": "aws-architect",
+    "name": "AWS Cloud Architect",
+    "groupName": "AWS Cloud Architect",
+    "shortName": "AWS",
+    "groupKey": "AWS_ARCHITECT",
+    "chatId": null,
+    "topicId": null,
+    "claudeAgent": "architect.md",
+    "capabilities": ["infrastructure-design", "cost-optimization", "aws-services"]
+  },
+  {
+    "id": "security-analyst",
+    "name": "Security & Compliance Analyst",
+    "groupName": "Security & Compliance",
+    "shortName": "Security",
+    "groupKey": "SECURITY",
+    "chatId": null,
+    "topicId": null,
+    "claudeAgent": "security.md",
+    "capabilities": ["security-audit", "compliance-check", "threat-modeling"]
+  },
+  {
+    "id": "documentation-specialist",
+    "name": "Technical Documentation Specialist",
+    "groupName": "Technical Documentation",
+    "shortName": "Docs",
+    "groupKey": "DOCUMENTATION",
+    "chatId": null,
+    "topicId": null,
+    "claudeAgent": "documentation-writer.md",
+    "capabilities": ["adr-creation", "system-docs", "runbooks"]
+  },
+  {
+    "id": "code-quality-coach",
+    "name": "Code Quality & TDD Coach",
+    "groupName": "Code Quality & TDD",
+    "shortName": "Code Quality",
+    "groupKey": "CODE_QUALITY",
+    "chatId": null,
+    "topicId": null,
+    "claudeAgent": "reviewer.md",
+    "capabilities": ["code-review", "test-generation", "refactoring"]
+  },
+  {
+    "id": "research-analyst",
+    "name": "Technical Research Analyst",
+    "groupName": "Technical Research",
+    "shortName": "Research",
+    "groupKey": "RESEARCH",
+    "chatId": null,
+    "topicId": null,
+    "capabilities": ["technical-research", "architecture-analysis", "technology-evaluation", "comparative-analysis"]
+  },
+  {
+    "id": "general-assistant",
+    "name": "General AI Assistant",
+    "groupName": "General AI Assistant",
+    "shortName": "General",
+    "groupKey": "GENERAL",
+    "chatId": null,
+    "topicId": null,
+    "isDefault": true,
+    "capabilities": ["general-qa", "meeting-summary", "task-breakdown"]
+  }
+]

@@ -66,10 +66,13 @@ async function transcribeLocal(audioBuffer: Buffer): Promise<string> {
       ["ffmpeg", "-i", oggPath, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", wavPath, "-y"],
       { stdout: "pipe", stderr: "pipe" }
     );
-    const ffmpegExit = await ffmpeg.exited;
+    // PC-10: drain stderr unconditionally on both success and error paths to release pipe buffer
+    const [ffmpegExit, ffmpegStderr] = await Promise.all([
+      ffmpeg.exited,
+      new Response(ffmpeg.stderr).text(),
+    ]);
     if (ffmpegExit !== 0) {
-      const stderr = await new Response(ffmpeg.stderr).text();
-      throw new Error(`ffmpeg failed (code ${ffmpegExit}): ${stderr}`);
+      throw new Error(`ffmpeg failed (code ${ffmpegExit}): ${ffmpegStderr}`);
     }
 
     // Transcribe via whisper.cpp
@@ -77,10 +80,13 @@ async function transcribeLocal(audioBuffer: Buffer): Promise<string> {
       [whisperBinary, "--model", modelPath, "--file", wavPath, "--output-txt", "--output-file", join(tmpDir, `voice_${timestamp}`), "--no-prints"],
       { stdout: "pipe", stderr: "pipe" }
     );
-    const whisperExit = await whisper.exited;
+    // PC-10: drain stderr unconditionally on both success and error paths to release pipe buffer
+    const [whisperExit, whisperStderr] = await Promise.all([
+      whisper.exited,
+      new Response(whisper.stderr).text(),
+    ]);
     if (whisperExit !== 0) {
-      const stderr = await new Response(whisper.stderr).text();
-      throw new Error(`whisper-cpp failed (code ${whisperExit}): ${stderr}`);
+      throw new Error(`whisper-cpp failed (code ${whisperExit}): ${whisperStderr}`);
     }
 
     // Read the output text file

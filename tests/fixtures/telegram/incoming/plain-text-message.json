@@ -1,0 +1,58 @@
+{
+  "id": "plain-text-message",
+  "description": "User sends a plain text message in private chat",
+  "source": "real",
+  "captured_at": "2026-03-03T20:29:30+08:00",
+  "trigger": "Send 'hello' to Jarvis in private chat (not a command, not a reply)",
+  "boundary": "grammy-ctx",
+  "notes": "Private chat: chat.id === from.id === user's numeric Telegram ID. No message_thread_id. No entities.",
+  "payload": {
+    "message": {
+      "message_id": 974,
+      "from": {
+        "id": 1078052084,
+        "is_bot": false,
+        "first_name": "Furi",
+        "last_name": "Karnapi",
+        "username": "f412i",
+        "language_code": "en"
+      },
+      "chat": {
+        "id": 1078052084,
+        "first_name": "Furi",
+        "last_name": "Karnapi",
+        "username": "f412i",
+        "type": "private"
+      },
+      "date": 1772540970,
+      "text": "hello"
+    },
+    "chat": {
+      "id": 1078052084,
+      "first_name": "Furi",
+      "last_name": "Karnapi",
+      "username": "f412i",
+      "type": "private"
+    },
+    "from": {
+      "id": 1078052084,
+      "is_bot": false,
+      "first_name": "Furi",
+      "last_name": "Karnapi",
+      "username": "f412i",
+      "language_code": "en"
+    }
+  },
+  "key_fields": {
+    "chat.id": 1078052084,
+    "chat.type": "private",
+    "message.text": "hello",
+    "message.message_id": 974,
+    "message.date": 1772540970,
+    "message.message_thread_id": null,
+    "message.entities": null,
+    "from.id": 1078052084,
+    "from.is_bot": false,
+    "from.language_code": "en"
+  }
+}

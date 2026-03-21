@@ -1,0 +1,84 @@
+{
+  "id": "group-forum-text",
+  "description": "User sends plain text in a supergroup forum topic (the normal channel for relay communication)",
+  "source": "real",
+  "captured_at": "2026-03-03T20:38:20+08:00",
+  "trigger": "Text message sent in Code Quality & TDD supergroup, Claude-relay topic",
+  "boundary": "grammy-ctx",
+  "handler": "bot.on('message:text')",
+  "notes": [
+    "This is the dominant message shape — most relay communication happens via supergroup forum topics",
+    "message_thread_id identifies the forum topic (416 = Claude-relay topic)",
+    "reply_to_message is the topic creation stub (always present for forum topic messages)",
+    "is_topic_message: true distinguishes forum topic messages from regular group messages",
+    "entities may contain bot_command entries if the text mentions a command, but offset > 0 means bot.command() does NOT fire"
+  ],
+  "payload": {
+    "message": {
+      "message_id": 2606,
+      "from": {
+        "id": 1078052084,
+        "is_bot": false,
+        "first_name": "Furi",
+        "last_name": "Karnapi",
+        "username": "f412i",
+        "language_code": "en"
+      },
+      "chat": {
+        "id": -1003802998454,
+        "title": "Code Quality & TDD",
+        "is_forum": true,
+        "type": "supergroup"
+      },
+      "date": 1772541500,
+      "message_thread_id": 416,
+      "reply_to_message": {
+        "message_id": 416,
+        "from": {
+          "id": 1078052084,
+          "is_bot": false,
+          "first_name": "Furi",
+          "last_name": "Karnapi",
+          "username": "f412i",
+          "language_code": "en"
+        },
+        "chat": {
+          "id": -1003802998454,
+          "title": "Code Quality & TDD",
+          "is_forum": true,
+          "type": "supergroup"
+        },
+        "date": 1771770064,
+        "message_thread_id": 416,
+        "forum_topic_created": {
+          "name": "Claude-relay",
+          "icon_color": 7322096
+        },
+        "is_topic_message": true
+      },
+      "text": "Just sent another /help at 20:38",
+      "entities": [
+        {
+          "offset": 18,
+          "length": 5,
+          "type": "bot_command"
+        }
+      ],
+      "is_topic_message": true
+    },
+    "chat": {
+      "id": -1003802998454,
+      "title": "Code Quality & TDD",
+      "is_forum": true,
+      "type": "supergroup"
+    },
+    "from": {
+      "id": 1078052084,
+      "is_bot": false,
+      "first_name": "Furi",
+      "last_name": "Karnapi",
+      "username": "f412i",
+      "language_code": "en"
+    }
+  }
+}

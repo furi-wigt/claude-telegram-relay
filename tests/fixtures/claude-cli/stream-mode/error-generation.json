@@ -1,0 +1,50 @@
+{
+  "id": "error-generation",
+  "description": "claudeStream result.subtype=error_during_generation when session resume fails",
+  "source": "real",
+  "captured_at": "2026-03-03T14:14:25.711Z",
+  "trigger": "claudeStream(\"Hello\")",
+  "boundary": "claude-cli-stdout",
+  "mode": "stream-json",
+  "payload": {
+    "lines": [
+      {
+        "type": "result",
+        "subtype": "error_during_execution",
+        "duration_ms": 0,
+        "duration_api_ms": 0,
+        "is_error": true,
+        "num_turns": 0,
+        "stop_reason": null,
+        "session_id": "f39edc82-81ea-4315-8cab-a1cd9c8eccde",
+        "total_cost_usd": 0,
+        "usage": {
+          "input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 0,
+          "output_tokens": 0,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 0,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "",
+          "iterations": [],
+          "speed": "standard"
+        },
+        "modelUsage": {},
+        "permission_denials": [],
+        "uuid": "34c00a80-c1d8-44af-8fee-37244fffb6a8",
+        "errors": [
+          "No conversation found with session ID: 00000000-0000-0000-0000-000000000000"
+        ]
+      }
+    ],
+    "stderr": "",
+    "exitCode": 1
+  }
+}

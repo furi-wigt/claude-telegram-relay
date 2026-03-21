@@ -1,0 +1,13 @@
+{
+  "id": "answer-callback-query-success",
+  "description": "ctx.answerCallbackQuery() success response — Grammy returns boolean true, not an object",
+  "source": "real",
+  "captured_at": "2026-03-03T21:40:13+08:00",
+  "trigger": "Tap 'Regular text response' option button in /plan form (iq:a:0:0)",
+  "boundary": "bot-api-response",
+  "handler": "ctx.answerCallbackQuery",
+  "notes": "Grammy returns raw boolean true for answerCallbackQuery, unlike sendMessage/editMessageText which return Message objects. Wrapped in result key for schema consistency.",
+  "payload": {
+    "result": true
+  }
+}

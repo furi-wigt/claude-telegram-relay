@@ -10,7 +10,9 @@ bun.lockb
 
 # Personal config (keep examples, ignore actual)
 config/profile.md
+config/agents.json
 config/schedule.json
+ecosystem.config.js
 
 # Runtime files
 *.lock
@@ -20,6 +22,12 @@ temp/
 uploads/
 session.json
 
+# Local storage (SQLite lives in ~/.claude-relay/data/, Qdrant in ~/.qdrant/)
+/db/local.sqlite*
+data/local.db
+storage/
+.qdrant-initialized
+
 # OS
 .DS_Store
 Thumbs.db
@@ -28,3 +36,7 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+worktrees/
+!.claude/setings.json
+.claude/

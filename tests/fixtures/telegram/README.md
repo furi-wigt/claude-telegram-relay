@@ -1,0 +1,49 @@
+# Telegram Fixture Catalogue
+
+Grammy SDK boundary fixtures — `ctx` shapes delivered to bot handlers.
+
+**Fixture rules:**
+- `source: "real"` → captured from an actual Telegram interaction (required: `captured_at`)
+- `source: "derived"` → extrapolated from a real fixture (required: `derived_from` + `rationale`)
+- No fixture exists without one of the above
+- Boundary is always `grammy-ctx` (incoming) or `bot-api-response` (outgoing)
+
+---
+
+## Incoming fixtures (`incoming/`)
+
+| File | Trigger | Source | Captured |
+|------|---------|--------|----------|
+| `plain-text-message.json` | Send "hello" in private chat | real | 2026-03-03 |
+| `command-help.json` | Send /help in private chat | real | 2026-03-03 |
+| `group-forum-text.json` | Text in supergroup forum topic (Code Quality & TDD / Claude-relay) | real | 2026-03-03 |
+| `button-tap-cancel.json` | Tap ✖ Cancel button on /plan inline keyboard (private chat) | real | 2026-03-03 |
+| `command-new.json` | Send /new in private chat | real | 2026-03-03 |
+| `command-memory.json` | Send /memory in private chat | real | 2026-03-03 |
+| `command-history.json` | Send /history in private chat | real | 2026-03-03 |
+
+## Outgoing fixtures (`outgoing/`)
+
+| File | API method | Return shape | Source | Captured |
+|------|-----------|--------------|--------|----------|
+| `send-message-success.json` | `bot.api.sendMessage` | `Message` object | real | 2026-03-03 |
+| `edit-message-text-success.json` | `bot.api.editMessageText` | `Message` object (with `edit_date`) | real | 2026-03-03 |
+| `answer-callback-query-success.json` | `ctx.answerCallbackQuery` | `true` (boolean, not object) | real | 2026-03-03 |
+
+---
+
+## Capture protocol
+
+1. I identify the behavior and name it.
+2. I give exact trigger instructions.
+3. Run: `npx pm2 logs telegram-relay --nocolor --lines 100`
+4. Trigger the action on Telegram.
+5. Paste the log output here.
+6. I extract Grammy-level fields and write the fixture JSON.
+7. I update this catalogue.
+
+---
+
+## Sibling directories
+
+- `../claude-cli/` — Claude subprocess stdio boundary fixtures (Phase 1+ — capture pending)

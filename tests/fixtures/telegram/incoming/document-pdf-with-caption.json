@@ -1,0 +1,26 @@
+{
+  "id": "document-pdf-with-caption",
+  "description": "User sends a PDF file with a question caption (bare file + caption → Claude path, Task 5)",
+  "source": "derived",
+  "derived_from": "document-pdf-upload",
+  "rationale": "Caption field is additive on top of the bare PDF shape. Tests that caption text is forwarded as the prompt to Claude.",
+  "trigger": "Send a PDF file in private chat with a question as caption",
+  "boundary": "grammy-ctx",
+  "handler": "bot.on('message:document')",
+  "payload": {
+    "message": {
+      "message_id": 1101,
+      "from": { "id": 1078052084, "is_bot": false, "first_name": "Furi", "username": "f412i", "language_code": "en" },
+      "chat": { "id": 1078052084, "first_name": "Furi", "username": "f412i", "type": "private" },
+      "date": 1772542610,
+      "caption": "What is the data retention policy in this document?",
+      "document": {
+        "file_id": "BQACAgIAAxkBAAIER2fakefileid",
+        "file_unique_id": "AgADfakeuniqueid",
+        "file_name": "policy.pdf",
+        "mime_type": "application/pdf",
+        "file_size": 204800
+      }
+    }
+  }
+}

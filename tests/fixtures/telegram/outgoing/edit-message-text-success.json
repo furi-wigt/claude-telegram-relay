@@ -1,0 +1,43 @@
+{
+  "id": "edit-message-text-success",
+  "description": "bot.api.editMessageText() success response — /plan card edited in-place after user selects an option",
+  "source": "real",
+  "captured_at": "2026-03-03T21:40:14+08:00",
+  "trigger": "Tap 'Regular text response' option button in /plan form (iq:a:0:0) — card advances to Q2",
+  "boundary": "bot-api-response",
+  "handler": "bot.api.editMessageText",
+  "payload": {
+    "message_id": 1029,
+    "from": {
+      "id": 8599605373,
+      "is_bot": true,
+      "first_name": "ccbot",
+      "username": "f4121_bot"
+    },
+    "chat": {
+      "id": 1078052084,
+      "first_name": "Furi",
+      "last_name": "Karnapi",
+      "username": "f412i",
+      "type": "private"
+    },
+    "date": 1772545193,
+    "edit_date": 1772545214,
+    "text": "📋 plan: outgoing capture test\n━━━━━━━━━━━━━━━━━━━━\n\n⚙️ Q2 of 3   ▓▓▓░░░░░░░  33%\n\nAre we creating or validating a fixture?\n\n✅ Q1: What type of outgoing message… → text-message",
+    "entities": [
+      { "offset": 3, "length": 27, "type": "bold" },
+      { "offset": 83, "length": 40, "type": "bold" }
+    ],
+    "reply_markup": {
+      "inline_keyboard": [
+        [{ "text": "Create new fixture", "callback_data": "iq:a:1:0" }],
+        [{ "text": "Validate existing fixture", "callback_data": "iq:a:1:1" }],
+        [{ "text": "Update existing fixture", "callback_data": "iq:a:1:2" }],
+        [
+          { "text": "← Back", "callback_data": "iq:back" },
+          { "text": "✖ Cancel", "callback_data": "iq:cancel" }
+        ]
+      ]
+    }
+  }
+}

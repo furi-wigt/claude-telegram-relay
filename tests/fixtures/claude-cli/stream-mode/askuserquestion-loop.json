@@ -1,0 +1,172 @@
+{
+  "id": "askuserquestion-loop",
+  "description": "Claude CLI stream showing the question-loop bug: AskUserQuestion is emitted, tool_result is sent with is_error:true (bare format, no user envelope), Claude re-asks the same questions. Captures the repeating pattern to enable regression detection.",
+  "source": "derived",
+  "derived_from": "with-ask-user-question (global ~/.claude/e2e-fixtures/claude-cli/stream-mode/)",
+  "derived_rationale": "The existing real fixture captures exactly this failure mode: tool_result sent as bare type:tool_result (not wrapped in user envelope) → Claude echoes it back with is_error:true → re-asks questions. This fixture isolates the minimal loop pattern for unit test use.",
+  "captured_at": "2026-03-04T10:00:00+08:00",
+  "trigger": "claudeStream in interactive mode; onQuestion answer written to stdin as bare tool_result (pre-6ce2d73 format, not in user envelope)",
+  "boundary": "claude-cli-stdout",
+  "mode": "stream-json-interactive",
+  "notes": [
+    "The bug (pre-62fd530): tool_result.content sent as JSON string \"{\\\"answers\\\":{\\\"Environment\\\":\\\"Staging\\\"}}\"",
+    "Claude CLI parses the string, can't extract answers, echoes is_error:true with content='Answer questions?'",
+    "Then Claude re-asks the same question (question loop) AND triggers API 400 -> exit 1 -> Ollama fires",
+    "After 62fd530 fix: content sent as object {answers:{\"0\":\"Staging\"}} keyed by string index",
+    "Claude CLI parses correctly, no is_error, no re-ask, Claude resumes normally",
+    "Confirmed from 11:41:53 log: [stream:DEBUG] echoed user event — tool_result is_error=true content-type=string content=\"Answer questions?\""
+  ],
+  "payload": {
+    "lines": [
+      {
+        "type": "system",
+        "subtype": "init",
+        "session_id": "loop-test-session-001",
+        "cwd": "/tmp",
+        "tools": [
+          "AskUserQuestion"
+        ],
+        "model": "claude-sonnet-4-6"
+      },
+      {
+        "type": "assistant",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "tool_use",
+              "id": "toolu_looptest_001",
+              "name": "AskUserQuestion",
+              "input": {
+                "questions": [
+                  {
+                    "question": "Which environment are you targeting?",
+                    "header": "Environment",
+                    "options": [
+                      {
+                        "label": "Development",
+                        "description": "Local dev environment"
+                      },
+                      {
+                        "label": "Staging",
+                        "description": "Pre-production"
+                      },
+                      {
+                        "label": "Production",
+                        "description": "Live environment"
+                      }
+                    ],
+                    "multiSelect": false
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "session_id": "loop-test-session-001"
+      },
+      {
+        "type": "user",
+        "message": {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "content": "Answer questions?",
+              "is_error": true,
+              "tool_use_id": "toolu_looptest_001"
+            }
+          ]
+        },
+        "session_id": "loop-test-session-001",
+        "tool_use_result": "Error: Answer questions?"
+      },
+      {
+        "type": "assistant",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "tool_use",
+              "id": "toolu_looptest_002",
+              "name": "AskUserQuestion",
+              "input": {
+                "questions": [
+                  {
+                    "question": "Which environment are you targeting?",
+                    "header": "Environment",
+                    "options": [
+                      {
+                        "label": "Development",
+                        "description": "Local dev environment"
+                      },
+                      {
+                        "label": "Staging",
+                        "description": "Pre-production"
+                      },
+                      {
+                        "label": "Production",
+                        "description": "Live environment"
+                      }
+                    ],
+                    "multiSelect": false
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "session_id": "loop-test-session-001"
+      },
+      {
+        "type": "user",
+        "message": {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "content": "Answer questions?",
+              "is_error": true,
+              "tool_use_id": "toolu_looptest_002"
+            }
+          ]
+        },
+        "session_id": "loop-test-session-001",
+        "tool_use_result": "Error: Answer questions?"
+      },
+      {
+        "type": "result",
+        "subtype": "success",
+        "is_error": false,
+        "result": "I wasn't able to get an answer to my question. Please try again.",
+        "session_id": "loop-test-session-001",
+        "duration_ms": 5000,
+        "num_turns": 3
+      }
+    ],
+    "stdin_messages_correct": [
+      {
+        "description": "CORRECT FORMAT — user envelope, content as object {answers:{\"0\":\"...\"}} (post-62fd530 fix)",
+        "sent": {
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": [
+              {
+                "type": "tool_result",
+                "tool_use_id": "toolu_looptest_001",
+                "content": {
+                  "answers": {
+                    "0": "Staging"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    ],
+    "stderr": "",
+    "exitCode": 0
+  }
+}

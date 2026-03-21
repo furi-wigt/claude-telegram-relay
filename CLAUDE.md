@@ -2,16 +2,83 @@
 
 > Claude Code reads this file automatically. Walk the user through setup one phase at a time.
 > Ask for what you need, configure everything yourself, and confirm each step works before moving on.
+>
+> **When a user opens this project for the first time, greet them warmly and begin Phase 1 immediately. Do not wait for them to ask.**
+>
+> **For LLM agents working on routines:** Read `routines/CLAUDE.md` before creating, modifying, or debugging any file in `routines/`.
+>
+> **For LLM agents writing or reviewing E2E/integration tests:** Read `CLAUDE.e2e.md` before writing any test that touches Telegram bot behavior.
+>
+> **Service restart confirmation (MANDATORY):** Before executing any command that restarts or reloads the `telegram-relay` service (e.g. `npx pm2 restart telegram-relay`, `npx pm2 reload telegram-relay`), you MUST ask the user for explicit confirmation via Telegram inline keyboard — two buttons: Confirm restart and Cancel. Do NOT restart without a confirmed Yes. This applies to Claude Code agents operating in this project.
+>
+> **Temporary and session files:** Do NOT create temporary scripts, one-off tools, or session-scoped working files in the project root or `src/`. Save all temporary/session files to `.claude/workspace/` (e.g. `.claude/workspace/my-script.ts`). This directory is gitignored and meant for transient work. Delete temp files when the session task is complete.
 
-## How This Works
+## What This Is
 
-This project turns Telegram into a personal AI assistant powered by Claude.
+This project turns Telegram into a personal AI assistant powered by Claude Code — with multi-agent group chats, persistent memory, scheduled routines, and agentic coding sessions you can start directly from Telegram.
 
-The user cloned this repo (or gave you the link). Your job: guide them through setup conversationally. Ask questions, save their answers to `.env`, test each step, move on.
+**What you get:**
+- 5 specialised AI agents, each in their own Telegram supergroup (AWS Architect, Security, Documentation, Code Quality, General)
+- Long-term memory: facts, goals, preferences stored locally with semantic search (SQLite + Qdrant + Ollama)
+- Scheduled routines: morning briefing, evening summary, proactive check-ins, health watchdog
+- Document RAG: upload PDFs, ask questions, get answers grounded in your documents
+- Voice transcription: send voice messages, bot transcribes and responds
 
-Do not dump all phases at once. Start with Phase 1. When it works, move to Phase 2. Let the user control the pace.
+**Everything runs locally.** No cloud database required. Once deployed, you talk to Claude through your phone.
 
-If this is a fresh clone, run `bun run setup` first to install dependencies and create `.env`.
+## Architecture
+
+All user data lives outside the project directory in `~/.claude-relay/`:
+
+```
+~/.claude-relay/
+  .env              # User-level environment overrides
+  data/
+    local.sqlite    # Messages, memory, goals, logs (SQLite via Drizzle)
+  logs/             # PM2 service logs
+  prompts/          # Customizable agent prompts (copied from repo defaults)
+    diagnostics/    # Diagnostic prompt templates
+  research/         # Artifact outputs (reports, docs, security audits)
+```
+
+**Environment layering:** The bot loads `.env` from three sources in order (later values win):
+1. Project `.env` (committed defaults / local dev overrides)
+2. `~/.claude-relay/.env` (user-specific secrets and preferences)
+3. `process.env` (runtime overrides)
+
+**Prompt customization:** Agent prompts are loaded from `~/.claude-relay/prompts/` first, falling back to `config/prompts/` in the repo. Edit your user copy to personalize any agent without touching the repo.
+
+**Storage stack:**
+- **SQLite** (`~/.claude-relay/data/local.sqlite`) — messages, memory entries, goals, conversation summaries, logs
+- **Qdrant** (local vector DB) — semantic search over messages and memory
+- **Ollama** (local LLM) — generates embeddings and handles fallback AI tasks
+
+## Prerequisites
+
+Before starting, verify you have:
+
+- **Bun** `>= 1.0` — install from [bun.sh](https://bun.sh): `curl -fsSL https://bun.sh/install | bash`
+- **Claude Code CLI** — `npm install -g @anthropic-ai/claude-code` then `claude login`
+- **Git** and a terminal (macOS or Linux)
+- A **Telegram account**
+
+## Quick Start
+
+If this is a fresh clone, run setup first:
+
+```bash
+bun run setup
+```
+
+This installs dependencies, creates `~/.claude-relay/` directories, copies default prompts, and prepares `.env` from the template. Then come back here.
+
+---
+
+## How This Guide Works
+
+Claude Code reads this file and guides you through setup conversationally. Ask for what you need, and Claude configures everything for you — saving values to `.env`, running tests, and confirming each step before moving on.
+
+Do not rush all phases at once. Start with Phase 1. When it works, move to Phase 2. You control the pace.
 
 ---
 
@@ -36,87 +103,63 @@ If this is a fresh clone, run `bun run setup` first to install dependencies and 
 
 ---
 
-## Phase 2: Database & Memory — Supabase (~12 min)
+## Phase 2: Local Memory & Search (~10 min)
 
-Your bot's memory lives in Supabase: conversation history, facts, goals, and semantic search.
+Your bot's memory runs entirely locally — no cloud APIs needed. It uses SQLite for structured data, Qdrant for vector search, and Ollama for generating embeddings.
 
-### Step 1: Create Supabase Project
+### Step 1: Install Ollama
 
-**You need from the user:**
-- Supabase Project URL
-- Supabase anon public key
+Ollama provides local LLM inference for embeddings and fallback AI.
 
 **What to tell them:**
-1. Go to supabase.com, create a free account
-2. Create a new project (any name, any region close to them)
-3. Wait ~2 minutes for it to provision
-4. Go to Project Settings > API
-5. Copy: Project URL and anon public key
+1. Go to [ollama.com](https://ollama.com) and install Ollama
+2. Pull the embedding model and a general-purpose model:
+   ```bash
+   ollama pull nomic-embed-text
+   ollama pull gemma3:4b
+   ```
 
 **What you do:**
-1. Save `SUPABASE_URL` and `SUPABASE_ANON_KEY` to `.env`
+1. Save in `.env`:
+   - `OLLAMA_URL=http://localhost:11434`
+   - `OLLAMA_MODEL=gemma3:4b`
+   - `OLLAMA_EMBED_MODEL=nomic-embed-text`
 
-### Step 2: Connect Supabase MCP
+### Step 2: Install Qdrant
 
-This lets Claude Code manage the database directly — run queries, deploy functions, apply migrations.
+Qdrant is a local vector database for semantic search over messages and memory.
 
 **What to tell them:**
-1. Go to supabase.com/dashboard/account/tokens
-2. Create an access token, copy it
 
-**What you do:**
+**Option A — Binary (recommended):**
+```bash
+curl -L https://github.com/qdrant/qdrant/releases/latest/download/qdrant-$(uname -m)-apple-darwin.tar.gz | tar xz -C ~/.qdrant/bin/
 ```
-claude mcp add supabase -- npx -y @supabase/mcp-server-supabase@latest --access-token ACCESS_TOKEN
+
+**Option B — Docker:**
+```bash
+docker run -d --name qdrant -p 6333:6333 -v ~/.qdrant/storage:/qdrant/storage qdrant/qdrant
 ```
 
-### Step 3: Create Tables
-
-Use the Supabase MCP to run the schema:
-1. Read `db/schema.sql`
-2. Execute it via `execute_sql` (or tell the user to paste it in the SQL Editor)
-3. Run `bun run test:supabase` to verify tables exist
-
-### Step 4: Set Up Semantic Search
-
-This gives your bot real memory — it finds relevant past conversations automatically.
-
-**You need from the user:**
-- An OpenAI API key (for generating text embeddings)
-
-**What to tell them:**
-1. Go to platform.openai.com, create an account
-2. Go to API keys, create a new key, copy it
-3. The key will be stored in Supabase, not on your computer. It stays with your database.
-
 **What you do:**
-1. Deploy the embed Edge Function via Supabase MCP (`deploy_edge_function` with `supabase/functions/embed/index.ts`)
-2. Deploy the search Edge Function (`supabase/functions/search/index.ts`)
-3. Tell the user to store their OpenAI key in Supabase:
-   - Go to Supabase dashboard > Project Settings > Edge Functions
-   - Under Secrets, add: `OPENAI_API_KEY` = their key
-4. Set up database webhooks so embeddings are generated automatically:
-   - Go to Supabase dashboard > Database > Webhooks > Create webhook
-   - Name: `embed_messages`, Table: `messages`, Events: INSERT
-   - Type: Supabase Edge Function, Function: `embed`
-   - Create a second webhook: `embed_memory`, Table: `memory`, Events: INSERT
-   - Same Edge Function: `embed`
+1. Verify Qdrant is reachable: `curl http://localhost:6333/healthz`
+2. The bot auto-creates its collections on first run — no manual schema setup needed
 
-### Step 5: Verify
+### Step 3: Verify
 
-Run `bun run test:supabase` to confirm:
-- Tables exist (messages, memory, logs)
-- Edge Functions respond
-- Embedding generation works
+1. Confirm Ollama is running: `ollama list` should show the pulled models
+2. Confirm Qdrant is reachable: `curl http://localhost:6333/healthz`
+3. Confirm SQLite database path exists: `ls ~/.claude-relay/data/`
 
-**Done when:** `bun run test:supabase` passes and a test insert into `messages` gets an embedding.
+**Done when:** Ollama models are pulled, Qdrant responds on port 6333, and `~/.claude-relay/data/` exists.
 
 ---
 
-## Phase 3: Personalize (~3 min)
+## Phase 3: Personalise (~5 min)
 
 **Ask the user:**
 - Their first name
-- Their timezone (e.g., America/New_York, Europe/Berlin)
+- Their timezone (e.g., America/New_York, Europe/Berlin, Asia/Singapore)
 - What they do for work (one sentence)
 - Any time constraints (e.g., "I pick up my kid at 3pm on weekdays")
 - How they like to be communicated with (brief/detailed, casual/formal)
@@ -126,11 +169,25 @@ Run `bun run test:supabase` to confirm:
 2. Copy `config/profile.example.md` to `config/profile.md`
 3. Fill in `config/profile.md` with their answers — the bot loads this on every message
 
-**Done when:** `config/profile.md` exists with their details.
+> **Note:** `config/profile.md` is gitignored — it stays on this machine and is never committed.
+> If the file already exists, overwrite it with the new user's details.
+
+### Step 3b: Artifact Output
+
+Agents save research, documentation, and security reports to `~/.claude-relay/research/`:
+- `~/.claude-relay/research/ai-research/` — research reports (Research Analyst)
+- `~/.claude-relay/research/ai-docs/` — documentation and write-ups (Docs Specialist, General Assistant, AWS Architect)
+- `~/.claude-relay/research/ai-security/` — security reports (Security Analyst)
+
+This directory is created automatically. No `.env` configuration needed.
+
+> Code plans and implementation todos stay in `.claude/todos/` (project-local, not affected by this setting).
+
+**Done when:** `config/profile.md` exists with the user's details.
 
 ---
 
-## Phase 4: Test (~2 min)
+## Phase 4: Test — Single Chat (~2 min)
 
 **What you do:**
 1. Run `bun run start`
@@ -148,49 +205,111 @@ Run `bun run test:supabase` to confirm:
 
 ---
 
-## Phase 5: Always On (~5 min)
+## Phase 5: Multi-Agent Groups (Optional, ~15 min)
 
-Make the bot run in the background, start on boot, restart on crash.
+This enables 5 specialised AI agents, each living in their own Telegram supergroup with a tailored persona.
 
-**macOS:**
+**The 5 agents:**
+
+| Group Name | Agent ID | Specialty |
+|---|---|---|
+| AWS Cloud Architect | `aws-architect` | AWS infrastructure, cost optimisation, Well-Architected |
+| Security & Compliance | `security-analyst` | Security audits, threat modelling, compliance |
+| Technical Documentation | `documentation-specialist` | ADRs, system design docs, runbooks |
+| Code Quality & TDD | `code-quality-coach` | Code review, test generation, refactoring |
+| General AI Assistant | `general-assistant` | General Q&A, meeting summaries, task breakdown |
+
+**Steps:**
+
+1. For each agent, create a Telegram supergroup with the **exact group name** from the table above
+2. In each group: go to Settings → Make it a Supergroup (required for forum topic routing)
+3. Add the bot to each group as an admin
+4. Run `bun run test:groups` — the bot auto-discovers groups by matching their exact title
+
+### Setting Chat IDs
+
+If auto-discovery works, the bot resolves groups at runtime. If it fails, set them manually:
+
+**Option A — Environment variables (simpler):**
 ```
-bun run setup:launchd -- --service relay
+GROUP_AWS_CHAT_ID=-100xxxxxxxxxx
+GROUP_SECURITY_CHAT_ID=-100xxxxxxxxxx
+GROUP_DOCS_CHAT_ID=-100xxxxxxxxxx
+GROUP_CODE_CHAT_ID=-100xxxxxxxxxx
+GROUP_GENERAL_CHAT_ID=-100xxxxxxxxxx
 ```
-This auto-generates a plist with correct paths and loads it into launchd.
 
-**Linux/Windows:**
+**Option B — agents.json (persistent, recommended for long-term use):**
+1. `config/agents.json` already exists with all `chatId` values set to `null`
+2. Fill in the `chatId` field for each agent with the real group chat ID
+3. Restart the bot
+
+> **Note:** `config/agents.json` is gitignored — your real chat IDs stay local.
+> `config/agents.example.json` is the committed clean template — never modify it directly.
+
+### Forum Topic Setup (Optional)
+
+If you enable Forum Topics in your supergroups, the bot can route messages to specific topics.
+
+To get a topic ID: right-click any topic in Telegram desktop → Copy Link → extract the trailing number from the URL.
+
+**In agents.json:**
+- `topicId` — topic where regular messages from this agent appear
+
+**In .env (alternative):**
 ```
-bun run setup:services -- --service relay
+GROUP_AWS_TOPIC_ID=123
+GROUP_GENERAL_TOPIC_ID=789
 ```
-Uses PM2 for process management.
 
-**Verify:** `launchctl list | grep com.claude` (macOS) or `npx pm2 status` (Linux/Windows)
-
-**Done when:** Bot runs in the background and survives a terminal close.
+**Done when:** `bun run test:groups` shows all groups discovered, or `chatId` values are set and the bot responds in each group.
 
 ---
 
-## Phase 6: Proactive AI (Optional, ~5 min)
+## Phase 6: Always On with PM2 (~5 min)
 
-Two features that turn a chatbot into an assistant.
+Make the bot and all services run in the background, start on boot, restart on crash.
 
-### Smart Check-ins
-`examples/smart-checkin.ts` — runs on a schedule, gathers context, asks Claude if it should reach out. If yes, sends a brief message. If no, stays silent.
+**What you do:**
+```
+bun run setup:pm2 -- --service all
+```
 
-### Morning Briefing
-`examples/morning-briefing.ts` — sends a daily summary. Pattern file with placeholder data fetchers.
+This starts several services:
 
-**macOS — schedule both:**
+| Service | What it does | Type |
+|---|---|---|
+| `qdrant` | Local vector database — always running | Infrastructure |
+| `telegram-relay` | The main bot — always running | Core |
+| `morning-summary` | Daily morning briefing (7am) | Core |
+| `smart-checkin` | Periodic context-aware check-ins (every 30 min, waking hours) | Core |
+| `night-summary` | Daily night summary (11pm) | Core |
+| `watchdog` | Health monitor (every 2 hours) | Core |
+
+> To start only core services: `bun run setup:pm2 -- --service core`
+
+**macOS alternative — launchd:**
 ```
 bun run setup:launchd -- --service all
 ```
 
-**Linux/Windows — schedule both:**
+**Configure additional scheduled routines interactively:**
 ```
-bun run setup:services -- --service all
+bun run setup:routines
 ```
 
-**Done when:** User has scheduled services running, or explicitly skips this phase.
+This lets you create natural-language routines or enable/disable individual services.
+
+**Verify:** `npx pm2 status`
+
+> **Morning weather areas:** To show weather for specific areas in the morning summary, set:
+> `WEATHER_AREAS=Your City,Another Area` in `.env` (comma-separated).
+
+> **Log location:** All PM2 service logs are written to `~/.claude-relay/logs/`.
+
+> **Routine guides:** `routines/CLAUDE.md` — developer code patterns and PM2 safety rules (read this before writing any routine). `routines/user_journey.md` — complete lifecycle guide for creating, scheduling, and managing routines via Telegram.
+
+**Done when:** `npx pm2 status` shows the relay as "online" and survives a terminal close.
 
 ---
 
@@ -220,12 +339,35 @@ Lets the bot understand voice messages sent on Telegram.
 
 **What you do:**
 1. Check ffmpeg: `ffmpeg -version` (install: `brew install ffmpeg` or `apt install ffmpeg`)
-2. Check whisper-cpp: `whisper-cpp --help` (install: `brew install whisper-cpp` or build from source)
+2. Check whisper-cpp: `whisper-cpp --help` (install: `brew install whisper-cpp`)
 3. Download model: `curl -L -o ~/whisper-models/ggml-base.en.bin https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin`
 4. Save `VOICE_PROVIDER=local`, `WHISPER_BINARY`, `WHISPER_MODEL_PATH` to `.env`
 5. Run `bun run test:voice` to verify
 
 **Done when:** `bun run test:voice` passes.
+
+---
+
+## Phase 8: Fallback AI — Ollama (Optional, ~5 min)
+
+When Claude is unavailable, the bot auto-switches to a local Ollama model. Ollama is also used for memory extraction and embeddings.
+
+> If you already set up Ollama in Phase 2, this phase just verifies the fallback works.
+
+**Steps:**
+
+1. Install Ollama from ollama.com (if not done in Phase 2)
+2. Pull the default model:
+   ```
+   ollama pull gemma3:4b
+   ```
+3. Save in `.env`:
+   - `FALLBACK_MODEL=gemma3:4b`
+   - `OLLAMA_URL=http://localhost:11434`
+   - `OLLAMA_MODEL=gemma3:4b`
+4. Run `bun run test:fallback` to verify
+
+**Done when:** `bun run test:fallback` passes.
 
 ---
 
@@ -236,32 +378,50 @@ Run the full health check:
 bun run setup:verify
 ```
 
-Summarize what was set up and what is running. Remind the user:
+Summarise what was set up and what is running. Remind the user:
 - Test by sending a message on Telegram
-- Their bot runs in the background (if Phase 5 was done)
+- Their bot runs in the background (if Phase 6 was done)
 - Come back to this project folder and type `claude` anytime to make changes
+- `config/profile.md` and `config/agents.json` are gitignored — safe to customise freely
+- Agent prompts can be customized at `~/.claude-relay/prompts/`
 
 ---
 
-## What Comes Next — The Full Version
+## Bot Commands Reference
 
-This free relay covers the essentials. The full version unlocks:
+| Command | What it does |
+|---------|-------------|
+| `/help` | All available commands |
+| `/new` | Start a fresh conversation |
+| `/status` | Session status |
+| `/memory` | Browse your memory (goals, facts, prefs, dates) |
+| `/remember [text]` | Save something to memory |
+| `/forget [text]` | Remove something from memory |
+| `/goals` | View and manage goals |
+| `/goals +goal text` | Add a new goal |
+| `/goals -old goal` | Remove a goal |
+| `/goals *N or *text` | Mark goal as done (toggle active / done) |
+| `/goals *` | View completed/archived goals |
+| `/history` | Recent messages |
+| `/routines` | Manage scheduled routines |
+| `/doc list` | List uploaded documents |
+| `/doc forget [name]` | Remove a document from memory |
+| `/doc query [question]` | Search across all uploaded documents |
 
-- **6 Specialized AI Agents** — Research, Content, Finance, Strategy, Critic + General orchestrator. Route messages through Telegram forum topics. Run board meetings where all six weigh in.
-- **VPS Deployment** — Your bot on a cloud server that never sleeps. Hybrid mode: free local processing when awake, paid API only when sleeping. $2-5/month.
-- **Real Integrations** — Gmail, Google Calendar, Notion tasks connected via MCP. Smart check-ins pull real data, not patterns.
-- **Human-in-the-Loop** — Claude takes actions (send email, update calendar) but asks first via inline Telegram buttons.
-- **Voice & Phone Calls** — Bot speaks back via ElevenLabs. Calls you when something is urgent.
-- **Fallback AI Models** — Auto-switch to OpenRouter or Ollama when Claude is down. Three layers of intelligence.
-- **Production Infrastructure** — Auto-deploy from GitHub, watchdog monitoring, uninstall scripts, full health checks.
+---
 
-**Get the full course with video walkthroughs:**
-- YouTube: youtube.com/@GodaGo (subscribe for tutorials)
-- Community: skool.com/autonomee (full course, direct support, help personalizing for your business)
+## What Comes Next
 
-We also help you personalize the full version for your specific business and workflow. Or package it as a product you sell to your own clients.
+This relay already includes significant capabilities beyond basic chat:
 
-The free version gives you a real, working AI assistant.
-The full version gives you a personal AI infrastructure.
+- **5 Specialised AI Agents** — each with a tailored persona in its own Telegram supergroup. Edit prompts at `~/.claude-relay/prompts/` to change any agent's focus, tone, or save paths.
+- **Production Routines** — the `routines/` directory has ready-to-use scheduled tasks. Read `routines/CLAUDE.md` (code patterns and PM2 safety rules) then `routines/user_journey.md` (full lifecycle guide) before creating your own.
+- **Document RAG** — upload PDFs to Telegram, query them with natural language via `/doc query`
+- **Forum Topic Support** — route messages to specific topics within supergroups for clean separation
+- **Fallback AI** — auto-switch to Ollama when Claude is unavailable
+- **Fully Local** — all data stays on your machine (SQLite + Qdrant + Ollama)
 
-Build yours at the AI Productivity Hub.
+**Want to personalise further?**
+- Edit `~/.claude-relay/prompts/*.md` to change each agent's persona, domain focus, or save paths
+- Edit `config/profile.md` to update your profile (the bot reads this on every message)
+- Add new agents by creating entries in `config/agents.json` and prompts in `~/.claude-relay/prompts/`
