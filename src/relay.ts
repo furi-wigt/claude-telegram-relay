@@ -67,6 +67,7 @@ import { analyzeImages, combineImageContexts } from "./vision/visionClient.ts";
 import { analyzeDiagnosticImages } from "./documents/diagnosticAnalyzer.ts";
 import { USER_NAME, USER_TIMEZONE } from "./config/userConfig.ts";
 import { buildFooter, extractNextStep, type FooterData } from "./utils/footer.ts";
+import { getPm2LogsDir } from "../config/observability.ts";
 
 /**
  * Build an enriched search query by prepending recent user messages for domain context.
@@ -1776,8 +1777,8 @@ async function processTextMessage(
         ``,
       ];
       const debugContent = debugLines.join("\n");
-      console.log(`[context-debug] Written to logs/context-debug.log (${debugContent.length} chars)`);
-      const logDir = join(PROJECT_ROOT, "logs");
+      const logDir = getPm2LogsDir();
+      console.log(`[context-debug] Written to ${logDir}/context-debug.log (${debugContent.length} chars)`);
       await mkdir(logDir, { recursive: true }).catch(() => {});
       appendFile(join(logDir, "context-debug.log"), debugContent + "\n").catch((e) =>
         console.error("[context-debug] Failed to write:", e.message)

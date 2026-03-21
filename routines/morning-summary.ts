@@ -37,8 +37,9 @@ import {
 import { USER_NAME, USER_TIMEZONE } from "../src/config/userConfig.ts";
 import { scanPendingE2ETests, formatPendingE2ESection } from "../src/routines/pendingE2EScanner.ts";
 import { shouldSkipToday, markRanToday } from "../src/routines/runOnceGuard.ts";
+import { getPm2LogsDir } from "../config/observability.ts";
 
-const LAST_RUN_FILE = join(import.meta.dir, "../logs/morning-summary.lastrun");
+const LAST_RUN_FILE = join(getPm2LogsDir(), "morning-summary.lastrun");
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
 
