@@ -17,10 +17,10 @@ flowchart TD
     AUTH --> QUEUE[Per-chat message queue]
     QUEUE --> PMT[processTextMessage]
 
-    PMT --> P1[getShortTermContext\nsupabase messages table]
-    PMT --> P2[getUserProfile\nsupabase user_profile table]
-    PMT --> P3[getRelevantContext\nSupabase semantic search]
-    PMT --> P4[getMemoryContext\nsupabase memory table]
+    PMT --> P1[getShortTermContext\nSQLite messages table]
+    PMT --> P2[getUserProfile\nSQLite user_profile table]
+    PMT --> P3[getRelevantContext\nQdrant semantic search]
+    PMT --> P4[getMemoryContext\nSQLite memory table]
 
     P1 & P2 & P3 & P4 --> BUILD[buildAgentPrompt\nsrc/agents/promptBuilder.ts]
     BUILD --> PROMPT[enrichedPrompt string]
@@ -67,7 +67,7 @@ block-beta
 ## Short-Term Memory (STM)
 
 **Source:** `src/memory/shortTermMemory.ts`
-**Supabase tables:** `messages`, `conversation_summaries`
+**SQLite tables:** `messages`, `conversation_summaries`
 
 STM is a two-tier rolling window per `(chat_id, thread_id)`:
 
@@ -89,10 +89,10 @@ sequenceDiagram
     participant R as relay.ts
     participant STM as shortTermMemory.ts
     participant Ollama
-    participant DB as Supabase
+    participant DB as SQLite
 
     R->>STM: shouldSummarize(chatId, threadId)
-    Note over STM: SQL RPC: get_unsummarized_message_count
+    Note over STM: SQL query: get unsummarized message count
     STM-->>R: true (>20 unsummarized msgs)
     R->>STM: summarizeOldMessages(chatId, threadId)
     STM->>DB: fetch oldest 20 messages after last summary
@@ -142,22 +142,22 @@ Scope rule: `WHERE chat_id = {chatId} OR chat_id IS NULL`
 ### Source 3 — Semantic Search (`getRelevantContext`)
 
 **File:** `src/memory.ts:400`
-**Supabase Edge Functions:** `search` (invoked twice in parallel)
+**Backend:** Qdrant vector search (invoked twice in parallel)
 
-Embeds the current user message via OpenAI, then cosine-matches against stored embeddings:
+Embeds the current user message via Ollama (`nomic-embed-text`), then cosine-matches against stored embeddings in Qdrant:
 
 ```mermaid
 flowchart TD
-    MSG[user message text] --> EMB["search Edge Function\n embed via OpenAI text-embedding-3-small"]
-    EMB --> S1["messages table\nmatch_count=5, chat_id scoped"]
-    EMB --> S2["memory table\nmatch_count=3, threshold=0.7"]
+    MSG[user message text] --> EMB["embed via Ollama\nnomic-embed-text"]
+    EMB --> S1["Qdrant messages collection\nmatch_count=5, chat_id scoped"]
+    EMB --> S2["Qdrant memory collection\nmatch_count=3, threshold=0.7"]
     S1 --> MERGE["merge results"]
     S2 --> MERGE
     MERGE --> CACHE["in-memory cache\n60s TTL per query+chatId"]
     CACHE --> OUT["[user]: ...\n[assistant]: ...\n\n📌 Related memories:\n• prefers async over sync patterns"]
 ```
 
-Results are cached 60 seconds to avoid redundant OpenAI calls for rapid follow-up messages.
+Results are cached 60 seconds to avoid redundant embedding calls for rapid follow-up messages.
 
 ---
 
@@ -177,7 +177,7 @@ flowchart TD
 
     PATH2 --> LLM["extractMemoriesFromExchange\ncallClaudeText haiku\n↳ fallback: callOllamaGenerate"]
     LLM --> PARSE["parse JSON → certain / uncertain"]
-    PARSE --> DEDUP["semantic duplicate check\nper item via search Edge Function"]
+    PARSE --> DEDUP["semantic duplicate check\nper item via Qdrant search"]
     DEDUP --> INSERT["INSERT memory table\nfacts, preferences, goals, dates"]
     DEDUP --> CONFIRM["uncertain items →\nsendMemoryConfirmation\n(inline Telegram buttons)"]
 ```
@@ -205,7 +205,7 @@ sequenceDiagram
     participant Q as extractionQueue
     participant E as longTermExtractor
     participant LLM as Claude Haiku / Ollama
-    participant DB as Supabase memory table
+    participant DB as SQLite + Qdrant
 
     R->>Q: enqueueExtraction({chatId, userId, text, assistantResponse, traceId})
     Note over Q: queued per chatId — serial execution

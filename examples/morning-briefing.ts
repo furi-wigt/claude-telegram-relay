@@ -62,7 +62,7 @@ async function getCalendarEvents(): Promise<string> {
 }
 
 async function getActiveGoals(): Promise<string> {
-  // Load from your persistence layer (Supabase, JSON file, etc.)
+  // Load from your persistence layer (SQLite, JSON file, etc.)
 
   // Placeholder
   return "- Finish video edit\n- Review PR";
@@ -87,7 +87,7 @@ async function getAINews(): Promise<string> {
   // Use Grok, Perplexity, or web search
 
   // Placeholder
-  return "- OpenAI released GPT-5\n- Anthropic launches new feature";
+  return "- Anthropic launches new feature\n- Local AI models getting faster";
 }
 
 // ============================================================

@@ -12,7 +12,7 @@ Jarvis has a persistent memory system. It notices facts, goals, and preferences 
 
 ## 1. Where Does Stored Memory Go?
 
-All memory is saved in a secure cloud database (Supabase). Each entry has a type:
+All memory is saved locally in SQLite (`~/.claude-relay/data/local.sqlite`) with semantic search powered by Qdrant and Ollama embeddings. Each entry has a type:
 
 | Type | Examples |
 |------|----------|

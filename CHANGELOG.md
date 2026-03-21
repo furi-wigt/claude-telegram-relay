@@ -89,7 +89,7 @@
 
 ### Initial Release
 - Telegram relay connecting to Claude Code CLI
-- Supabase integration for persistent memory
+- Local persistent memory (SQLite + Qdrant + Ollama embeddings)
 - Semantic search over conversation history
 - Voice transcription (Groq and local Whisper support)
 - Smart check-ins and morning briefings

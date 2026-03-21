@@ -55,7 +55,7 @@ ETF portfolio analysis, system health watchdogs.
 | Situation | Use |
 |---|---|
 | "Remind me every morning to review my goals" | Prompt-based |
-| "Summarize my Supabase activity at 9pm" | Prompt-based |
+| "Summarize my daily activity at 9pm" | Prompt-based |
 | "Pull AWS Cost Explorer data and analyse it" | Code-based |
 | "Run a security vulnerability scan daily" | Code-based |
 | "Post my ETF portfolio every Friday" | Code-based |

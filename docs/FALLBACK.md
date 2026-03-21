@@ -133,7 +133,7 @@ sudo systemctl start ollama
 - **No session continuity**: Fallback models don't support Claude's `--resume` sessions
 - **No image support**: Fallback handles text only (photos/documents will fail gracefully)
 - **Lower quality**: Smaller models produce less sophisticated responses than Claude
-- **No memory integration**: Fallback doesn't use Supabase memory system
+- **No memory integration**: Fallback doesn't use the full memory system (SQLite + Qdrant)
 
 This is intentional — fallback is for availability, not feature parity.
 
