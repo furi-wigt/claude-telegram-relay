@@ -18,6 +18,8 @@ import type { AppleCalendarEvent } from "../../integrations/osx-calendar/index.t
 export interface AtomicTask {
   /** Original task title (if broken down) or standalone suggestion */
   parentTitle?: string;
+  /** Sequence within the parent (1-based). undefined for standalone tasks. */
+  stepOrder?: number;
   /** The atomic step description */
   description: string;
   /** Why this step matters or what it unblocks */
@@ -57,14 +59,20 @@ export async function breakdownTasks(
     ? goals.map(g => `- ${g.content}${g.deadline ? ` (by ${g.deadline})` : ""}`).join("\n")
     : "None";
 
-  const prompt = `You are a personal productivity assistant. Analyze these tasks and break complex ones into atomic execution steps (each ≤2 hours of effort).
+  const prompt = `You are a personal productivity assistant. Analyze these tasks and break complex ones into sequential sub-tasks (each ≤2 hours of effort).
 
 A task is "complex" if:
 - It has a vague description (e.g., "look into BCP plan", "review weekly updates")
+- It requires multiple distinct actions (e.g., "Discuss with Alice on Project X")
 - It requires manual human execution (meetings, phone calls, document review)
 - It would take more than 2 hours to complete as-is
 
-For simple tasks (already atomic, ≤2h), keep them as-is.
+DECOMPOSITION EXAMPLES:
+- "Discuss with Alice on Project X" → sub-tasks: "Research Project X status and prepare talking points", "Schedule meeting with Alice", "Write summary of discussion and next steps"
+- "Review BCP plan" → sub-tasks: "Read current BCP document and note gaps", "Draft improvement recommendations", "Share findings with team lead"
+- "Set up CI/CD pipeline" → sub-tasks: "Research CI/CD options for the project stack", "Configure build pipeline in GitHub Actions", "Add deployment step and test end-to-end"
+
+For simple tasks (already atomic, ≤2h, single action), keep them as-is with parentTitle: null.
 
 CALENDAR (slot tasks around these — DO NOT create tasks for calendar events):
 ${calendarContext}
@@ -79,17 +87,19 @@ ACTIVE GOALS:
 ${goalsContext}
 
 RULES:
-1. Each atomic step MUST be completable in ≤2 hours
-2. Suggest realistic time slots (06:00–22:00) that don't overlap calendar events
-3. Prioritize tasks with approaching deadlines
-4. Include source: "things3", "todos", "goal", or "suggested"
-5. For complex tasks, set parentTitle to the original task name
-6. Estimate duration realistically (15–120 minutes)
-7. Maximum 10 atomic tasks total — focus on highest priority
-8. Do NOT duplicate tasks that already exist in Things 3
+1. Each sub-task MUST be completable in ≤2 hours
+2. Sub-tasks of the same parent MUST be in logical execution order (prep → action → follow-up)
+3. Suggest realistic time slots (06:00–22:00) that don't overlap calendar events
+4. Prioritize tasks with approaching deadlines
+5. Include source: "things3", "todos", "goal", or "suggested"
+6. For decomposed tasks, set parentTitle to the original task name; for simple tasks, set null
+7. Use "stepOrder" (1-based) to indicate sequence within the same parent
+8. Estimate duration realistically (15–120 minutes)
+9. Maximum 12 atomic tasks total — focus on highest priority
+10. Do NOT duplicate tasks that already exist in Things 3
 
 Output ONLY a valid JSON array:
-[{"parentTitle":"original task or null","description":"atomic step","rationale":"why","suggestedTime":"HH:MM","estimatedDuration":60,"source":"things3"}]
+[{"parentTitle":"original task or null","stepOrder":1,"description":"atomic step","rationale":"why","suggestedTime":"HH:MM","estimatedDuration":60,"source":"things3"}]
 
 No explanation, no markdown, just the JSON array.`;
 
@@ -119,6 +129,7 @@ No explanation, no markdown, just the JSON array.`;
       )
       .map((t: any) => ({
         parentTitle: t.parentTitle || undefined,
+        stepOrder: typeof t.stepOrder === "number" ? t.stepOrder : undefined,
         description: t.description,
         rationale: t.rationale || "",
         suggestedTime: t.suggestedTime,
@@ -216,18 +227,56 @@ export function formatAtomicTaskBlock(
   storeSession: (t: NewThingsTask[]) => string,
   buildKeyboard: (id: string) => unknown
 ): { text: string; replyMarkup: unknown } {
-  const sorted = [...tasks].sort((a, b) => a.suggestedTime.localeCompare(b.suggestedTime));
-  const lines: string[] = [];
-  sorted.forEach((task, idx) => {
-    const parent = task.parentTitle ? ` _(from: ${task.parentTitle})_` : "";
-    lines.push(`${idx + 1}. **[${task.suggestedTime}]** ${task.description} (~${task.estimatedDuration}min)${parent}`);
-    if (task.rationale) {
-      lines.push(`   _${task.rationale}_`);
-    }
+  const sorted = [...tasks].sort((a, b) => {
+    // Sort by earliest suggestedTime of the group (parent or standalone)
+    const aTime = a.suggestedTime;
+    const bTime = b.suggestedTime;
+    if (aTime !== bTime) return aTime.localeCompare(bTime);
+    // Within same parent, sort by stepOrder
+    return (a.stepOrder ?? 0) - (b.stepOrder ?? 0);
   });
 
+  // Group tasks: standalone vs sub-tasks under a parent
+  const lines: string[] = [];
+  let itemNum = 0;
+  const rendered = new Set<number>(); // indices already rendered
+
+  for (let i = 0; i < sorted.length; i++) {
+    if (rendered.has(i)) continue;
+    const task = sorted[i];
+
+    if (!task.parentTitle) {
+      // Standalone task
+      itemNum++;
+      lines.push(`${itemNum}. **[${task.suggestedTime}]** ${task.description} (~${task.estimatedDuration}min)`);
+      if (task.rationale) lines.push(`   _${task.rationale}_`);
+      rendered.add(i);
+    } else {
+      // Collect all sub-tasks for this parent
+      const siblings = sorted
+        .map((t, idx) => ({ t, idx }))
+        .filter(({ t, idx }) => !rendered.has(idx) && t.parentTitle === task.parentTitle);
+
+      // Sort siblings by stepOrder
+      siblings.sort((a, b) => (a.t.stepOrder ?? 0) - (b.t.stepOrder ?? 0));
+
+      itemNum++;
+      const earliestTime = siblings[0].t.suggestedTime;
+      const totalDuration = siblings.reduce((sum, { t }) => sum + t.estimatedDuration, 0);
+      lines.push(`${itemNum}. **[${earliestTime}]** ${task.parentTitle} (~${totalDuration}min total)`);
+
+      siblings.forEach(({ t, idx }, subIdx) => {
+        lines.push(`   ${subIdx + 1}. ${t.description} (~${t.estimatedDuration}min)`);
+        if (t.rationale) lines.push(`      _${t.rationale}_`);
+        rendered.add(idx);
+      });
+    }
+  }
+
   const newTasks: NewThingsTask[] = sorted.map(t => ({
-    title: t.description,
+    title: t.parentTitle
+      ? `${t.parentTitle} → ${t.description}`
+      : t.description,
     notes: t.rationale || undefined,
     when: "today" as const,
     tags: [t.source],

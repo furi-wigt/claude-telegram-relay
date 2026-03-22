@@ -3,7 +3,7 @@
 ## [Unreleased] / 2026-03-22 — Smart Routines: Calendar-aware check-in, Ollama atomic task breakdown, Things 3 inline keyboard
 
 ### Added
-- **Atomic Task Breakdown Engine** (`src/utils/atomicBreakdown.ts`): Ollama-powered (`OLLAMA_ROUTINE_MODEL=qwen3.5:4b`) decomposition of complex tasks into ≤2h atomic execution steps. Pulls from Things 3 (`today` + `deadlines`), `.claude/todos/` pending items, calendar events, and active goals. Shared `formatAtomicTaskBlock()` helper used by both routines.
+- **Atomic Task Breakdown Engine** (`src/utils/atomicBreakdown.ts`): MLX/Ollama-powered decomposition of complex tasks into sequential sub-tasks (each ≤2h). Complex tasks (vague, multi-action, or >2h) are auto-decomposed into ordered steps with `parentTitle` grouping and `stepOrder` sequencing. Example: "Discuss with Alice on Project X" → 1. Research status, 2. Schedule meeting, 3. Write summary. Output groups sub-tasks under their parent with indented numbering. Pulls from Things 3, `.claude/todos/`, calendar, and goals.
 - **Things 3 CLI wrapper** (`src/utils/t3Helper.ts`): Subprocess wrapper for `t3` CLI. Fetches tasks from any Things 3 view with JSON parsing and UUID deduplication. 10s timeout. Fixed: removed erroneous `--json` flag (`t3` outputs JSON by default).
 - **Task Suggestion Callback Handler** (`src/callbacks/taskSuggestionHandler.ts`): In-memory session store (1h TTL) and Grammy callback handler for `ts:all:{sessionId}` / `ts:skip:{sessionId}` inline keyboard buttons. Confirmed tap batch-adds tasks to Things 3 via URL scheme.
 - **`sendToGroup` / `sendAndRecord`**: Accept `reply_markup?: unknown`, attached to last chunk only. Return `message_id`.
