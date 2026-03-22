@@ -88,7 +88,7 @@ Triggered every 5 messages, async via `setImmediate` (never blocks response):
 sequenceDiagram
     participant R as relay.ts
     participant STM as shortTermMemory.ts
-    participant Ollama
+    participant MLX as MLX server
     participant DB as SQLite
 
     R->>STM: shouldSummarize(chatId, threadId)
@@ -96,8 +96,8 @@ sequenceDiagram
     STM-->>R: true (>20 unsummarized msgs)
     R->>STM: summarizeOldMessages(chatId, threadId)
     STM->>DB: fetch oldest 20 messages after last summary
-    STM->>Ollama: "Summarize this conversation excerpt..."
-    Ollama-->>STM: 3-5 sentence summary
+    STM->>MLX: "Summarize this conversation excerpt..."
+    MLX-->>STM: 3-5 sentence summary
     STM->>DB: INSERT conversation_summaries
     Note over STM: Original messages are NOT deleted
 ```
@@ -144,11 +144,11 @@ Scope rule: `WHERE chat_id = {chatId} OR chat_id IS NULL`
 **File:** `src/memory.ts:400`
 **Backend:** Qdrant vector search (invoked twice in parallel)
 
-Embeds the current user message via Ollama (`nomic-embed-text`), then cosine-matches against stored embeddings in Qdrant:
+Embeds the current user message via MLX (`bge-m3`, 1024-dim vectors via `src/local/embed.ts`), then cosine-matches against stored embeddings in Qdrant:
 
 ```mermaid
 flowchart TD
-    MSG[user message text] --> EMB["embed via Ollama\nnomic-embed-text"]
+    MSG[user message text] --> EMB["embed via MLX /v1/embeddings\nbge-m3 · 1024-dim"]
     EMB --> S1["Qdrant messages collection\nmatch_count=5, chat_id scoped"]
     EMB --> S2["Qdrant memory collection\nmatch_count=3, threshold=0.7"]
     S1 --> MERGE["merge results"]
@@ -175,9 +175,9 @@ flowchart TD
     PATH1 --> T3["[GOAL: text | DEADLINE: date] → memory table"]
     PATH1 --> T4["[DONE: search] → UPDATE completed_goal"]
 
-    PATH2 --> LLM["extractMemoriesFromExchange\ncallClaudeText haiku\n↳ fallback: callOllamaGenerate"]
+    PATH2 --> LLM["extractMemoriesFromExchange\ncallClaudeText haiku\n↳ fallback: MLX generate"]
     LLM --> PARSE["parse JSON → certain / uncertain"]
-    PARSE --> DEDUP["semantic duplicate check\nper item via Qdrant search"]
+    PARSE --> DEDUP["semantic duplicate check\nper item via Qdrant search\n(bge-m3 embeddings)"]
     DEDUP --> INSERT["INSERT memory table\nfacts, preferences, goals, dates"]
     DEDUP --> CONFIRM["uncertain items →\nsendMemoryConfirmation\n(inline Telegram buttons)"]
 ```
@@ -204,14 +204,14 @@ sequenceDiagram
     participant R as relay.ts
     participant Q as extractionQueue
     participant E as longTermExtractor
-    participant LLM as Claude Haiku / Ollama
+    participant LLM as Claude Haiku / MLX
     participant DB as SQLite + Qdrant
 
     R->>Q: enqueueExtraction({chatId, userId, text, assistantResponse, traceId})
     Note over Q: queued per chatId — serial execution
     Q->>E: extractAndStore(...)
     E->>E: build extraction prompt\n(user msg + assistant response, ≤1800 chars)
-    E->>LLM: callClaudeText(prompt, {timeoutMs:15s})\n↳ fallback: callOllamaGenerate(prompt, {timeoutMs:20s})
+    E->>LLM: callClaudeText(prompt, {timeoutMs:15s})\n↳ fallback: MLX generate(prompt, {timeoutMs:20s})
     LLM-->>E: JSON {certain:{...}, uncertain:{...}}
     E->>E: sanitizeMemories + junk filter
     E->>DB: semantic duplicate check per item
@@ -260,9 +260,10 @@ See `src/utils/tracer.ts` for the full event schema.
 |------|------|
 | `src/relay.ts` | Orchestrates all memory reads, calls `buildAgentPrompt`, calls `callClaude`, triggers write paths |
 | `src/agents/promptBuilder.ts` | Assembles the final prompt string from all memory layers |
-| `src/memory/shortTermMemory.ts` | STM: read (last 20 verbatim + summaries), write (Ollama summarization) |
+| `src/memory/shortTermMemory.ts` | STM: read (last 20 verbatim + summaries), write (MLX summarization) |
 | `src/memory/longTermExtractor.ts` | LTM auto-extraction: Claude Haiku → JSON parse → dedup → insert |
 | `src/memory/extractionQueue.ts` | Per-chat serial queue for async LTM extraction |
 | `src/memory/memoryConfirm.ts` | Sends Telegram inline buttons for uncertain memory items |
+| `src/local/embed.ts` | Embedding client: calls MLX `/v1/embeddings` endpoint (bge-m3, 1024-dim vectors) |
 | `src/memory.ts` | `getMemoryContext` (facts/goals), `getRelevantContext` (semantic search), `processMemoryIntents` (tag parsing) |
 | `src/utils/tracer.ts` | Observability: JSON Lines logger for all pipeline stages |

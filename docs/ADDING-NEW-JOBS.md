@@ -1,373 +1,207 @@
-# Adding New Scheduled Jobs
+# Adding New PM2 Routines
 
-This guide shows how to add new scheduled jobs that run automatically and are monitored by the watchdog.
+This guide shows how to add new scheduled routines managed by PM2.
 
-## Step 1: Create Your Script
+## Step 1: Create the Routine Script
 
-Create your script in the `examples/` directory:
+Create a TypeScript file in the `routines/` directory:
 
 ```typescript
-// examples/my-new-job.ts
-import * as fs from "fs";
-
-const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
-const CHAT_ID = process.env.TELEGRAM_USER_ID || "";
-
-async function sendTelegram(message: string): Promise<boolean> {
-  try {
-    const response = await fetch(
-      `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          chat_id: CHAT_ID,
-          text: message,
-          parse_mode: "Markdown",
-        }),
-      }
-    );
-    return response.ok;
-  } catch (error) {
-    console.error("Error:", error);
-    return false;
-  }
-}
+// routines/my-routine.ts
+import { callRoutineModel } from "../src/routines/routineModel.ts";
+import { sendAndRecord } from "../src/utils/routineMessage.ts";
 
 async function main() {
-  console.log("Running my new job...");
+  console.log("Running my routine...");
 
-  // Your job logic here
-  const message = "🎯 My new job completed successfully!";
+  // Your routine logic here
+  // Use callRoutineModel() for MLX text generation
+  // Use sendAndRecord() to send Telegram messages
 
-  const success = await sendTelegram(message);
-
-  if (success) {
-    console.log("Job completed successfully");
-  } else {
-    console.error("Job failed");
-    process.exit(1);
-  }
+  console.log("Routine completed successfully");
 }
 
-main();
+// Entry guard — handles PM2's require() issue with import.meta.main
+const _isEntry =
+  import.meta.main ||
+  process.env.pm_exec_path === import.meta.url?.replace("file://", "");
+
+if (_isEntry) {
+  main().catch((error) => {
+    console.error("Error running:", error);
+    process.exit(0); // exit 0 so PM2 does not immediately restart
+  });
+}
 ```
 
-**Important Success Indicators:**
-- Always log "success", "completed", or "done" on successful completion
-- Call `process.exit(1)` on failures so the watchdog can detect errors
-- Use try/catch and proper error handling
+**Why the entry guard?** PM2 loads scripts via `require()`, which causes `import.meta.main` to be `false`. The guard checks both `import.meta.main` (direct `bun run`) and the PM2 exec path so the routine runs correctly in both contexts.
 
-## Step 2: Add to launchd Configuration
+**Why `process.exit(0)` on error?** Exiting with code 0 prevents PM2 from immediately restarting a failed one-shot cron job. The error is logged and can be reviewed without triggering a restart loop.
 
-Edit `setup/configure-launchd.ts` and add your service to the `SERVICES` object:
+## Step 2: Add to ecosystem.config.cjs
 
-```typescript
-const SERVICES: Record<string, ServiceConfig> = {
-  // ... existing services ...
+Add an entry to the `apps` array in `ecosystem.config.cjs`:
 
-  myjob: {
-    label: "com.claude.my-new-job",
-    script: "examples/my-new-job.ts",
-    keepAlive: false,
-    calendarIntervals: [
-      { Hour: 14, Minute: 0 },  // 2:00 PM daily
-    ],
-    description: "My new job (daily at 2pm)"
-  },
-};
-```
-
-**Configuration Options:**
-
-- `label` - Unique identifier (use com.claude.* naming)
-- `script` - Path to your TypeScript file (relative to project root)
-- `keepAlive` - Set to `true` for always-running services, `false` for scheduled jobs
-- `calendarIntervals` - Array of times when job should run
-  - `Hour` - 0-23 (24-hour format)
-  - `Minute` - 0-59
-  - Can specify multiple intervals for jobs that run multiple times per day
-- `description` - Human-readable description shown during setup
-
-**Multiple Run Times Example:**
-```typescript
-calendarIntervals: [
-  { Hour: 9, Minute: 0 },   // 9:00 AM
-  { Hour: 12, Minute: 0 },  // 12:00 PM
-  { Hour: 15, Minute: 0 },  // 3:00 PM
-],
-```
-
-## Step 3: Add to Watchdog Monitoring
-
-Edit `setup/watchdog.ts` and add your job to the `JOBS` array:
-
-```typescript
-const JOBS: JobSchedule[] = [
-  // ... existing jobs ...
-
-  {
-    name: "My New Job",
-    label: "com.claude.my-new-job",
-    script: "examples/my-new-job.ts",
-    schedule: "Daily at 2:00 PM",
-    expectedHours: [14],  // When job should have run (24-hour format)
-    maxDelayMinutes: 30,  // How late before alerting
-    checkLogFile: true    // Should watchdog scan logs for errors?
-  },
-];
-```
-
-**Watchdog Configuration:**
-
-- `name` - Human-readable name for alerts
-- `label` - Must match the launchd label from Step 2
-- `script` - Must match the script path from Step 2
-- `schedule` - Human-readable schedule (for alerts)
-- `expectedHours` - Array of hours (0-23) when job should have run
-  - For multiple daily runs: `[9, 12, 15]`
-  - For single run: `[14]`
-- `maxDelayMinutes` - Grace period before marking job as overdue
-- `checkLogFile` - Set to `true` to enable log error scanning
-
-**Example for Multiple Daily Runs:**
-```typescript
+```javascript
 {
-  name: "Frequent Check",
-  label: "com.claude.frequent-check",
-  script: "examples/frequent-check.ts",
-  schedule: "Every 3 hours (9am, 12pm, 3pm)",
-  expectedHours: [9, 12, 15],
-  maxDelayMinutes: 30,
-  checkLogFile: true
-}
-```
-
-## Step 4: Install the Service
-
-Run the launchd setup script:
-
-```bash
-bun run setup:launchd -- --service myjob
-```
-
-This will:
-1. Generate the plist file
-2. Load it into launchd
-3. Start scheduling the job
-
-**Verify Installation:**
-```bash
-# Check if service is loaded
-launchctl list | grep com.claude.my-new-job
-
-# View the generated plist
-cat ~/Library/LaunchAgents/com.claude.my-new-job.plist
-```
-
-## Step 5: Test Manually
-
-Before waiting for the scheduled time, test your script manually:
-
-```bash
-# Run the script directly
-bun run examples/my-new-job.ts
-
-# Check for success message
-echo $?  # Should be 0 for success
-```
-
-Check the logs:
-```bash
-# View output
-tail -f logs/com.claude.my-new-job.log
-
-# Check for errors
-tail -f logs/com.claude.my-new-job.error.log
-```
-
-## Step 6: Test Watchdog Detection
-
-Run the watchdog manually to verify it detects your job:
-
-```bash
-bun run setup/watchdog.ts
-```
-
-You should see output like:
-```
-Checking: My New Job
-  Running: ✓
-  Last run: Never
-  Should have run: No
-  Overdue: No
-```
-
-## Complete Example: Weekly Report
-
-Here's a complete example of adding a weekly report that runs every Monday at 9 AM:
-
-### 1. Create Script
-```typescript
-// examples/weekly-report.ts
-const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
-const CHAT_ID = process.env.TELEGRAM_USER_ID || "";
-
-async function sendTelegram(message: string): Promise<boolean> {
-  const response = await fetch(
-    `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chat_id: CHAT_ID,
-        text: message,
-        parse_mode: "Markdown",
-      }),
-    }
-  );
-  return response.ok;
-}
-
-async function main() {
-  console.log("Generating weekly report...");
-
-  const report = `📊 **Weekly Report**\n\nWeek of ${new Date().toLocaleDateString()}\n\n...your report content...`;
-
-  const success = await sendTelegram(report);
-
-  if (success) {
-    console.log("Weekly report sent successfully");
-  } else {
-    console.error("Failed to send weekly report");
-    process.exit(1);
-  }
-}
-
-main();
-```
-
-### 2. Add to launchd (configure-launchd.ts)
-```typescript
-weeklyreport: {
-  label: "com.claude.weekly-report",
-  script: "examples/weekly-report.ts",
-  keepAlive: false,
-  calendarIntervals: [
-    { Weekday: 1, Hour: 9, Minute: 0 }  // Monday at 9am
-  ],
-  description: "Weekly report (Mondays at 9am)"
-}
-```
-
-### 3. Add to Watchdog (watchdog.ts)
-```typescript
-{
-  name: "Weekly Report",
-  label: "com.claude.weekly-report",
-  script: "examples/weekly-report.ts",
-  schedule: "Mondays at 9:00 AM",
-  expectedHours: [9],
-  maxDelayMinutes: 60,  // Longer grace period for weekly jobs
-  checkLogFile: true
-}
-```
-
-### 4. Install
-```bash
-bun run setup:launchd -- --service weeklyreport
-```
-
-## Common Patterns
-
-### Data Fetching Job
-```typescript
-// Fetch data, save to file, send summary
-async function main() {
-  const data = await fetchData();
-  fs.writeFileSync("/path/to/data.json", JSON.stringify(data));
-  await sendTelegram("Data updated successfully");
-  console.log("Data fetch completed successfully");
-}
-```
-
-### Conditional Notification
-```typescript
-// Only send message if condition met
-async function main() {
-  const result = await checkCondition();
-
-  if (result.shouldNotify) {
-    await sendTelegram(result.message);
-  }
-
-  // Always log success even if no notification sent
-  console.log("Check completed successfully");
-}
-```
-
-### External API Integration
-```typescript
-// Call external service, handle errors gracefully
-async function main() {
-  try {
-    const response = await fetch("https://api.example.com/data");
-    const data = await response.json();
-
-    await sendTelegram(`Received ${data.items.length} items`);
-    console.log("API call completed successfully");
-  } catch (error) {
-    console.error("API call failed:", error);
-    await sendTelegram("⚠️ API integration failed");
-    process.exit(1);
+  name: "my-routine",
+  script: "routines/my-routine.ts",
+  interpreter: "bun",
+  cron_restart: "0 8 * * *",  // Run daily at 8 AM
+  autorestart: false,          // One-shot cron job
+  watch: false,
+  env: {
+    NODE_ENV: "production",
+    // Add any routine-specific env vars here
   }
 }
 ```
+
+### Configuration Options
+
+| Option | Value | Use case |
+|--------|-------|----------|
+| `autorestart: false` | One-shot cron jobs | Routines that run, complete, and exit (morning-summary, night-summary) |
+| `autorestart: true` | Always-on services | Services that must stay running (telegram-relay, qdrant, mlx) |
+| `cron_restart` | Cron expression | Schedule for when PM2 should start the script |
+| `interpreter` | `"bun"` | Always use `bun` as the interpreter |
+| `watch` | `false` | Always `false` for routines |
+
+### Cron Expression Examples
+
+```
+"0 7 * * *"       # Daily at 7 AM
+"0 23 * * *"      # Daily at 11 PM
+"*/30 * * * *"    # Every 30 minutes
+"0 */2 * * *"     # Every 2 hours
+"0 3 * * *"       # Daily at 3 AM
+"0 * * * *"       # Every hour
+"0 9 * * 1"       # Every Monday at 9 AM
+```
+
+## Step 3: Start the Routine
+
+Start only your new routine (not all services):
+
+```bash
+npx pm2 start ecosystem.config.cjs --only my-routine
+```
+
+Verify it is registered:
+
+```bash
+npx pm2 status
+```
+
+## Step 4: Test Manually
+
+Run the script directly to verify it works before relying on the cron schedule:
+
+```bash
+bun run routines/my-routine.ts
+```
+
+Check PM2 logs after a scheduled run:
+
+```bash
+npx pm2 logs my-routine --lines 50
+```
+
+Log files are written to `~/.claude-relay/logs/`.
+
+## Key Utilities
+
+### Text Generation (MLX)
+
+Use `callRoutineModel()` from `src/routines/routineModel.ts` for local text generation via the MLX server:
+
+```typescript
+import { callRoutineModel } from "../src/routines/routineModel.ts";
+
+const response = await callRoutineModel("Summarize today's tasks");
+```
+
+### Sending Telegram Messages
+
+Use `sendAndRecord()` from `src/utils/routineMessage.ts` to send messages and log them to the database:
+
+```typescript
+import { sendAndRecord } from "../src/utils/routineMessage.ts";
+
+await sendAndRecord(chatId, "Your message here", { parse_mode: "Markdown" });
+```
+
+## PM2 Commands Reference
+
+| Command | What it does |
+|---------|-------------|
+| `npx pm2 start ecosystem.config.cjs --only my-routine` | Start a single service |
+| `npx pm2 restart my-routine` | Restart by name |
+| `npx pm2 stop my-routine` | Stop without removing |
+| `npx pm2 delete my-routine` | Remove from PM2 entirely |
+| `npx pm2 logs my-routine` | View logs (stdout + stderr) |
+| `npx pm2 logs my-routine --err` | View error logs only |
+| `npx pm2 status` | Show all services and their status |
+
+## Safety Rules
+
+These rules prevent accidentally taking the main bot offline:
+
+1. **NEVER use `npx pm2 reload ecosystem.config.cjs` or `npx pm2 restart ecosystem.config.cjs`** -- this restarts ALL services including `telegram-relay`, causing the bot to go offline or enter restart loops.
+2. **Always restart by service name**: `npx pm2 restart my-routine`.
+3. **NEVER modify the `interpreter` or exec patterns** in `ecosystem.config.cjs` -- a previous attempt to use `interpreter: "none"` with `/bin/sh -c 'bun run script.ts'` broke all services.
+4. **Treat `telegram-relay` as sacred** -- never restart it without explicit user confirmation.
+
+## Existing Routines for Reference
+
+| Routine | Schedule | autorestart | Description |
+|---------|----------|-------------|-------------|
+| `morning-summary` | `0 7 * * *` (7 AM daily) | `false` | Morning briefing with weather, goals, calendar |
+| `night-summary` | `0 23 * * *` (11 PM daily) | `false` | End-of-day summary and reflection |
+| `smart-checkin` | `*/30 * * * *` (every 30 min) | `false` | Context-aware check-ins during waking hours |
+| `watchdog` | `0 */2 * * *` (every 2 hours) | `false` | Health monitor for all services |
+| `memory-cleanup` | `0 3 * * *` (3 AM daily) | `false` | Prune stale memory entries |
+| `orphan-gc` | `0 * * * *` (hourly) | `false` | Garbage-collect orphaned records |
+
+Browse these scripts in `routines/` for patterns and conventions.
 
 ## Troubleshooting
 
-### Job Not Running
-1. Check if loaded: `launchctl list | grep com.claude.your-job`
-2. Check plist file: `cat ~/Library/LaunchAgents/com.claude.your-job.plist`
-3. Reinstall: `bun run setup:launchd -- --service yourjob`
+### Routine Not Running on Schedule
 
-### Job Running But Failing
-1. Check logs: `tail -100 logs/com.claude.your-job.error.log`
-2. Run manually: `bun run examples/your-job.ts`
-3. Check environment variables in `.env`
+1. Check PM2 status: `npx pm2 status` -- is the routine listed and in "online" or "stopped" state?
+2. Verify cron expression: use [crontab.guru](https://crontab.guru) to validate your expression.
+3. Check if PM2 is running: `npx pm2 ping`.
+4. Times use **local system time**, not UTC. Verify with `date`.
 
-### Watchdog Not Detecting Failures
-1. Verify job is in watchdog JOBS array
-2. Check log file path matches: `logs/com.claude.your-job.log`
-3. Ensure script logs success/error keywords
-4. Run watchdog manually: `bun run setup/watchdog.ts`
+### Routine Fails Silently
 
-### Wrong Schedule
-Times are in **local system time**, not UTC. Check your timezone:
-```bash
-date
-```
+1. Check logs: `npx pm2 logs my-routine --lines 100`.
+2. Run manually: `bun run routines/my-routine.ts` to see errors in real time.
+3. Verify environment variables are set in `.env` or in the `env` block of `ecosystem.config.cjs`.
 
-To change schedule, edit `configure-launchd.ts`, then reinstall:
-```bash
-bun run setup:launchd -- --service yourjob
-```
+### Routine Keeps Restarting
+
+1. For one-shot cron jobs, ensure `autorestart: false` in `ecosystem.config.cjs`.
+2. Ensure the entry guard uses `process.exit(0)` on error (not `process.exit(1)`).
+3. Check restart count: `npx pm2 status` -- if restart count is high, the script is crashing and PM2 is restarting it.
 
 ## Best Practices
 
-1. **Always log success** - Use "success", "completed", or "done" in output
-2. **Exit with code 1 on failure** - `process.exit(1)` so watchdog detects errors
-3. **Use try/catch** - Handle errors gracefully, send error notifications
-4. **Test manually first** - Run `bun run examples/your-job.ts` before scheduling
-5. **Start with longer delay windows** - Use 30-60 min grace periods initially
-6. **Monitor first week** - Check logs daily when first deployed
-7. **Document what your job does** - Add comments explaining purpose and behavior
-8. **Keep jobs idempotent** - Safe to run multiple times without side effects
+1. **Always use the entry guard pattern** -- copy it exactly from Step 1 above.
+2. **Exit with code 0** -- even on errors, to prevent PM2 restart loops for cron jobs.
+3. **Log success and failure clearly** -- include the routine name in log messages for easy filtering.
+4. **Test manually first** -- run `bun run routines/my-routine.ts` before relying on cron.
+5. **Keep routines idempotent** -- safe to run multiple times without side effects.
+6. **Use existing utilities** -- `callRoutineModel()` for text generation, `sendAndRecord()` for Telegram messages.
+7. **Start only your routine** -- use `--only my-routine` when starting, never restart all services.
 
 ## Reference
 
-- **Service Config**: `setup/configure-launchd.ts`
-- **Watchdog Config**: `setup/watchdog.ts`
-- **plist Files**: `~/Library/LaunchAgents/com.claude.*.plist`
-- **Logs**: `logs/com.claude.*.log` and `logs/com.claude.*.error.log`
-- **Examples**: `examples/` directory
+- **Routine scripts**: `routines/`
+- **PM2 config**: `ecosystem.config.cjs`
+- **Routine model helper**: `src/routines/routineModel.ts`
+- **Message helper**: `src/utils/routineMessage.ts`
+- **Logs**: `~/.claude-relay/logs/`
+- **Developer guide**: `routines/CLAUDE.md` (code patterns and PM2 safety rules)
+- **User journey**: `routines/user_journey.md` (creating routines via Telegram)
