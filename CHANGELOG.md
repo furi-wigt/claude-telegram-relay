@@ -9,7 +9,7 @@
 - **Relay fallback** (`src/relay.ts`): Startup check uses `isMlxAvailable()` instead of `checkOllamaAvailable()`. Chat fallback label now shows "Qwen3.5-9B (MLX)".
 - **Short-term memory** (`src/memory/shortTermMemory.ts`): Summarization uses `callRoutineModel()` instead of direct Ollama HTTP fetch.
 - **Context relevance** (`src/session/contextRelevance.ts`): `checkContextRelevanceWithOllama()` renamed to `checkContextRelevanceWithMLX()`, uses `callMlxGenerate()`. Smart check returns `method: "mlx"` instead of `"ollama"`.
-- **Night summary** (`routines/night-summary.ts`): Provider interface renamed from `ollama` to `mlx`. All log/error messages updated.
+- **Night summary** (`routines/night-summary.ts`): Provider interface renamed from `ollama` to `mlx`. All log/error messages updated. Footer label is now dynamic — shows the last path segment of `MLX_MODEL` (e.g. `Qwen3.5-9B-MLX-4bit`) when MLX ran, `Claude Haiku` on fallback, `Unknown` if both failed. No hardcoded model names.
 
 ### Removed
 - **`src/ollama/`** module — `client.ts`, `models.ts`, `index.ts`, `models.test.ts` deleted entirely. Ollama is no longer a dependency.
@@ -19,6 +19,7 @@
 - **MLX server required**: `mlx serve` must be running (port 8800) for text generation and embeddings. Add as PM2 service for production.
 - **No Qdrant schema change**: bge-m3 via MLX produces identical 1024-dim vectors — existing Qdrant collections work without re-embedding.
 - **Env vars**: `MLX_URL` (default `http://localhost:8800`) replaces `OLLAMA_URL` for all local inference.
+- **mlx-local server fixes** (`~/.claude/tools/mlx-qwen/mlx_local/server.py`): (a) `BrokenPipeError` caught at both the embeddings path and the generation `do_POST` path — no more traceback spam when clients disconnect mid-response. (b) Module-level `_gpu_lock` serializes all Metal operations — prevents `A command encoder is already encoding to this command buffer` crash when embedding and generation requests hit the GPU concurrently.
 
 ---
 
