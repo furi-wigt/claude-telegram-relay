@@ -1,0 +1,26 @@
+[project]
+name = "mlx-local"
+version = "2.0.0"
+description = "Unified local inference on Apple MLX — text generation (Qwen3.5-9B) + embeddings (bge-m3)"
+requires-python = ">=3.12"
+dependencies = [
+    "mlx-lm>=0.22",
+    "mlx-embeddings>=0.0.5",
+    "click>=8.0",
+    "torch",
+    "safetensors",
+]
+
+[project.scripts]
+mlx = "mlx_local.cli:main"
+mlx-qwen = "mlx_local.cli:main"
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["mlx_local*"]
+
+[tool.uv]
+dev-dependencies = []

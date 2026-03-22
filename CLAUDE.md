@@ -115,7 +115,7 @@ MLX provides native Apple Silicon inference at ~2x Ollama speed. Used as the pri
 1. Ensure Python 3.12+ is installed: `brew install python@3.12`
 2. Install the `mlx-qwen` CLI tool:
    ```bash
-   uv tool install --editable ~/.claude/tools/mlx-qwen --python python3.12
+   uv tool install --editable tools/mlx-local --python python3.12
    ```
 3. Download model weights (~5.6 GB):
    ```bash

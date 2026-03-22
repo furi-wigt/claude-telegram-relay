@@ -4,7 +4,7 @@
  * Calls the unified MLX server (text generation + embeddings) via
  * OpenAI-compatible /v1/chat/completions endpoint on localhost:8800.
  *
- * Install: `uv tool install --editable ~/.claude/tools/mlx-qwen --python python3.12`
+ * Install: `uv tool install --editable tools/mlx-local --python python3.12`
  * Serve:   `mlx serve` (or via PM2)
  */
 
