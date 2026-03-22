@@ -287,6 +287,13 @@ export interface ClaudeStreamOptions {
    * The stream is NOT killed — the user can manually cancel via /cancel or the Cancel button.
    */
   onSoftCeiling?: (message: string) => void;
+  /**
+   * Called once when the maxTurns kill fires.
+   * Use this to send a persistent notification (e.g. Telegram message) that the
+   * result is partial — unlike onProgress, this is NOT routed through the
+   * ProgressIndicator and will NOT be deleted when the indicator cleans up.
+   */
+  onMaxTurns?: (message: string) => void;
   /** Maximum tool-use turns before auto-kill. 0 = unlimited. Default: env CLAUDE_MAX_TURNS or 50. */
   maxTurns?: number;
   /** Claude model to use (e.g. "claude-haiku-4-5-20251001"). Omit to use CLI default. */
@@ -650,8 +657,10 @@ export async function claudeStream(
                   options?.onProgress?.(summary);
                 }
                 if (maxTurns > 0 && turnCount >= maxTurns) {
+                  const maxTurnsMsg = `⚠️ Turn limit reached (${maxTurns} tool calls) — returning partial result`;
                   console.log(`[claudeStream] maxTurns reached: ${turnCount}/${maxTurns}`);
-                  options?.onProgress?.(`⚠️ Turn limit reached (${maxTurns} tool calls) — returning partial result`);
+                  options?.onProgress?.(maxTurnsMsg);
+                  options?.onMaxTurns?.(maxTurnsMsg);
                   maxTurnsReached = true;
                   proc.kill();
                   break; // Stop counting parallel blocks in this assistant message
@@ -676,8 +685,10 @@ export async function claudeStream(
               options?.onProgress?.(summary);
             }
             if (maxTurns > 0 && turnCount >= maxTurns) {
+              const maxTurnsMsg = `⚠️ Turn limit reached (${maxTurns} tool calls) — returning partial result`;
               console.log(`[claudeStream] maxTurns reached: ${turnCount}/${maxTurns}`);
-              options?.onProgress?.(`⚠️ Turn limit reached (${maxTurns} tool calls) — returning partial result`);
+              options?.onProgress?.(maxTurnsMsg);
+              options?.onMaxTurns?.(maxTurnsMsg);
               maxTurnsReached = true;
               proc.kill();
             }

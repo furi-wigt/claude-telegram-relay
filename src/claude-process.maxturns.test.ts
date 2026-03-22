@@ -269,6 +269,28 @@ describe("claudeStream maxTurns", () => {
     expect(warnings.length).toBe(1);
   });
 
+  test("onMaxTurns fires exactly once with the warning message", async () => {
+    const maxTurnsCalls: string[] = [];
+    const lines = [
+      toolUseLine("Read"),
+      toolUseLine("Grep"),
+      resultLine("partial"),
+    ].join("\n") + "\n";
+
+    spawnMock.mockImplementation(() =>
+      mockProc({ stdout: lines, exitDelay: 500 })
+    );
+
+    await claudeStream("test", {
+      maxTurns: 2,
+      onMaxTurns: (msg) => maxTurnsCalls.push(msg),
+    });
+
+    expect(maxTurnsCalls.length).toBe(1);
+    expect(maxTurnsCalls[0]).toContain("Turn limit reached");
+    expect(maxTurnsCalls[0]).toContain("2 tool calls");
+  });
+
   test("uses CLAUDE_MAX_TURNS env var as default", async () => {
     process.env.CLAUDE_MAX_TURNS = "2";
     let killed = false;

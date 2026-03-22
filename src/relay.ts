@@ -743,6 +743,16 @@ async function callClaude(
           threadId != null ? { message_thread_id: threadId } : undefined
         ).catch(() => {});
       } : undefined,
+      // Send a persistent Telegram message when maxTurns kill fires.
+      // onProgress routes to ProgressIndicator which gets deleted on finish —
+      // this direct sendMessage ensures the user sees a durable alert.
+      onMaxTurns: chatId != null ? (msg) => {
+        bot.api.sendMessage(
+          chatId,
+          msg,
+          threadId != null ? { message_thread_id: threadId } : undefined
+        ).catch(() => {});
+      } : undefined,
     });
   } catch (error) {
     console.error("Claude error:", error);
