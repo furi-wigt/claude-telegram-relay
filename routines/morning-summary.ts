@@ -346,7 +346,7 @@ async function buildEnhancedBriefing(): Promise<{
     scanPendingTodos(todosDir),
   ]);
 
-  // Sequential: both hit Ollama (single-threaded), so run one after the other
+  // Sequential: both hit MLX (serialized via mutex), so run one after the other
   const goalsForBreakdown = goals.map(g => ({ content: g.content, deadline: g.deadline }));
   const recapNarrative = await generateRecapNarrative(activity);
   const atomicTasks = await breakdownTasks(thingsTasks, pendingTodos, calendarEvents, goalsForBreakdown);

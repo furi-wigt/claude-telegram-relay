@@ -1,5 +1,5 @@
 /**
- * Generates short topic labels (3-7 words) for messages using local Ollama.
+ * Generates short topic labels (3-7 words) for messages using local MLX.
  */
 import { callRoutineModel } from "../routines/routineModel.ts";
 
@@ -10,7 +10,7 @@ const MAX_PROMPT_INPUT = 500;
 /**
  * Generate a 3-7 word topic label for a message.
  * - Content < 50 chars: return first 50 chars directly (no LLM call)
- * - Ollama timeout/failure: return first 60 chars as fallback
+ * - MLX timeout/failure: return first 60 chars as fallback
  */
 export async function generateTopic(content: string): Promise<string> {
   if (content.length < MIN_CONTENT_LENGTH) {

@@ -6,7 +6,7 @@ import {
   updateTopicKeywords,
   buildRelevancePrompt,
   checkContextRelevanceSmart,
-  checkContextRelevanceWithOllama,
+  checkContextRelevanceWithMLX,
 } from "./contextRelevance.ts";
 import type { SessionContext } from "./contextRelevance.ts";
 
@@ -208,15 +208,15 @@ describe("checkContextRelevanceSmart", () => {
     expect(result.isRelevant).toBe(false);
   });
 
-  test("falls back to jaccard when ollama unavailable (no local server)", async () => {
-    // Ollama won't be running in test env — should fall back to Jaccard gracefully
+  test("falls back to jaccard when MLX unavailable (no local server)", async () => {
+    // MLX won't be running in test env — should fall back to Jaccard gracefully
     const result = await checkContextRelevanceSmart("AWS Lambda timeout config", {
       topicKeywords: ["aws", "lambda", "deploy", "function"],
       lastUserMessages: ["How do I deploy Lambda?"],
       lastActivity: recentTime,
     });
-    // Either ollama or jaccard method — both acceptable
-    expect(["ollama", "jaccard"]).toContain(result.method);
+    // Either mlx or jaccard method — both acceptable
+    expect(["mlx", "jaccard"]).toContain(result.method);
     expect(typeof result.isRelevant).toBe("boolean");
     expect(result.score).toBeGreaterThanOrEqual(0);
     expect(result.score).toBeLessThanOrEqual(1);
@@ -235,7 +235,7 @@ describe("checkContextRelevanceSmart", () => {
   });
 });
 
-describe("checkContextRelevanceWithOllama", () => {
+describe("checkContextRelevanceWithMLX", () => {
   const origFetch = globalThis.fetch;
 
   afterEach(() => {
@@ -248,96 +248,79 @@ describe("checkContextRelevanceWithOllama", () => {
     lastActivity: new Date(Date.now() - 5 * 60 * 1000).toISOString(), // 5 min ago
   };
 
-  test("returns relevant result for YES response", async () => {
+  // Helper to mock fetch with OpenAI-format response
+  function mockMlxResponse(content: string) {
     globalThis.fetch = mock(() =>
       Promise.resolve({
         ok: true,
-        json: () => Promise.resolve({ response: "YES" }),
+        json: () => Promise.resolve({
+          choices: [{ message: { content } }],
+        }),
       })
     ) as any;
+  }
 
-    const result = await checkContextRelevanceWithOllama("What timeout for Lambda?", sampleContext);
+  test("returns relevant result for YES response", async () => {
+    mockMlxResponse("YES");
+
+    const result = await checkContextRelevanceWithMLX("What timeout for Lambda?", sampleContext);
     expect(result).not.toBeNull();
     expect(result!.isRelevant).toBe(true);
     expect(result!.score).toBe(0.9);
-    expect(result!.reason).toContain("Ollama");
+    expect(result!.reason).toContain("MLX");
   });
 
   test("returns not-relevant result for NO response", async () => {
-    globalThis.fetch = mock(() =>
-      Promise.resolve({
-        ok: true,
-        json: () => Promise.resolve({ response: "NO" }),
-      })
-    ) as any;
+    mockMlxResponse("NO");
 
-    const result = await checkContextRelevanceWithOllama("What's a good cake recipe?", sampleContext);
+    const result = await checkContextRelevanceWithMLX("What's a good cake recipe?", sampleContext);
     expect(result).not.toBeNull();
     expect(result!.isRelevant).toBe(false);
     expect(result!.score).toBe(0.1);
   });
 
   test("returns relevant result for 'Y' (short form yes)", async () => {
-    globalThis.fetch = mock(() =>
-      Promise.resolve({
-        ok: true,
-        json: () => Promise.resolve({ response: "Y" }),
-      })
-    ) as any;
+    mockMlxResponse("Y");
 
-    const result = await checkContextRelevanceWithOllama("Lambda config?", sampleContext);
+    const result = await checkContextRelevanceWithMLX("Lambda config?", sampleContext);
     expect(result!.isRelevant).toBe(true);
   });
 
   test("returns not-relevant for 'N' (short form no)", async () => {
-    globalThis.fetch = mock(() =>
-      Promise.resolve({
-        ok: true,
-        json: () => Promise.resolve({ response: "N" }),
-      })
-    ) as any;
+    mockMlxResponse("N");
 
-    const result = await checkContextRelevanceWithOllama("Tell me a joke", sampleContext);
+    const result = await checkContextRelevanceWithMLX("Tell me a joke", sampleContext);
     expect(result!.isRelevant).toBe(false);
   });
 
   test("returns null for ambiguous response (not YES or NO)", async () => {
-    globalThis.fetch = mock(() =>
-      Promise.resolve({
-        ok: true,
-        json: () => Promise.resolve({ response: "Maybe, it depends on context." }),
-      })
-    ) as any;
+    mockMlxResponse("Maybe, it depends on context.");
 
-    const result = await checkContextRelevanceWithOllama("Some message", sampleContext);
+    const result = await checkContextRelevanceWithMLX("Some message", sampleContext);
     expect(result).toBeNull();
   });
 
-  test("returns null when Ollama returns empty response", async () => {
-    globalThis.fetch = mock(() =>
-      Promise.resolve({
-        ok: true,
-        json: () => Promise.resolve({ response: "" }),
-      })
-    ) as any;
+  test("returns null when MLX returns empty response", async () => {
+    mockMlxResponse("");
 
-    const result = await checkContextRelevanceWithOllama("Some message", sampleContext);
+    const result = await checkContextRelevanceWithMLX("Some message", sampleContext);
+    // callMlxGenerate throws on empty response, so checkContextRelevanceWithMLX returns null
     expect(result).toBeNull();
   });
 
   test("returns null on non-200 HTTP status", async () => {
     globalThis.fetch = mock(() =>
-      Promise.resolve({ ok: false, status: 503 })
+      Promise.resolve({ ok: false, status: 503, text: () => Promise.resolve("Service Unavailable") })
     ) as any;
 
-    const result = await checkContextRelevanceWithOllama("Some message", sampleContext);
+    const result = await checkContextRelevanceWithMLX("Some message", sampleContext);
     expect(result).toBeNull();
   });
 
   test("returns null when fetch throws (network error)", async () => {
     globalThis.fetch = mock(() => Promise.reject(new Error("Network unreachable"))) as any;
 
-    const result = await checkContextRelevanceWithOllama("Some message", sampleContext);
+    const result = await checkContextRelevanceWithMLX("Some message", sampleContext);
     expect(result).toBeNull();
   });
 
@@ -346,19 +329,14 @@ describe("checkContextRelevanceWithOllama", () => {
       Promise.reject(Object.assign(new Error("signal is aborted"), { name: "AbortError" }))
     ) as any;
 
-    const result = await checkContextRelevanceWithOllama("Some message", sampleContext);
+    const result = await checkContextRelevanceWithMLX("Some message", sampleContext);
     expect(result).toBeNull();
   });
 
   test("handles response with leading/trailing whitespace", async () => {
-    globalThis.fetch = mock(() =>
-      Promise.resolve({
-        ok: true,
-        json: () => Promise.resolve({ response: "  yes  \n" }),
-      })
-    ) as any;
+    mockMlxResponse("  yes  \n");
 
-    const result = await checkContextRelevanceWithOllama("Lambda memory config?", sampleContext);
+    const result = await checkContextRelevanceWithMLX("Lambda memory config?", sampleContext);
     expect(result!.isRelevant).toBe(true);
   });
 });

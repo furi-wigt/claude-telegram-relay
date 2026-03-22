@@ -1,6 +1,28 @@
 # Changelog
 
-## [Unreleased] / 2026-03-22 — Smart Routines: Calendar-aware check-in, Ollama atomic task breakdown, Things 3 inline keyboard
+## [Unreleased] / 2026-03-22 — MLX-only local inference: remove Ollama dependency
+
+### Changed
+- **MLX client** (`src/mlx/client.ts`): Rewritten from subprocess spawning (`mlx-qwen generate`) to HTTP client calling `mlx serve` on port 8800 via OpenAI-compatible `/v1/chat/completions`. `isMlxAvailable()` is now async (HTTP health check). New export: `getMlxBaseUrl()`.
+- **Embeddings** (`src/local/embed.ts`): Switched from Ollama `/api/embed` to MLX `/v1/embeddings` (OpenAI format). Same bge-m3 model, same 1024-dim vectors — no re-embedding needed.
+- **Routine model** (`src/routines/routineModel.ts`): Simplified to MLX-only (removed Ollama fallback cascade). `RoutineModelProvider` type is now just `"mlx"`.
+- **Relay fallback** (`src/relay.ts`): Startup check uses `isMlxAvailable()` instead of `checkOllamaAvailable()`. Chat fallback label now shows "Qwen3.5-9B (MLX)".
+- **Short-term memory** (`src/memory/shortTermMemory.ts`): Summarization uses `callRoutineModel()` instead of direct Ollama HTTP fetch.
+- **Context relevance** (`src/session/contextRelevance.ts`): `checkContextRelevanceWithOllama()` renamed to `checkContextRelevanceWithMLX()`, uses `callMlxGenerate()`. Smart check returns `method: "mlx"` instead of `"ollama"`.
+- **Night summary** (`routines/night-summary.ts`): Provider interface renamed from `ollama` to `mlx`. All log/error messages updated.
+
+### Removed
+- **`src/ollama/`** module — `client.ts`, `models.ts`, `index.ts`, `models.test.ts` deleted entirely. Ollama is no longer a dependency.
+- **`setup/test-fallback.ts`** — Ollama-specific test script removed.
+
+### Notes
+- **MLX server required**: `mlx serve` must be running (port 8800) for text generation and embeddings. Add as PM2 service for production.
+- **No Qdrant schema change**: bge-m3 via MLX produces identical 1024-dim vectors — existing Qdrant collections work without re-embedding.
+- **Env vars**: `MLX_URL` (default `http://localhost:8800`) replaces `OLLAMA_URL` for all local inference.
+
+---
+
+## 2026-03-22 — Smart Routines: Calendar-aware check-in, Ollama atomic task breakdown, Things 3 inline keyboard
 
 ### Added
 - **Atomic Task Breakdown Engine** (`src/utils/atomicBreakdown.ts`): MLX/Ollama-powered decomposition of complex tasks into sequential sub-tasks (each ≤2h). Complex tasks (vague, multi-action, or >2h) are auto-decomposed into ordered steps with `parentTitle` grouping and `stepOrder` sequencing. Example: "Discuss with Alice on Project X" → 1. Research status, 2. Schedule meeting, 3. Write summary. Output groups sub-tasks under their parent with indented numbering. Pulls from Things 3, `.claude/todos/`, calendar, and goals.

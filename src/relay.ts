@@ -40,8 +40,8 @@ import {
   getUserProfile,
 } from "./memory/longTermExtractor.ts";
 import { learnTopicName, learnChatName, getTopicName } from "./utils/chatNames.ts";
-import { checkOllamaAvailable, getModel } from "./ollama/index.ts";
-import { callRoutineModel, getLastProvider } from "./routines/routineModel.ts";
+import { isMlxAvailable } from "./mlx/index.ts";
+import { callRoutineModel } from "./routines/routineModel.ts";
 import { getAgentForChat, autoDiscoverGroup, loadGroupMappings } from "./routing/groupRouter.ts";
 // Router removed: always use Sonnet for simplicity and predictable latency
 import { loadSession as loadGroupSession, updateSessionIdGuarded, initSessions, loadAllSessions, saveSession, isResumeReliable, didResumeFail, lockActiveCwd, resetSession, getSessionSince } from "./session/groupSessions.ts";
@@ -500,12 +500,11 @@ async function saveMessage(
 // Check fallback availability at startup
 let fallbackAvailable = false;
 {
-  const chatModel = getModel("chat-fallback");
-  fallbackAvailable = await checkOllamaAvailable(chatModel);
+  fallbackAvailable = await isMlxAvailable();
   if (fallbackAvailable) {
-    console.log(`Fallback model available: ${chatModel}`);
+    console.log("Fallback model available: MLX (Qwen3.5-9B)");
   } else {
-    console.warn("Fallback model configured but not available. Claude will be used exclusively.");
+    console.warn("MLX server not reachable. Claude will be used exclusively.");
   }
 }
 
@@ -748,7 +747,7 @@ async function callClaude(
   } catch (error) {
     console.error("Claude error:", error);
 
-    // Don't fall back to Ollama for idle timeouts — stalled streams won't recover.
+    // Don't fall back to MLX for idle timeouts — stalled streams won't recover.
     const isIdleTimeout = error instanceof Error && error.message.includes("idle timeout");
 
     // Stale session fingerprint: --resume was attempted, exit 1, empty stderr.
@@ -760,8 +759,7 @@ async function callClaude(
 
     // Try fallback if available (skip for idle timeouts)
     if (!isIdleTimeout && fallbackAvailable) {
-      const chatModel = getModel("chat-fallback");
-      console.log("Claude failed, trying fallback model...");
+      console.log("Claude failed, trying MLX fallback...");
       const notifyChatId = options?.chatId;
       const notifyThreadId = options?.threadId ?? null;
       if (notifyChatId != null) {
@@ -773,8 +771,7 @@ async function callClaude(
       }
       try {
         const fallbackResponse = await callRoutineModel(prompt, { label: "chat-fallback", timeoutMs: 60_000 });
-        const provider = getLastProvider() === "mlx" ? "Qwen3.5-9B (MLX)" : chatModel;
-        return `[via ${provider}]\n\n${fallbackResponse}`;
+        return `[via Qwen3.5-9B (MLX)]\n\n${fallbackResponse}`;
       } catch (fallbackError) {
         console.error("Fallback also failed:", fallbackError);
         return `Error: Both Claude and local model failed. Please try again in a moment.`;
@@ -1126,17 +1123,17 @@ const queueManager = new GroupQueueManager({
 });
 
 // Lightweight caller for /plan question generation.
-// Tries local Ollama first, falls back to Claude Haiku.
+// Tries local MLX first, falls back to Claude Haiku.
 async function questionCallClaude(prompt: string): Promise<string> {
   try {
     const result = await callRoutineModel(prompt, {
       label: "interactive-question",
       timeoutMs: 10_000,
     });
-    console.log("[interactive] MLX/Ollama succeeded");
+    console.log("[interactive] MLX succeeded");
     return result;
-  } catch (ollamaErr) {
-    console.warn("[interactive] Ollama failed, falling back to Haiku:", ollamaErr instanceof Error ? ollamaErr.message : ollamaErr);
+  } catch (mlxErr) {
+    console.warn("[interactive] MLX failed, falling back to Haiku:", mlxErr instanceof Error ? mlxErr.message : mlxErr);
     try {
       const result = await claudeText(prompt, {
         model: "claude-haiku-4-5-20251001",
@@ -1145,8 +1142,8 @@ async function questionCallClaude(prompt: string): Promise<string> {
       console.log("[interactive] Haiku fallback succeeded");
       return result;
     } catch (haikuErr) {
-      console.error("[interactive] Both Ollama and Haiku failed:");
-      console.error("  Ollama:", ollamaErr instanceof Error ? ollamaErr.message : ollamaErr);
+      console.error("[interactive] Both MLX and Haiku failed:");
+      console.error("  MLX:", mlxErr instanceof Error ? mlxErr.message : mlxErr);
       console.error("  Haiku:", haikuErr instanceof Error ? haikuErr.message : haikuErr);
       throw haikuErr;
     }
@@ -1942,7 +1939,7 @@ async function processTextMessage(
         } catch (retryErr) {
           trace({ event: "claude_complete", traceId, chatId, responseLength: 0, durationMs: Date.now() - callStart, fallback: false, error: String(retryErr) });
           await indicator.finish(false);
-          // Retry also failed — alert user before Ollama takes over.
+          // Retry also failed — alert user before MLX takes over.
           bot.api.sendMessage(
             chatId,
             "Claude is unavailable — using fallback AI. If this persists, check the Claude CLI.",

@@ -223,62 +223,62 @@ describe("formatSummary()", () => {
 // analyzeWithProviders() — provider abstraction
 // ============================================================
 
-describe("analyzeWithProviders() — Ollama-first, Claude fallback", () => {
-  it("returns Ollama's response when Ollama succeeds", async () => {
+describe("analyzeWithProviders() — MLX-first, Claude fallback", () => {
+  it("returns MLX's response when MLX succeeds", async () => {
     const claudeFn = async () => "Claude's detailed reflection";
-    const ollamaFn = async () => "Ollama's reflection";
+    const mlxFn = async () => "MLX's reflection";
 
     const result = await analyzeWithProviders("test prompt", {
       claude: claudeFn,
-      ollama: ollamaFn,
+      mlx: mlxFn,
     });
 
-    expect(result.text).toBe("Ollama's reflection");
+    expect(result.text).toBe("MLX's reflection");
   });
 
-  it("identifies 'ollama' as provider on success", async () => {
+  it("identifies 'mlx' as provider on success", async () => {
     const claudeFn = async () => "Claude response";
-    const ollamaFn = async () => "Ollama response";
+    const mlxFn = async () => "MLX response";
 
     const result = await analyzeWithProviders("test prompt", {
       claude: claudeFn,
-      ollama: ollamaFn,
+      mlx: mlxFn,
     });
 
-    expect(result.provider).toBe("ollama");
+    expect(result.provider).toBe("mlx");
   });
 
-  it("falls back to Claude when Ollama throws", async () => {
-    const ollamaFn = async (): Promise<string> => {
-      throw new Error("Ollama unavailable");
+  it("falls back to Claude when MLX throws", async () => {
+    const mlxFn = async (): Promise<string> => {
+      throw new Error("MLX unavailable");
     };
     const claudeFn = async () => "Claude's reflection instead";
 
     const result = await analyzeWithProviders("test prompt", {
       claude: claudeFn,
-      ollama: ollamaFn,
+      mlx: mlxFn,
     });
 
     expect(result.text).toBe("Claude's reflection instead");
   });
 
   it("identifies 'claude' as provider when falling back", async () => {
-    const ollamaFn = async (): Promise<string> => {
-      throw new Error("Ollama unavailable");
+    const mlxFn = async (): Promise<string> => {
+      throw new Error("MLX unavailable");
     };
     const claudeFn = async () => "Claude fallback";
 
     const result = await analyzeWithProviders("test prompt", {
       claude: claudeFn,
-      ollama: ollamaFn,
+      mlx: mlxFn,
     });
 
     expect(result.provider).toBe("claude");
   });
 
-  it("returns provider=null when both Ollama and Claude fail", async () => {
-    const ollamaFn = async (): Promise<string> => {
-      throw new Error("Ollama unavailable");
+  it("returns provider=null when both MLX and Claude fail", async () => {
+    const mlxFn = async (): Promise<string> => {
+      throw new Error("MLX unavailable");
     };
     const claudeFn = async (): Promise<string> => {
       throw new Error("Claude unavailable");
@@ -286,15 +286,15 @@ describe("analyzeWithProviders() — Ollama-first, Claude fallback", () => {
 
     const result = await analyzeWithProviders("test prompt", {
       claude: claudeFn,
-      ollama: ollamaFn,
+      mlx: mlxFn,
     });
 
     expect(result.provider).toBeNull();
   });
 
   it("returns a non-empty error text when both providers fail", async () => {
-    const ollamaFn = async (): Promise<string> => {
-      throw new Error("Ollama unavailable");
+    const mlxFn = async (): Promise<string> => {
+      throw new Error("MLX unavailable");
     };
     const claudeFn = async (): Promise<string> => {
       throw new Error("Claude unavailable");
@@ -302,29 +302,29 @@ describe("analyzeWithProviders() — Ollama-first, Claude fallback", () => {
 
     const result = await analyzeWithProviders("test prompt", {
       claude: claudeFn,
-      ollama: ollamaFn,
+      mlx: mlxFn,
     });
 
     expect(typeof result.text).toBe("string");
     expect(result.text.length).toBeGreaterThan(0);
   });
 
-  it("does not call Claude when Ollama succeeds", async () => {
+  it("does not call Claude when MLX succeeds", async () => {
     let claudeCalled = false;
-    const ollamaFn = async () => "Ollama OK";
+    const mlxFn = async () => "MLX OK";
     const claudeFn = async () => {
       claudeCalled = true;
       return "Claude";
     };
 
-    await analyzeWithProviders("test prompt", { claude: claudeFn, ollama: ollamaFn });
+    await analyzeWithProviders("test prompt", { claude: claudeFn, mlx: mlxFn });
 
     expect(claudeCalled).toBe(false);
   });
 
   it("passes the prompt unchanged to the provider", async () => {
     let capturedPrompt = "";
-    const ollamaFn = async (p: string) => {
+    const mlxFn = async (p: string) => {
       capturedPrompt = p;
       return "response";
     };
@@ -332,7 +332,7 @@ describe("analyzeWithProviders() — Ollama-first, Claude fallback", () => {
 
     await analyzeWithProviders("my exact prompt text", {
       claude: claudeFn,
-      ollama: ollamaFn,
+      mlx: mlxFn,
     });
 
     expect(capturedPrompt).toBe("my exact prompt text");

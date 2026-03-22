@@ -1,4 +1,4 @@
 /**
- * MLX module — Apple Silicon native inference via mlx-qwen CLI.
+ * MLX module — Apple Silicon native inference via mlx serve HTTP server.
  */
-export { callMlxGenerate, isMlxAvailable } from "./client.ts";
+export { callMlxGenerate, isMlxAvailable, getMlxBaseUrl } from "./client.ts";

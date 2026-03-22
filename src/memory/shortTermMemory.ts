@@ -205,25 +205,11 @@ export async function summarizeOldMessages(
 
   let summary = "";
   try {
-    const { getBaseUrl } = await import("../ollama/client.ts");
-    const { getModel: resolveModel } = await import("../ollama/models.ts");
-    const ollamaBaseUrl = getBaseUrl();
-    const ollamaModel = resolveModel("stm-summary");
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 30_000);
-    try {
-      const response = await fetch(`${ollamaBaseUrl}/api/generate`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: ollamaModel, prompt: summaryPrompt, stream: false }),
-        signal: controller.signal,
-      });
-      if (!response.ok) throw new Error(`Ollama HTTP ${response.status}`);
-      const data = await response.json() as { response?: unknown };
-      if (typeof data.response === "string") summary = data.response.trim();
-    } finally {
-      clearTimeout(timer);
-    }
+    const { callRoutineModel } = await import("../routines/routineModel.ts");
+    summary = await callRoutineModel(summaryPrompt, {
+      label: "stm-summary",
+      timeoutMs: 30_000,
+    });
   } catch {
     // Fallback: simple concatenation
     summary = (messages as ConversationMessage[])
