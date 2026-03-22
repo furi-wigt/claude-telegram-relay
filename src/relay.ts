@@ -2366,6 +2366,19 @@ function enqueuePhotoJob(
         console.log(`[${agent.name}] Image(s) received x${imageBuffers.length} (caption: ${caption.substring(0, 40)})`);
         await ctx.replyWithChatAction("typing");
 
+        // Start progress indicator early so the user sees feedback during vision analysis
+        const photoCancelKey = streamKey(chatId, threadId);
+        const photoIndicator = new ProgressIndicator();
+        const imageDisplayName = resolvedLabel;
+        photoIndicator.setModelLabel(`📸 ${imageDisplayName}`);
+        photoIndicator.start(chatId, bot, threadId, {
+          cancelKey: photoCancelKey,
+          onMessageId: (msgId) => {
+            const entry = activeStreams.get(photoCancelKey);
+            if (entry) entry.progressMessageId = msgId;
+          },
+        }).catch(() => {}); // fire-and-forget
+
         // Analyze all images in parallel — each in its own separate claudeText process
         // (--dangerously-skip-permissions, cwd=/tmp). Partial failures are tolerated.
         //
@@ -2374,10 +2387,12 @@ function enqueuePhotoJob(
         // All other agents use the user's caption → result injected as <image_analysis>.
         let imageContext: string | undefined;
         let diagnosticContext: string | undefined;
+        void photoIndicator.update("Analyzing image...", { immediate: true });
         try {
           if (agent.diagnostics?.enabled) {
             diagnosticContext = await analyzeDiagnosticImages(imageBuffers, agent.id, PROJECT_ROOT);
             if (!diagnosticContext) {
+              await photoIndicator.finish(false);
               await ctx.reply("Could not extract diagnostic information from the image(s). Please try again.");
               return;
             }
@@ -2385,6 +2400,7 @@ function enqueuePhotoJob(
             const results = await analyzeImages(imageBuffers, caption);
             imageContext = combineImageContexts(results);
             if (!imageContext) {
+              await photoIndicator.finish(false);
               await ctx.reply("Could not analyze the image(s). Please try again.");
               return;
             }
@@ -2392,9 +2408,11 @@ function enqueuePhotoJob(
         } catch (visionErr) {
           const errMsg = visionErr instanceof Error ? visionErr.message : String(visionErr);
           console.error("[vision] Analysis failed:", errMsg);
+          await photoIndicator.finish(false);
           await ctx.reply(`Could not analyze image: ${errMsg}`);
           return;
         }
+        void photoIndicator.update("Building context...", { immediate: true });
 
         const photoUserId = ctx.from?.id ?? 0;
         const session = await loadGroupSession(chatId, agent.id, threadId);
@@ -2445,21 +2463,8 @@ function enqueuePhotoJob(
           diagnosticContext,
         });
 
-        // Vision description (Phase 1) always uses Sonnet; agent response (Phase 2) honours [O]/[H].
-        const imageDisplayName = resolvedLabel;
-
         await saveMessage("user", `[Image]: ${caption}`, undefined, chatId, agent.id, threadId);
-
-        const photoCancelKey = streamKey(chatId, threadId);
-        const photoIndicator = new ProgressIndicator();
-        photoIndicator.setModelLabel(`📸 ${imageDisplayName}`);
-        photoIndicator.start(chatId, bot, threadId, {
-          cancelKey: photoCancelKey,
-          onMessageId: (msgId) => {
-            const entry = activeStreams.get(photoCancelKey);
-            if (entry) entry.progressMessageId = msgId;
-          },
-        }).catch(() => {}); // fire-and-forget
+        void photoIndicator.update("Processing message...", { immediate: true });
 
         await lockActiveCwd(chatId, threadId, PROJECT_DIR || undefined);
 
