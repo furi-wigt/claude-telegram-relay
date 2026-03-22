@@ -72,7 +72,7 @@ if (_isEntry) {
 
 **Always use `sendAndRecord` for conversational messages.** It sends to
 Telegram AND persists the message to the local database so it appears in the
-bot's rolling short-term memory window (with a pre-computed Ollama summary).
+bot's rolling short-term memory window (with a pre-computed MLX summary).
 
 Using `sendToGroup` directly bypasses memory — correct for infra alerts,
 wrong for anything the user might want to reference later.
@@ -220,7 +220,7 @@ export function buildMessage(data: MyData): string { ... }
 // ✓ exportable — injectable providers, no real I/O
 export async function analyzeWithProviders(
   prompt: string,
-  providers: { claude: (p: string) => Promise<string>; ollama: ... }
+  providers: { claude: (p: string) => Promise<string>; mlx: ... }
 ): Promise<Result> { ... }
 
 // ✗ keep private — real I/O
@@ -335,21 +335,21 @@ npx pm2 save
 
 ## LLM provider order
 
-For text-only tasks (summarization, extraction, classification), use **local Ollama
-first** with Claude Haiku as fallback. Always log which provider succeeded or failed.
+For text-only tasks (summarization, extraction, classification), use `callRoutineModel()`
+which calls the **MLX server** (`mlx serve`). Logging is handled automatically.
 
 ```ts
-try {
-  result = await callOllamaGenerate(prompt, { purpose: "routine-summary", timeoutMs: 30_000 });
-  console.log("[my-routine] Ollama succeeded");
-} catch (ollamaErr) {
-  console.warn("[my-routine] Ollama failed, falling back to Haiku:", ollamaErr instanceof Error ? ollamaErr.message : ollamaErr);
-  result = await claudeText(prompt, { model: "claude-haiku-4-5-20251001", timeoutMs: 30_000 });
-  console.log("[my-routine] Haiku fallback succeeded");
-}
+import { callRoutineModel } from "../src/routines/routineModel.ts";
+
+const result = await callRoutineModel(prompt, {
+  label: "my-routine",
+  timeoutMs: 30_000,
+});
 ```
 
-**Note:** Local Ollama (qwen) does **not** support tool use. If a routine needs
+**Provider:** MLX server (`/v1/chat/completions`) — Qwen3.5 9B 4-bit, Apple Silicon native, ~60 tok/s
+
+**Note:** Local models do **not** support tool use. If a routine needs
 Claude tools/agentic capabilities, use `claudeText`/`claudeStream` directly.
 
 ---

@@ -28,7 +28,7 @@ import { sendAndRecord } from "../src/utils/routineMessage.ts";
 import { sendToGroup } from "../src/utils/sendToGroup.ts";
 import { GROUPS, validateGroup } from "../src/config/groups.ts";
 import { claudeText } from "../src/claude-process.ts";
-import { callOllamaGenerate } from "../src/ollama/index.ts";
+import { callRoutineModel } from "../src/routines/routineModel.ts";
 import { createWeatherClient } from "../integrations/weather/index.ts";
 import {
   createAppleCalendarClient,
@@ -38,10 +38,11 @@ import { USER_NAME, USER_TIMEZONE } from "../src/config/userConfig.ts";
 import { scanPendingE2ETests, formatPendingE2ESection } from "../src/routines/pendingE2EScanner.ts";
 import { shouldSkipToday, markRanToday } from "../src/routines/runOnceGuard.ts";
 import { getPm2LogsDir } from "../config/observability.ts";
+import { fetchThingsTasks } from "../src/utils/t3Helper.ts";
+import { breakdownTasks, scanPendingTodos, formatAtomicTaskBlock, type AtomicTask } from "../src/utils/atomicBreakdown.ts";
+import { storeTaskSession, buildTaskKeyboardJSON } from "../src/callbacks/taskSuggestionHandler.ts";
 
 const LAST_RUN_FILE = join(getPm2LogsDir(), "morning-summary.lastrun");
-
-const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
 
 // ── Area targets for 2-hour forecast ─────────────────────────────────────────
 // Matched against NEA area names using case-insensitive substring search.
@@ -77,14 +78,6 @@ interface Goal {
   content: string;
   deadline?: string;
   priority?: "high" | "medium" | "low";
-}
-
-interface SuggestedTask {
-  description: string;
-  rationale: string;
-  suggestedTime: string;
-  estimatedDuration: number; // minutes
-  relatedGoal?: string;
 }
 
 interface DevotionalContent {
@@ -219,24 +212,13 @@ async function generateRecapNarrative(activity: YesterdayActivity): Promise<stri
     `Write a concise, specific narrative in past tense. Plain text only, no markdown, no bullet points.`;
 
   try {
-    let narrative: string;
-    try {
-      narrative = await callOllamaGenerate(prompt, {
-        purpose: "routine-summary",
-        timeoutMs: 30_000,
-      });
-      console.log("[morning-summary:recap] Ollama succeeded");
-    } catch (ollamaErr) {
-      console.warn("[morning-summary:recap] Ollama failed, falling back to Haiku:", ollamaErr instanceof Error ? ollamaErr.message : ollamaErr);
-      narrative = await _deps.claudeText(prompt, {
-        model: "claude-haiku-4-5-20251001",
-        timeoutMs: 20_000,
-      });
-      console.log("[morning-summary:recap] Haiku fallback succeeded");
-    }
+    const narrative = await callRoutineModel(prompt, {
+      label: "morning-summary:recap",
+      timeoutMs: 90_000,
+    });
     return narrative.trim();
   } catch (err) {
-    console.error("[morning-summary:recap] Both Ollama and Haiku failed:", err);
+    console.error("[morning-summary:recap] LLM failed:", err);
     const parts: string[] = [`${activity.messageCount} messages exchanged`];
     if (activity.factsLearned > 0) parts.push(`${activity.factsLearned} facts learned`);
     if (activity.completedGoals.length > 0) {
@@ -321,137 +303,6 @@ function formatCalendarEvent(e: AppleCalendarEvent): string {
 }
 
 // ============================================================
-// TASK SUGGESTION ENGINE
-// ============================================================
-
-async function suggestTasks(
-  activity: YesterdayActivity,
-  goals: Goal[],
-  calendarEvents: AppleCalendarEvent[] | null
-): Promise<SuggestedTask[]> {
-  const calendarContext = calendarEvents === null
-    ? "Calendar access not available."
-    : calendarEvents.length === 0
-      ? "No calendar events today."
-      : `Today's calendar events (slot tasks around these):\n` +
-        calendarEvents.map(formatCalendarEvent).join("\n");
-
-  const context = {
-    user: USER_NAME,
-    timezone: USER_TIMEZONE,
-    currentTime: new Date().toISOString(),
-    activeGoals: goals.map(g => ({
-      content: g.content,
-      deadline: g.deadline,
-      priority: g.priority,
-      daysUntilDeadline: g.deadline
-        ? Math.ceil((new Date(g.deadline).getTime() - Date.now()) / (1000 * 60 * 60 * 24))
-        : null,
-    })),
-  };
-
-  const prompt =
-    `You are a personal task planner. Suggest 3-5 actionable tasks for today.\n\n` +
-    `Calendar:\n${calendarContext}\n\n` +
-    `Goals:\n${JSON.stringify(context.activeGoals, null, 2)}\n\n` +
-    `Requirements:\n` +
-    `1. Prioritise goals with deadlines within 3 days\n` +
-    `2. Suggest realistic time slots (08:00–18:00) that do not overlap calendar events\n` +
-    `3. Estimate duration 15–120 minutes\n` +
-    `4. Provide a brief rationale for each task\n\n` +
-    `Output ONLY a valid JSON array:\n` +
-    `[{"description":"...","rationale":"...","suggestedTime":"HH:MM","estimatedDuration":60,"relatedGoal":"id or null"}]\n` +
-    `No explanation, no markdown, just the JSON array.`;
-
-  try {
-    let response: string;
-    try {
-      response = await callOllamaGenerate(prompt, {
-        purpose: "routine-summary",
-        timeoutMs: 30_000,
-      });
-      console.log("[morning-summary:tasks] Ollama succeeded");
-    } catch (ollamaErr) {
-      console.warn("[morning-summary:tasks] Ollama failed, falling back to Haiku:", ollamaErr instanceof Error ? ollamaErr.message : ollamaErr);
-      response = await _deps.claudeText(prompt, {
-        model: "claude-haiku-4-5-20251001",
-        timeoutMs: 30_000,
-      });
-      console.log("[morning-summary:tasks] Haiku fallback succeeded");
-    }
-
-    if (!response) return getFallbackTasks(goals);
-
-    let jsonText = response.trim();
-    if (jsonText.startsWith("```")) {
-      jsonText = jsonText.replace(/^```(?:json)?\n?/, "").replace(/\n?```$/, "");
-    }
-
-    const tasks = JSON.parse(jsonText);
-    if (!Array.isArray(tasks)) return getFallbackTasks(goals);
-
-    const validated: SuggestedTask[] = tasks
-      .filter(
-        (t: any) =>
-          t.description && t.rationale && t.suggestedTime && typeof t.estimatedDuration === "number"
-      )
-      .map((t: any) => ({
-        description: t.description,
-        rationale: t.rationale,
-        suggestedTime: t.suggestedTime,
-        estimatedDuration: t.estimatedDuration,
-        relatedGoal: t.relatedGoal || undefined,
-      }));
-
-    if (validated.length === 0) return getFallbackTasks(goals);
-
-    console.log(`✓ Generated ${validated.length} task suggestions`);
-    return validated;
-  } catch (error) {
-    console.error("suggestTasks error:", error);
-    return getFallbackTasks(goals);
-  }
-}
-
-function getFallbackTasks(goals: Goal[]): SuggestedTask[] {
-  const tasks: SuggestedTask[] = [];
-
-  const urgentGoals = goals.filter(g => {
-    if (!g.deadline) return false;
-    const days = Math.ceil((new Date(g.deadline).getTime() - Date.now()) / 864e5);
-    return days <= 3 && days >= 0;
-  });
-  urgentGoals.forEach(g => {
-    tasks.push({
-      description: `Work on: ${g.content}`,
-      rationale: `Deadline: ${new Date(g.deadline!).toLocaleDateString()}`,
-      suggestedTime: "09:00",
-      estimatedDuration: 120,
-      relatedGoal: g.id,
-    });
-  });
-
-  goals.filter(g => g.priority === "high").slice(0, 2).forEach(g => {
-    tasks.push({
-      description: g.content,
-      rationale: "High priority goal",
-      suggestedTime: "11:00",
-      estimatedDuration: 90,
-      relatedGoal: g.id,
-    });
-  });
-
-  tasks.push({
-    description: "Review and respond to messages",
-    rationale: "Daily routine",
-    suggestedTime: "08:00",
-    estimatedDuration: 30,
-  });
-
-  return tasks.sort((a, b) => a.suggestedTime.localeCompare(b.suggestedTime));
-}
-
-// ============================================================
 // GMAIL DEVOTIONAL (STUB)
 // ============================================================
 
@@ -470,7 +321,8 @@ async function getDailyDevotional(): Promise<DevotionalContent | null> {
 
 async function buildEnhancedBriefing(): Promise<{
   message: string;
-  tasks: SuggestedTask[];
+  tasks: AtomicTask[];
+  replyMarkup?: unknown;
 }> {
   const now = new Date();
   const dateStr = now.toLocaleDateString("en-US", {
@@ -480,21 +332,24 @@ async function buildEnhancedBriefing(): Promise<{
     timeZone: USER_TIMEZONE,
   });
 
-  // Parallel fetches
-  const [weatherData, goals, activity, devotional, calendarEvents, pendingE2E] = await Promise.all([
+  const todosDir = join(import.meta.dir, "../.claude/todos");
+
+  // Parallel fetches — Things 3 + todos added
+  const [weatherData, goals, activity, devotional, calendarEvents, pendingE2E, thingsTasks, pendingTodos] = await Promise.all([
     getWeatherData(),
     getActiveGoals(),
     getYesterdaysActivity(),
     getDailyDevotional(),
     getTodayCalendarEvents(),
-    scanPendingE2ETests(join(import.meta.dir, "../.claude/todos")),
+    scanPendingE2ETests(todosDir),
+    fetchThingsTasks(["today", "deadlines"]),
+    scanPendingTodos(todosDir),
   ]);
 
-  // Sequential: needs activity + goals + calendar
-  const [recapNarrative, suggestedTasks] = await Promise.all([
-    generateRecapNarrative(activity),
-    suggestTasks(activity, goals, calendarEvents),
-  ]);
+  // Sequential: both hit MLX (serialized via mutex), so run one after the other
+  const goalsForBreakdown = goals.map(g => ({ content: g.content, deadline: g.deadline }));
+  const recapNarrative = await generateRecapNarrative(activity);
+  const atomicTasks = await breakdownTasks(thingsTasks, pendingTodos, calendarEvents, goalsForBreakdown);
 
   const lines: string[] = [];
 
@@ -568,56 +423,17 @@ async function buildEnhancedBriefing(): Promise<{
     lines.push("");
   }
 
-  // ── Suggested Tasks ─────────────────────────────────────────────────────────
-  if (suggestedTasks.length > 0) {
-    lines.push(`✅ **Suggested Tasks for Today**`);
-    suggestedTasks.forEach((task, idx) => {
-      lines.push(`${idx + 1}. **[${task.suggestedTime}]** ${task.description}`);
-      lines.push(`   _${task.rationale}_ (${task.estimatedDuration} min)`);
-    });
+  // ── Atomic Tasks (replaces old suggestTasks) ─────────────────────────────────
+  let replyMarkup: unknown;
+  if (atomicTasks.length > 0) {
+    lines.push(`📋 **Today's Action Plan**`);
+    const block = formatAtomicTaskBlock(atomicTasks, storeTaskSession, buildTaskKeyboardJSON);
+    lines.push(block.text);
     lines.push("");
-    lines.push(`_Reply "confirm" to set reminders, or "skip" to proceed._`);
+    replyMarkup = block.replyMarkup;
   }
 
-  return { message: lines.join("\n"), tasks: suggestedTasks };
-}
-
-// ============================================================
-// TASK REMINDER SCHEDULER
-// ============================================================
-
-async function scheduleTaskReminders(tasks: SuggestedTask[]): Promise<void> {
-  if (!BOT_TOKEN || !GROUPS.GENERAL.chatId) {
-    console.warn("Cannot schedule reminders — missing bot token or chat ID");
-    return;
-  }
-
-  const chatId = GROUPS.GENERAL.chatId;
-  const today = new Date();
-
-  for (const task of tasks) {
-    const [hours, minutes] = task.suggestedTime.split(":").map(Number);
-    const reminderTime = new Date(today);
-    reminderTime.setHours(hours, minutes, 0, 0);
-
-    if (reminderTime <= new Date()) continue;
-
-    const delayMs = reminderTime.getTime() - Date.now();
-    setTimeout(async () => {
-      const text = `⏰ Reminder: ${task.description}\n(Est. ${task.estimatedDuration} min)`;
-      try {
-        await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ chat_id: chatId, text }),
-        });
-      } catch (err) {
-        console.error(`Failed to send reminder for ${task.description}:`, err);
-      }
-    }, delayMs);
-
-    console.log(`Scheduled reminder ${task.suggestedTime}: ${task.description}`);
-  }
+  return { message: lines.join("\n"), tasks: atomicTasks, replyMarkup };
 }
 
 // ============================================================
@@ -656,11 +472,12 @@ async function main() {
     process.exit(0); // graceful skip — PM2 will retry on next cron cycle
   }
 
-  const { message, tasks } = await buildEnhancedBriefing();
+  const { message, tasks, replyMarkup } = await buildEnhancedBriefing();
   await sendAndRecord(GROUPS.GENERAL.chatId, message, {
     routineName: "morning-summary",
     agentId: "general-assistant",
     topicId: GROUPS.GENERAL.topicId,
+    reply_markup: replyMarkup,
   });
   markRanToday(LAST_RUN_FILE);
   console.log("Enhanced morning summary sent to General group");
@@ -697,11 +514,8 @@ export {
   getActiveGoals,
   getTodayCalendarEvents,
   generateRecapNarrative,
-  suggestTasks,
   getDailyDevotional,
   buildEnhancedBriefing,
-  scheduleTaskReminders,
-  getFallbackTasks,
   formatCalendarEvent,
 };
 
@@ -709,6 +523,5 @@ export type {
   WeatherSection,
   YesterdayActivity,
   Goal,
-  SuggestedTask,
   DevotionalContent,
 };

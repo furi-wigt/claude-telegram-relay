@@ -1,7 +1,7 @@
 /**
- * Generates short topic labels (3-7 words) for messages using local Ollama.
+ * Generates short topic labels (3-7 words) for messages using local MLX.
  */
-import { callOllamaGenerate } from "../ollama/client.ts";
+import { callRoutineModel } from "../routines/routineModel.ts";
 
 const TOPIC_TIMEOUT_MS = 3_000;
 const MIN_CONTENT_LENGTH = 50;
@@ -10,7 +10,7 @@ const MAX_PROMPT_INPUT = 500;
 /**
  * Generate a 3-7 word topic label for a message.
  * - Content < 50 chars: return first 50 chars directly (no LLM call)
- * - Ollama timeout/failure: return first 60 chars as fallback
+ * - MLX timeout/failure: return first 60 chars as fallback
  */
 export async function generateTopic(content: string): Promise<string> {
   if (content.length < MIN_CONTENT_LENGTH) {
@@ -19,9 +19,9 @@ export async function generateTopic(content: string): Promise<string> {
 
   try {
     const truncated = content.slice(0, MAX_PROMPT_INPUT);
-    const result = await callOllamaGenerate(
+    const result = await callRoutineModel(
       `Summarize this message in 3-7 words as a topic label. Plain text only, no quotes, no punctuation at end:\n\n${truncated}`,
-      { purpose: "topic-generation", timeoutMs: TOPIC_TIMEOUT_MS }
+      { label: "topicGenerator", timeoutMs: TOPIC_TIMEOUT_MS }
     );
     // Validate: should be short. If LLM returned garbage, fallback.
     const cleaned = result.replace(/^["']|["']$/g, "").trim();

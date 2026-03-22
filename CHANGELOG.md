@@ -1,6 +1,51 @@
 # Changelog
 
-## [Unreleased]
+## [Unreleased] / 2026-03-22 — MLX-only local inference: remove Ollama dependency
+
+### Changed
+- **MLX client** (`src/mlx/client.ts`): Rewritten from subprocess spawning (`mlx-qwen generate`) to HTTP client calling `mlx serve` on port 8800 via OpenAI-compatible `/v1/chat/completions`. `isMlxAvailable()` is now async (HTTP health check). New export: `getMlxBaseUrl()`.
+- **Embeddings** (`src/local/embed.ts`): Switched from Ollama `/api/embed` to MLX `/v1/embeddings` (OpenAI format). Same bge-m3 model, same 1024-dim vectors — no re-embedding needed.
+- **Routine model** (`src/routines/routineModel.ts`): Simplified to MLX-only (removed Ollama fallback cascade). `RoutineModelProvider` type is now just `"mlx"`.
+- **Relay fallback** (`src/relay.ts`): Startup check uses `isMlxAvailable()` instead of `checkOllamaAvailable()`. Chat fallback label now shows "Qwen3.5-9B (MLX)".
+- **Short-term memory** (`src/memory/shortTermMemory.ts`): Summarization uses `callRoutineModel()` instead of direct Ollama HTTP fetch.
+- **Context relevance** (`src/session/contextRelevance.ts`): `checkContextRelevanceWithOllama()` renamed to `checkContextRelevanceWithMLX()`, uses `callMlxGenerate()`. Smart check returns `method: "mlx"` instead of `"ollama"`.
+- **Night summary** (`routines/night-summary.ts`): Provider interface renamed from `ollama` to `mlx`. All log/error messages updated. Footer label is now dynamic — shows the last path segment of `MLX_MODEL` (e.g. `Qwen3.5-9B-MLX-4bit`) when MLX ran, `Claude Haiku` on fallback, `Unknown` if both failed. No hardcoded model names.
+
+### Removed
+- **`src/ollama/`** module — `client.ts`, `models.ts`, `index.ts`, `models.test.ts` deleted entirely. Ollama is no longer a dependency.
+- **`setup/test-fallback.ts`** — Ollama-specific test script removed.
+
+### Notes
+- **MLX server required**: `mlx serve` must be running (port 8800) for text generation and embeddings. Add as PM2 service for production.
+- **No Qdrant schema change**: bge-m3 via MLX produces identical 1024-dim vectors — existing Qdrant collections work without re-embedding.
+- **Env vars**: `MLX_URL` (default `http://localhost:8800`) replaces `OLLAMA_URL` for all local inference.
+- **mlx-local server fixes** (`~/.claude/tools/mlx-qwen/mlx_local/server.py`): (a) `BrokenPipeError` caught at both the embeddings path and the generation `do_POST` path — no more traceback spam when clients disconnect mid-response. (b) Module-level `_gpu_lock` serializes all Metal operations — prevents `A command encoder is already encoding to this command buffer` crash when embedding and generation requests hit the GPU concurrently.
+
+---
+
+## 2026-03-22 — Smart Routines: Calendar-aware check-in, Ollama atomic task breakdown, Things 3 inline keyboard
+
+### Added
+- **Atomic Task Breakdown Engine** (`src/utils/atomicBreakdown.ts`): MLX/Ollama-powered decomposition of complex tasks into sequential sub-tasks (each ≤2h). Complex tasks (vague, multi-action, or >2h) are auto-decomposed into ordered steps with `parentTitle` grouping and `stepOrder` sequencing. Example: "Discuss with Alice on Project X" → 1. Research status, 2. Schedule meeting, 3. Write summary. Output groups sub-tasks under their parent with indented numbering. Pulls from Things 3, `.claude/todos/`, calendar, and goals.
+- **Things 3 CLI wrapper** (`src/utils/t3Helper.ts`): Subprocess wrapper for `t3` CLI. Fetches tasks from any Things 3 view with JSON parsing and UUID deduplication. 10s timeout. Fixed: removed erroneous `--json` flag (`t3` outputs JSON by default).
+- **Task Suggestion Callback Handler** (`src/callbacks/taskSuggestionHandler.ts`): In-memory session store (1h TTL) and Grammy callback handler for `ts:all:{sessionId}` / `ts:skip:{sessionId}` inline keyboard buttons. Confirmed tap batch-adds tasks to Things 3 via URL scheme.
+- **`sendToGroup` / `sendAndRecord`**: Accept `reply_markup?: unknown`, attached to last chunk only. Return `message_id`.
+
+### Changed
+- **Morning Summary** (`routines/morning-summary.ts`): Replaced `suggestTasks()` with `breakdownTasks()` + `formatAtomicTaskBlock()`. Shows numbered "Today's Action Plan" with time slots, durations, source attribution, and "Add All to Things 3" inline keyboard. Recap Ollama timeout raised 30s → 90s for qwen3.5:4b.
+- **Smart Check-in** (`routines/smart-checkin.ts`): Complete rewrite. Calendar-aware context with meeting prep reminders (30min before start), post-meeting debrief suggestions, Things 3 task context. Decision engine uses local Ollama (`callOllamaGenerate` with `think: false`) for YES/NO check-in decisions — replaced Claude CLI subprocess (Haiku) which hung due to OAuth/startup latency with no timeout. Schedule guard: Mon–Sat 06–22, Sun 12–23.
+- **Ollama client** (`src/ollama/client.ts`): `callOllamaGenerate` accepts `think?: boolean`. When `false`, routes to `/api/chat` with `think: false` (required for `qwen3.x` thinking models — `/api/generate` does not support this flag). All routine Ollama calls now pass `think: false`.
+- **Bot startup** (`src/relay.ts`): Registers `registerTaskSuggestionHandler(bot)` for `ts:*` callback queries.
+
+### Removed
+- `suggestTasks()`, `getFallbackTasks()`, `scheduleTaskReminders()`, `SuggestedTask` type, `BOT_TOKEN` constant from `morning-summary.ts`.
+
+### Notes
+- **Ollama model**: `OLLAMA_ROUTINE_MODEL=qwen3.5:4b` in `~/.claude-relay/.env`. Controls both recap and atomic breakdown.
+- **qwen3.5:4b thinking**: Extended thinking disabled via `think: false` in all routine Ollama calls. Without it the model enters a multi-minute thinking loop and times out at any reasonable threshold.
+- **Calendar + PM2/launchd**: `calendar-helper` TCC access is granted to the spawning process. PM2 starts under launchd with no UI context — calendar degrades gracefully to `null`. Fix: run `calendar-helper check-access` from an interactive terminal session once to register TCC for that terminal app, then start PM2 from that session.
+
+---
 
 ### Added
 - Structured observability system for debugging message flow and LTM extraction (`src/utils/tracer.ts`)

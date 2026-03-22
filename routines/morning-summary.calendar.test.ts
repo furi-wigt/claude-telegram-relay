@@ -65,10 +65,31 @@ mock.module("../src/utils/routineMessage.ts", () => ({
   sendAndRecord: async () => {},
 }));
 
-// -- Ollama mock (generateRecapNarrative + suggestTasks call Ollama first) --
-// Without this mock, buildEnhancedBriefing tests hang for 30s waiting for Ollama.
-mock.module("../src/ollama/index.ts", () => ({
-  callOllamaGenerate: async () => "No activity to summarize.",
+// -- Routine model mock (MLX/Ollama cascade) --
+// Without this mock, buildEnhancedBriefing tests hang waiting for local LLM.
+mock.module("../src/routines/routineModel.ts", () => ({
+  callRoutineModel: async () => "No activity to summarize.",
+  getLastProvider: () => "mlx",
+}));
+
+// -- Things 3 mock (fetchThingsTasks calls real CLI without this) --
+mock.module("../src/utils/t3Helper.ts", () => ({
+  fetchThingsTasks: async () => [],
+  fetchT3View: async () => [],
+  isT3Available: async () => false,
+}));
+
+// -- Atomic breakdown mock (breakdownTasks calls real Claude without this) --
+mock.module("../src/utils/atomicBreakdown.ts", () => ({
+  breakdownTasks: async () => [],
+  scanPendingTodos: async () => [],
+  formatAtomicTaskBlock: () => ({ text: "", replyMarkup: undefined }),
+}));
+
+// -- Task suggestion handler mock --
+mock.module("../src/callbacks/taskSuggestionHandler.ts", () => ({
+  storeTaskSession: () => "mock-session",
+  buildTaskKeyboardJSON: () => ({ inline_keyboard: [] }),
 }));
 
 // NOTE: We do NOT mock "../src/claude-process.ts" or
@@ -416,8 +437,8 @@ describe("buildEnhancedBriefing() calendar section", () => {
     expect(message).toContain("Good morning TestUser");
     // Weather section
     expect(message).toContain("Weather Update");
-    // Suggested tasks section (fallback tasks should appear)
-    expect(message).toContain("Suggested Tasks");
+    // Calendar unavailable notice should appear
+    expect(message).toContain("Calendar unavailable");
   });
 
   test("single event renders correctly in briefing", async () => {

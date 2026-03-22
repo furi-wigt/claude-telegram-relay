@@ -8,14 +8,14 @@
  */
 
 /**
- * Night Summary Routine (Ollama-first, Haiku fallback)
+ * Night Summary Routine (MLX-first, Haiku fallback)
  *
  * Schedule: 11:00 PM daily (SGT)
  * Target: General AI Assistant group
  *
  * Pulls the day's messages, facts, and goals from local SQLite, then uses
- * local Ollama to generate a detailed, motivational day-end reflection
- * formatted in Markdown. Falls back to Claude Haiku when Ollama is unavailable.
+ * local MLX to generate a detailed, motivational day-end reflection
+ * formatted in Markdown. Falls back to Claude Haiku when MLX is unavailable.
  * Notifies the user if both providers fail.
  *
  * Run manually: bun run routines/night-summary.ts
@@ -23,13 +23,14 @@
 
 import { join } from "path";
 import { runPrompt } from "../integrations/claude/index.ts";
-import { callOllamaGenerate } from "../src/ollama/index.ts";
+import { callRoutineModel } from "../src/routines/routineModel.ts";
 import { sendAndRecord } from "../src/utils/routineMessage.ts";
 import { sendToGroup } from "../src/utils/sendToGroup.ts";
 import { GROUPS, validateGroup } from "../src/config/groups.ts";
 import { USER_NAME, USER_TIMEZONE } from "../src/config/userConfig.ts";
 import { shouldSkipRecently, markRanToday } from "../src/routines/runOnceGuard.ts";
 import { getPm2LogsDir } from "../config/observability.ts";
+import { getMlxModel } from "../src/mlx/client.ts";
 
 const LAST_RUN_FILE = join(getPm2LogsDir(), "night-summary.lastrun");
 
@@ -69,7 +70,7 @@ export interface DayGoal {
 
 export interface AnalysisResult {
   text: string;
-  provider: "claude" | "ollama" | null;
+  provider: "claude" | "mlx" | null;
 }
 
 // ============================================================
@@ -235,7 +236,8 @@ export function formatSummary(
   dateStr: string,
   messageCount: number,
   factCount: number,
-  analysis: string
+  analysis: string,
+  provider: "claude" | "mlx" | null = null
 ): string {
   const lines: string[] = [];
 
@@ -245,38 +247,45 @@ export function formatSummary(
   lines.push(analysis);
   lines.push("");
   lines.push("---");
-  lines.push("*Powered by Claude Haiku. Reply to reflect further.*");
+
+  const providerLabel =
+    provider === "mlx"
+      ? getMlxModel().split("/").pop() ?? "MLX"
+      : provider === "claude"
+        ? "Claude Haiku"
+        : "Unknown";
+  lines.push(`*Powered by ${providerLabel}. Reply to reflect further.*`);
 
   return lines.join("\n");
 }
 
 /**
- * Attempt to generate a reflection using Claude, falling back to Ollama.
+ * Attempt to generate a reflection using MLX, falling back to Claude Haiku.
  * Returns the analysis text and which provider succeeded (or null if both failed).
  */
 export async function analyzeWithProviders(
   prompt: string,
   providers: {
     claude: (p: string) => Promise<string>;
-    ollama: (p: string) => Promise<string>;
+    mlx: (p: string) => Promise<string>;
   }
 ): Promise<AnalysisResult> {
   try {
-    const text = await providers.ollama(prompt);
-    console.log("[night-summary] Ollama succeeded");
-    return { text, provider: "ollama" };
-  } catch (ollamaError) {
-    console.warn("[night-summary] Ollama failed, falling back to Haiku:", ollamaError instanceof Error ? ollamaError.message : ollamaError);
+    const text = await providers.mlx(prompt);
+    console.log("[night-summary] MLX succeeded");
+    return { text, provider: "mlx" };
+  } catch (mlxError) {
+    console.warn("[night-summary] MLX failed, falling back to Haiku:", mlxError instanceof Error ? mlxError.message : mlxError);
     try {
       const text = await providers.claude(prompt);
       console.log("[night-summary] Haiku fallback succeeded");
       return { text, provider: "claude" };
     } catch (claudeError) {
-      console.error("[night-summary] Both Ollama and Haiku failed:");
-      console.error("  Ollama:", ollamaError);
+      console.error("[night-summary] Both MLX and Haiku failed:");
+      console.error("  MLX:", mlxError);
       console.error("  Claude:", claudeError);
       return {
-        text: "Day review unavailable — both Ollama and Claude are offline.",
+        text: "Day review unavailable — both MLX and Claude are offline.",
         provider: null,
       };
     }
@@ -377,7 +386,7 @@ async function analyzeDay(
 
   return analyzeWithProviders(prompt, {
     claude: (p) => runPrompt(p, { model: CLAUDE_MODEL, timeoutMs: CLAUDE_TIMEOUT_MS }),
-    ollama: (p: string) => callOllamaGenerate(p, { purpose: "routine-summary" }),
+    mlx: (p: string) => callRoutineModel(p, { label: "night-summary" }),
   });
 }
 
@@ -385,7 +394,7 @@ async function analyzeDay(
 // BUILD SUMMARY
 // ============================================================
 
-async function buildSummary(): Promise<{ summary: string; provider: "claude" | "ollama" | null }> {
+async function buildSummary(): Promise<{ summary: string; provider: "claude" | "mlx" | null }> {
   const now = new Date();
   const dateStr = now.toLocaleDateString("en-US", {
     weekday: "long",
@@ -402,7 +411,7 @@ async function buildSummary(): Promise<{ summary: string; provider: "claude" | "
   ]);
 
   const result = await analyzeDay(messages, facts, goals, summaries);
-  const summary = formatSummary(dateStr, messages.length, facts.length, result.text);
+  const summary = formatSummary(dateStr, messages.length, facts.length, result.text, result.provider);
 
   return { summary, provider: result.provider };
 }
@@ -412,7 +421,7 @@ async function buildSummary(): Promise<{ summary: string; provider: "claude" | "
 // ============================================================
 
 async function main() {
-  console.log("Running Night Summary (Claude Haiku, Ollama fallback)...");
+  console.log("Running Night Summary (MLX-first, Haiku fallback)...");
 
   if (shouldSkipRecently(LAST_RUN_FILE, 2)) {
     console.log("[night-summary] Already ran within the last 2 hours, skipping.");
@@ -430,9 +439,9 @@ async function main() {
   if (provider === null) {
     const failureMessage =
       "⚠️ **Night summary unavailable**\n\n" +
-      "Both Claude and Ollama are offline right now.\n" +
-      "- Claude: check that the Claude CLI is installed and authenticated\n" +
-      "- Ollama: start it with `ollama serve`\n\n" +
+      "Both MLX and Claude are offline right now.\n" +
+      "- MLX: check that `mlx serve` is running (PM2 or manual)\n" +
+      "- Claude: check that the Claude CLI is installed and authenticated\n\n" +
       "Your day was still great — pick this up tomorrow! 🌟";
 
     await sendAndRecord(GROUPS.GENERAL.chatId, failureMessage, {

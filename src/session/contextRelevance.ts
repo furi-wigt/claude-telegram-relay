@@ -17,9 +17,8 @@ const RECENT_THRESHOLD_MS = 30 * 60 * 1000;      // 30 minutes = "recent"
 const STALE_THRESHOLD_MS = 4 * 60 * 60 * 1000;   // 4 hours = definitely stale
 const RELEVANCE_THRESHOLD = 0.25;                  // below this = suggest new context
 
-import { getModel } from "../ollama/models.ts";
-import { getBaseUrl } from "../ollama/client.ts";
-const OLLAMA_RELEVANCE_TIMEOUT_MS = 4000; // hard cutoff — fallback if exceeded
+import { callMlxGenerate, getMlxBaseUrl } from "../mlx/index.ts";
+const MLX_RELEVANCE_TIMEOUT_MS = 4000; // hard cutoff — fallback if exceeded
 
 // Stop words to ignore during keyword extraction
 const STOP_WORDS = new Set([
@@ -142,7 +141,7 @@ export function updateTopicKeywords(
 }
 
 /**
- * Build a minimal prompt for Ollama relevance check.
+ * Build a minimal prompt for MLX relevance check.
  * Kept under ~80 tokens so local models respond in <2s.
  */
 export function buildRelevancePrompt(newMessage: string, sessionContext: SessionContext): string {
@@ -155,80 +154,56 @@ export function buildRelevancePrompt(newMessage: string, sessionContext: Session
 }
 
 /**
- * Ask a local Ollama model if the new message is on the same topic.
- * Returns null if Ollama is unavailable, timed out, or returned garbage.
+ * Ask a local MLX model if the new message is on the same topic.
+ * Returns null if MLX is unavailable, timed out, or returned garbage.
  * Caller falls back to Jaccard on null.
  */
-export async function checkContextRelevanceWithOllama(
+export async function checkContextRelevanceWithMLX(
   newMessage: string,
   sessionContext: SessionContext
 ): Promise<RelevanceResult | null> {
   const prompt = buildRelevancePrompt(newMessage, sessionContext);
 
   try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), OLLAMA_RELEVANCE_TIMEOUT_MS);
-
-    let response: Response;
-    try {
-      response = await fetch(`${getBaseUrl()}/api/generate`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: getModel("context-relevance"),
-          prompt,
-          stream: false,
-          options: {
-            temperature: 0,      // deterministic — no creativity needed
-            num_predict: 5,      // we only need YES or NO
-            top_k: 1,            // greedy decoding
-          },
-        }),
-        signal: controller.signal,
-      });
-    } finally {
-      clearTimeout(timer);
-    }
-
-    if (!response.ok) return null;
-
-    const data = await response.json();
-    const raw: string = (data.response || "").trim().toUpperCase();
+    const raw = (await callMlxGenerate(prompt, {
+      timeoutMs: MLX_RELEVANCE_TIMEOUT_MS,
+      maxTokens: 5,
+    })).trim().toUpperCase();
 
     // Accept YES/NO, Y/N, true/false
     if (raw.startsWith("YES") || raw.startsWith("Y") || raw === "TRUE") {
-      return { isRelevant: true, score: 0.9, reason: "Ollama: same topic" };
+      return { isRelevant: true, score: 0.9, reason: "MLX: same topic" };
     }
     if (raw.startsWith("NO") || raw.startsWith("N") || raw === "FALSE") {
-      return { isRelevant: false, score: 0.1, reason: "Ollama: different topic" };
+      return { isRelevant: false, score: 0.1, reason: "MLX: different topic" };
     }
 
     // Ambiguous response — fall through to Jaccard
-    console.warn(`Ollama relevance check returned ambiguous: "${raw.substring(0, 20)}"`);
+    console.warn(`MLX relevance check returned ambiguous: "${raw.substring(0, 20)}"`);
     return null;
 
   } catch (error: any) {
     if (error?.name === "AbortError") {
-      console.warn("Ollama relevance check timed out, using Jaccard fallback");
+      console.warn("MLX relevance check timed out, using Jaccard fallback");
     } else {
-      console.warn("Ollama relevance check failed, using Jaccard fallback:", error?.message);
+      console.warn("MLX relevance check failed, using Jaccard fallback:", error?.message);
     }
     return null;
   }
 }
 
 /**
- * Check context relevance using Ollama (fast) with Jaccard as fallback.
+ * Check context relevance using MLX (fast) with Jaccard as fallback.
  *
  * Strategy:
  * 1. Apply time-based stale check first (no LLM call needed)
- * 2. Try Ollama with 4s timeout
- * 3. Fall back to Jaccard keyword overlap if Ollama unavailable/slow
+ * 2. Try MLX with 4s timeout
+ * 3. Fall back to Jaccard keyword overlap if MLX unavailable/slow
  */
 export async function checkContextRelevanceSmart(
   newMessage: string,
   sessionContext: SessionContext
-): Promise<RelevanceResult & { method: "time" | "ollama" | "jaccard" }> {
+): Promise<RelevanceResult & { method: "time" | "mlx" | "jaccard" }> {
   // ── Step 1: Time gate (no LLM call) ─────────────────────────────────
   if (!sessionContext.topicKeywords.length && !sessionContext.lastUserMessages.length) {
     return { isRelevant: true, score: 1.0, reason: "No previous context", method: "time" };
@@ -244,10 +219,10 @@ export async function checkContextRelevanceSmart(
     };
   }
 
-  // ── Step 2: Try Ollama ───────────────────────────────────────────────
-  const ollamaResult = await checkContextRelevanceWithOllama(newMessage, sessionContext);
-  if (ollamaResult !== null) {
-    return { ...ollamaResult, method: "ollama" };
+  // ── Step 2: Try MLX ──────────────────────────────────────────────────
+  const mlxResult = await checkContextRelevanceWithMLX(newMessage, sessionContext);
+  if (mlxResult !== null) {
+    return { ...mlxResult, method: "mlx" };
   }
 
   // ── Step 3: Jaccard fallback ─────────────────────────────────────────

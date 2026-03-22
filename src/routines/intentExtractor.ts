@@ -6,7 +6,7 @@
  */
 
 import { claudeText } from "../claude-process.ts";
-import { callOllamaGenerate } from "../ollama/index.ts";
+import { callRoutineModel } from "./routineModel.ts";
 import type { PendingRoutine } from "./types.ts";
 
 // Patterns that suggest the user wants to run/trigger an existing routine NOW
@@ -101,21 +101,10 @@ export async function extractRoutineConfig(
     `User message: ${userMessage}`;
 
   try {
-    let text: string;
-    try {
-      text = await callOllamaGenerate(prompt, {
-        purpose: "routine-summary",
-        timeoutMs: 30_000,
-      });
-      console.log("[intentExtractor] Ollama succeeded");
-    } catch (ollamaErr) {
-      console.warn("[intentExtractor] Ollama failed, falling back to Haiku:", ollamaErr instanceof Error ? ollamaErr.message : ollamaErr);
-      text = await claudeText(prompt, {
-        model: "claude-haiku-4-5-20251001",
-        timeoutMs: 30_000,
-      });
-      console.log("[intentExtractor] Haiku fallback succeeded");
-    }
+    const text = await callRoutineModel(prompt, {
+      label: "intentExtractor",
+      timeoutMs: 30_000,
+    });
 
     const parsed = JSON.parse(text);
 

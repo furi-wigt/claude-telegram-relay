@@ -427,11 +427,13 @@ describe("summarizeOldMessages", () => {
     expect(mockInsertSummaryRecord).not.toHaveBeenCalled();
   });
 
-  test("inserts Ollama summary when Ollama succeeds", async () => {
+  test("inserts MLX summary when MLX succeeds", async () => {
     globalThis.fetch = mock(() =>
       Promise.resolve({
         ok: true,
-        json: () => Promise.resolve({ response: "A concise summary of the conversation." }),
+        json: () => Promise.resolve({
+          choices: [{ message: { content: "A concise summary of the conversation." } }],
+        }),
       })
     ) as any;
 
@@ -453,8 +455,8 @@ describe("summarizeOldMessages", () => {
     expect(insertedRow.message_count).toBe(3);
   });
 
-  test("uses concatenation fallback when Ollama throws", async () => {
-    globalThis.fetch = mock(() => Promise.reject(new Error("Ollama down"))) as any;
+  test("uses concatenation fallback when MLX throws", async () => {
+    globalThis.fetch = mock(() => Promise.reject(new Error("MLX down"))) as any;
 
     mockInsertSummaryRecord.mockClear();
     const msgs = makeMessages(3);

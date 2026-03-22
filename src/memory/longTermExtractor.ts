@@ -8,8 +8,8 @@
  * intentional-only, not auto-extracted from every exchange.
  */
 
-import { claudeText } from "../claude-process.ts";
-import { callOllamaGenerate } from "../ollama/index.ts";
+
+import { callRoutineModel } from "../routines/routineModel.ts";
 import { checkSemanticDuplicate } from "../utils/semanticDuplicateChecker.ts";
 import { trace } from "../utils/tracer.ts";
 import { JUNK_PATTERNS } from "./junkPatterns.ts";
@@ -228,21 +228,13 @@ export async function rebuildProfileSummary(
     let profile_summary = memorySummary;
     const profilePrompt = `Write a concise 2-3 sentence profile summary for this person based on these facts. Plain text only:\n\n${memorySummary}`;
     try {
-      let narrative: string;
-      try {
-        narrative = await callOllamaGenerate(profilePrompt, {
-          purpose: "ltm-extraction",
-          timeoutMs: 30_000,
-        });
-        console.log("[rebuildProfileSummary] Ollama succeeded");
-      } catch (ollamaErr) {
-        console.warn("[rebuildProfileSummary] Ollama failed, falling back to Haiku:", ollamaErr instanceof Error ? ollamaErr.message : ollamaErr);
-        narrative = await claudeText(profilePrompt, { timeoutMs: 45_000 });
-        console.log("[rebuildProfileSummary] Haiku fallback succeeded");
-      }
+      const narrative = await callRoutineModel(profilePrompt, {
+        label: "rebuildProfileSummary",
+        timeoutMs: 30_000,
+      });
       if (narrative) profile_summary = narrative;
     } catch (err) {
-      console.error("[rebuildProfileSummary] Both Ollama and Haiku failed:", err instanceof Error ? err.message : err);
+      console.error("[rebuildProfileSummary] MLX/Ollama failed:", err instanceof Error ? err.message : err);
     }
 
     // Upsert into local user_profile table

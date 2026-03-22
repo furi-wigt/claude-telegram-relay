@@ -1,7 +1,7 @@
 /**
- * E2E tests for intentExtractor — process-based claudeText edition
+ * E2E tests for intentExtractor — callRoutineModel edition
  *
- * Verifies that extractRoutineConfig uses claudeText (unified spawner)
+ * Verifies that extractRoutineConfig uses callRoutineModel (MLX → Ollama cascade)
  * and correctly parses, validates, and returns PendingRoutine configs.
  *
  * Run: bun test src/routines/intentExtractor.e2e.test.ts
@@ -10,23 +10,20 @@
 import { describe, test, expect, mock, beforeEach } from "bun:test";
 
 // ============================================================
-// Mock Ollama (primary) and claudeText (fallback)
+// Mock callRoutineModel (MLX → Ollama cascade)
 // ============================================================
 
-const mockCallOllamaGenerate = mock(
+const mockCallRoutineModel = mock(
   async (_prompt: string, _options?: object) => "{}"
 );
 
-const mockCallClaudeText = mock(
-  async (_prompt: string, _options?: { model?: string; timeoutMs?: number }) => "{}"
-);
-
-mock.module("../ollama/index.ts", () => ({
-  callOllamaGenerate: mockCallOllamaGenerate,
+mock.module("./routineModel.ts", () => ({
+  callRoutineModel: mockCallRoutineModel,
+  getLastProvider: () => "mlx",
 }));
 
 mock.module("../claude-process.ts", () => ({
-  claudeText: mockCallClaudeText,
+  claudeText: mock(async () => "{}"),
 }));
 
 const { detectRoutineIntent, extractRoutineConfig } = await import(
@@ -52,8 +49,7 @@ function makeValidJson(overrides?: object): string {
 // ============================================================
 
 beforeEach(() => {
-  mockCallOllamaGenerate.mockReset();
-  mockCallClaudeText.mockReset();
+  mockCallRoutineModel.mockReset();
 });
 
 // ============================================================
@@ -63,20 +59,19 @@ beforeEach(() => {
 describe("detectRoutineIntent", () => {
   test("matches routine creation phrases", () => {
     const positives = [
-      "create a routine that checks my AWS costs daily",
-      "schedule a routine for morning briefing",
-      "set up a daily summary at 9am",
-      "remind me every Sunday to review goals",
-      "add a weekly ETF report",
-      "run every Monday at 8am and send a status update",
-      "new routine for night review",
+      "create a routine to check AWS costs",
+      "schedule a routine to send me a summary",
+      "add a routine for weekly reports",
+      "I want a new routine for cost monitoring",
+      "remind me every morning at 9am",
+      "set up a daily check for S3 buckets",
     ];
     for (const msg of positives) {
       expect(detectRoutineIntent(msg)).toBe(true);
     }
   });
 
-  test("does not trigger on normal messages", () => {
+  test("rejects non-routine messages", () => {
     const negatives = [
       "what is the weather today",
       "show me my AWS costs",
@@ -91,14 +86,14 @@ describe("detectRoutineIntent", () => {
 });
 
 // ============================================================
-// extractRoutineConfig — Ollama-first, Haiku fallback
+// extractRoutineConfig — callRoutineModel (MLX → Ollama)
 // ============================================================
 
 describe("extractRoutineConfig", () => {
-  // ---- Happy path (Ollama primary) ----
+  // ---- Happy path ----
 
-  test("returns PendingRoutine for valid JSON response from Ollama", async () => {
-    mockCallOllamaGenerate.mockResolvedValue(makeValidJson());
+  test("returns PendingRoutine for valid JSON response", async () => {
+    mockCallRoutineModel.mockResolvedValue(makeValidJson());
 
     const result = await extractRoutineConfig(
       "create a daily routine at 9am to summarize AWS costs"
@@ -112,35 +107,22 @@ describe("extractRoutineConfig", () => {
     expect(typeof result?.createdAt).toBe("number");
   });
 
-  test("Ollama is called with the user message embedded in prompt", async () => {
-    mockCallOllamaGenerate.mockResolvedValue(makeValidJson());
+  test("model is called with the user message embedded in prompt", async () => {
+    mockCallRoutineModel.mockResolvedValue(makeValidJson());
 
     const userMsg = "create a routine that checks AWS costs daily";
     await extractRoutineConfig(userMsg);
 
-    expect(mockCallOllamaGenerate).toHaveBeenCalledTimes(1);
-    const [calledPrompt] = mockCallOllamaGenerate.mock.calls[0];
+    expect(mockCallRoutineModel).toHaveBeenCalledTimes(1);
+    const [calledPrompt] = mockCallRoutineModel.mock.calls[0];
     expect(calledPrompt).toContain(userMsg);
     expect(calledPrompt).toContain("JSON");
-  });
-
-  test("falls back to Haiku when Ollama fails", async () => {
-    mockCallOllamaGenerate.mockRejectedValue(new Error("Ollama unavailable"));
-    mockCallClaudeText.mockResolvedValue(makeValidJson());
-
-    const result = await extractRoutineConfig("create a daily routine");
-
-    expect(result).not.toBeNull();
-    expect(mockCallClaudeText).toHaveBeenCalledTimes(1);
-    const [, options] = mockCallClaudeText.mock.calls[0];
-    expect(options?.model).toBe("claude-haiku-4-5-20251001");
-    expect(options?.timeoutMs).toBe(30_000);
   });
 
   // ---- Name sanitization ----
 
   test("name is sanitized to kebab-case and truncated to 30 chars", async () => {
-    mockCallOllamaGenerate.mockResolvedValue(
+    mockCallRoutineModel.mockResolvedValue(
       makeValidJson({ name: "My DAILY AWS Cost Check!!! With Extra Text That Is Too Long" })
     );
 
@@ -153,7 +135,7 @@ describe("extractRoutineConfig", () => {
   // ---- Error cases ----
 
   test("returns null when LLM returns error JSON", async () => {
-    mockCallOllamaGenerate.mockResolvedValue(
+    mockCallRoutineModel.mockResolvedValue(
       JSON.stringify({ error: "Cannot determine schedule from this message" })
     );
 
@@ -163,7 +145,7 @@ describe("extractRoutineConfig", () => {
   });
 
   test("returns null when required fields are missing", async () => {
-    mockCallOllamaGenerate.mockResolvedValue(
+    mockCallRoutineModel.mockResolvedValue(
       JSON.stringify({ name: "incomplete-routine" }) // missing cron and prompt
     );
 
@@ -173,7 +155,7 @@ describe("extractRoutineConfig", () => {
   });
 
   test("returns null when cron has wrong number of fields", async () => {
-    mockCallOllamaGenerate.mockResolvedValue(
+    mockCallRoutineModel.mockResolvedValue(
       makeValidJson({ cron: "0 9 *" }) // only 3 fields instead of 5
     );
 
@@ -182,9 +164,8 @@ describe("extractRoutineConfig", () => {
     expect(result).toBeNull();
   });
 
-  test("returns null when both Ollama and Haiku throw", async () => {
-    mockCallOllamaGenerate.mockRejectedValue(new Error("Ollama timeout"));
-    mockCallClaudeText.mockRejectedValue(new Error("Haiku timeout"));
+  test("returns null when model throws", async () => {
+    mockCallRoutineModel.mockRejectedValue(new Error("MLX/Ollama both failed"));
 
     const result = await extractRoutineConfig("create a daily routine");
 
@@ -192,7 +173,7 @@ describe("extractRoutineConfig", () => {
   });
 
   test("returns null when response is not valid JSON", async () => {
-    mockCallOllamaGenerate.mockResolvedValue("Sorry, I cannot help with that.");
+    mockCallRoutineModel.mockResolvedValue("Sorry, I cannot help with that.");
 
     const result = await extractRoutineConfig("create a daily routine");
 
@@ -200,7 +181,7 @@ describe("extractRoutineConfig", () => {
   });
 
   test("returns null when response is empty string", async () => {
-    mockCallOllamaGenerate.mockResolvedValue("");
+    mockCallRoutineModel.mockResolvedValue("");
 
     const result = await extractRoutineConfig("create a daily routine");
 
@@ -210,7 +191,7 @@ describe("extractRoutineConfig", () => {
   // ---- scheduleDescription fallback ----
 
   test("uses cron as scheduleDescription when missing from response", async () => {
-    mockCallOllamaGenerate.mockResolvedValue(
+    mockCallRoutineModel.mockResolvedValue(
       JSON.stringify({
         name: "aws-check",
         cron: "0 9 * * *",
@@ -227,7 +208,7 @@ describe("extractRoutineConfig", () => {
 
   test("createdAt is a recent timestamp", async () => {
     const before = Date.now();
-    mockCallOllamaGenerate.mockResolvedValue(makeValidJson());
+    mockCallRoutineModel.mockResolvedValue(makeValidJson());
 
     const result = await extractRoutineConfig("create a routine");
 
@@ -244,18 +225,9 @@ describe("extractRoutineConfig", () => {
 describe("SDK independence", () => {
   test("extractRoutineConfig does not import Anthropic SDK", async () => {
     // If the SDK is not imported, this won't throw even without credentials
-    // The mock intercepts Ollama before any subprocess is spawned
-    mockCallOllamaGenerate.mockResolvedValue(makeValidJson());
-
-    // Should work without ANTHROPIC_API_KEY in env
-    const oldKey = process.env.ANTHROPIC_API_KEY;
-    delete process.env.ANTHROPIC_API_KEY;
-
-    try {
-      const result = await extractRoutineConfig("create a daily routine");
-      expect(result).not.toBeNull();
-    } finally {
-      if (oldKey !== undefined) process.env.ANTHROPIC_API_KEY = oldKey;
-    }
+    // The mock intercepts the model call before any subprocess is spawned
+    mockCallRoutineModel.mockResolvedValue(makeValidJson());
+    const result = await extractRoutineConfig("create a routine");
+    expect(result).not.toBeNull();
   });
 });

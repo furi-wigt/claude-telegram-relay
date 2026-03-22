@@ -12,7 +12,7 @@
  *   - resolveConflicts() archives rejected entries (status → 'archived')
  */
 
-import { callOllamaGenerate } from "../ollama/index.ts";
+import { callRoutineModel } from "../routines/routineModel.ts";
 import { getDb } from "../local/db";
 import { updateMemoryRecord } from "../local/storageBackend";
 
@@ -70,8 +70,8 @@ Rules:
 - indices are 1-based matching the numbered list above
 - recommendation should explain which to keep and why`;
 
-    const raw = await callOllamaGenerate(prompt, {
-      purpose: "memory-conflict",
+    const raw = await callRoutineModel(prompt, {
+      label: "conflictResolver",
       timeoutMs: 60_000,
     });
 

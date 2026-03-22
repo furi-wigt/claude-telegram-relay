@@ -1,13 +1,13 @@
 /**
- * Integration tests for local storage stack: Ollama BGE-M3 + Qdrant + SQLite.
+ * Integration tests for local storage stack: MLX bge-m3 + Qdrant + SQLite.
  *
  * Prerequisites (must be running):
- * - Ollama with bge-m3 model
+ * - MLX server (`mlx serve`) with bge-m3 embeddings
  * - Qdrant on localhost:6333
  */
 import { describe, it, expect, beforeAll, afterAll, setDefaultTimeout } from "bun:test";
 
-// Ollama first-call loads model into GPU — can take 30s+
+// MLX first-call loads model — can take 30s+
 setDefaultTimeout(30_000);
 import { localEmbed, localEmbedBatch, checkEmbedHealth } from "../../src/local/embed";
 import {
@@ -37,19 +37,20 @@ const TEST_DB_PATH = import.meta.dir + "/test-local.sqlite";
 process.env.LOCAL_DB_PATH = TEST_DB_PATH;
 
 // Check service availability before running tests that require them
-let ollamaAvailable = false;
+let mlxAvailable = false;
 let qdrantAvailable = false;
 
 try {
-  const res = await fetch("http://localhost:11434/api/embed", {
+  const mlxUrl = process.env.MLX_URL ?? "http://localhost:8800";
+  const res = await fetch(`${mlxUrl}/v1/embeddings`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ model: "bge-m3", input: "test" }),
     signal: AbortSignal.timeout(10000),
   });
   if (res.ok) {
-    const data = await res.json() as { embeddings?: number[][] };
-    ollamaAvailable = (data.embeddings?.[0]?.length ?? 0) > 0;
+    const data = await res.json() as { data?: Array<{ embedding: number[] }> };
+    mlxAvailable = (data.data?.[0]?.embedding?.length ?? 0) > 0;
   }
 } catch {}
 
@@ -60,10 +61,10 @@ try {
   qdrantAvailable = Array.isArray(result.collections);
 } catch {}
 
-const describeOllama = ollamaAvailable ? describe : describe.skip;
-const describeQdrant = qdrantAvailable && ollamaAvailable ? describe : describe.skip;
+const describeMlx = mlxAvailable ? describe : describe.skip;
+const describeQdrant = qdrantAvailable && mlxAvailable ? describe : describe.skip;
 
-describeOllama("Ollama BGE-M3 Embeddings", () => {
+describeMlx("MLX BGE-M3 Embeddings", () => {
   it("should generate a 1024-dim vector", async () => {
     const vec = await localEmbed("hello world");
     expect(vec).toBeInstanceOf(Array);
