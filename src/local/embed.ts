@@ -6,7 +6,7 @@
 import { getMlxBaseUrl } from "../mlx/index.ts";
 
 const EMBED_MODEL = process.env.EMBED_MODEL || "bge-m3";
-const EMBED_TIMEOUT_MS = 30_000;
+const EMBED_TIMEOUT_MS = 8_000;
 
 export interface EmbedResult {
   vector: number[];
