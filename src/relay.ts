@@ -40,7 +40,8 @@ import {
   getUserProfile,
 } from "./memory/longTermExtractor.ts";
 import { learnTopicName, learnChatName, getTopicName } from "./utils/chatNames.ts";
-import { callOllamaGenerate, checkOllamaAvailable, getModel } from "./ollama/index.ts";
+import { checkOllamaAvailable, getModel } from "./ollama/index.ts";
+import { callRoutineModel } from "./routines/routineModel.ts";
 import { getAgentForChat, autoDiscoverGroup, loadGroupMappings } from "./routing/groupRouter.ts";
 // Router removed: always use Sonnet for simplicity and predictable latency
 import { loadSession as loadGroupSession, updateSessionIdGuarded, initSessions, loadAllSessions, saveSession, isResumeReliable, didResumeFail, lockActiveCwd, resetSession, getSessionSince } from "./session/groupSessions.ts";
@@ -771,7 +772,7 @@ async function callClaude(
         ).catch(() => {});
       }
       try {
-        const fallbackResponse = await callOllamaGenerate(prompt, { model: chatModel });
+        const fallbackResponse = await callRoutineModel(prompt, { label: "chat-fallback", timeoutMs: 60_000 });
         return `[via ${chatModel}]\n\n${fallbackResponse}`;
       } catch (fallbackError) {
         console.error("Fallback also failed:", fallbackError);
@@ -1127,11 +1128,11 @@ const queueManager = new GroupQueueManager({
 // Tries local Ollama first, falls back to Claude Haiku.
 async function questionCallClaude(prompt: string): Promise<string> {
   try {
-    const result = await callOllamaGenerate(prompt, {
-      purpose: "chat-fallback",
+    const result = await callRoutineModel(prompt, {
+      label: "interactive-question",
       timeoutMs: 10_000,
     });
-    console.log("[interactive] Ollama succeeded");
+    console.log("[interactive] MLX/Ollama succeeded");
     return result;
   } catch (ollamaErr) {
     console.warn("[interactive] Ollama failed, falling back to Haiku:", ollamaErr instanceof Error ? ollamaErr.message : ollamaErr);

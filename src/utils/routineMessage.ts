@@ -47,7 +47,7 @@ export async function summarizeRoutineMessage(
     return summary;
   } catch (err) {
     console.warn(
-      `summarizeRoutineMessage: Ollama unavailable (${err}), using truncation fallback`
+      `summarizeRoutineMessage: MLX/Ollama unavailable (${err}), using truncation fallback`
     );
     return content.slice(0, 300) + (content.length > 300 ? "..." : "");
   }
