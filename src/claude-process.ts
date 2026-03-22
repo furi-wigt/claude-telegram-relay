@@ -287,6 +287,8 @@ export interface ClaudeStreamOptions {
    * The stream is NOT killed — the user can manually cancel via /cancel or the Cancel button.
    */
   onSoftCeiling?: (message: string) => void;
+  /** Maximum tool-use turns before auto-kill. 0 = unlimited. Default: env CLAUDE_MAX_TURNS or 50. */
+  maxTurns?: number;
   /** Claude model to use (e.g. "claude-haiku-4-5-20251001"). Omit to use CLI default. */
   model?: string;
   /**
@@ -363,6 +365,9 @@ export async function claudeStream(
   // even when the module was already cached before vars were set.
   const CLAUDE_IDLE_TIMEOUT_MS = parseInt(process.env.CLAUDE_IDLE_TIMEOUT_MS || "300000");
   const CLAUDE_SOFT_CEILING_MS = parseInt(process.env.CLAUDE_SOFT_CEILING_MS || "1800000");
+  const maxTurns = options?.maxTurns ?? parseInt(process.env.CLAUDE_MAX_TURNS || "50");
+  let turnCount = 0;
+  let maxTurnsReached = false;
 
   // Check if the signal is already aborted before spawning.
   if (options?.signal?.aborted) {
@@ -633,6 +638,7 @@ export async function claudeStream(
             for (const block of content) {
               if (block.type === "tool_use") {
                 resetIdleTimer();
+                turnCount++;
                 if (block.name === "AskUserQuestion") {
                   await handleAskUserQuestion(block.id ?? "", block.input ?? {});
                 } else {
@@ -640,11 +646,18 @@ export async function claudeStream(
                   console.debug(`[stream] onProgress tool_use (in content): ${summary}`);
                   options?.onProgress?.(summary);
                 }
+                if (maxTurns > 0 && turnCount >= maxTurns) {
+                  console.log(`[claudeStream] maxTurns reached: ${turnCount}/${maxTurns}`);
+                  options?.onProgress?.(`⚠️ Turn limit reached (${maxTurns} tool calls) — returning partial result`);
+                  maxTurnsReached = true;
+                  proc.kill();
+                }
               }
             }
           } else if (type === "tool_use") {
             // Top-level tool_use events.
             resetIdleTimer();
+            turnCount++;
             if (event.name === "AskUserQuestion") {
               await handleAskUserQuestion(
                 event.id as string ?? "",
@@ -657,6 +670,12 @@ export async function claudeStream(
               );
               console.debug(`[stream] onProgress tool_use (top-level): ${summary}`);
               options?.onProgress?.(summary);
+            }
+            if (maxTurns > 0 && turnCount >= maxTurns) {
+              console.log(`[claudeStream] maxTurns reached: ${turnCount}/${maxTurns}`);
+              options?.onProgress?.(`⚠️ Turn limit reached (${maxTurns} tool calls) — returning partial result`);
+              maxTurnsReached = true;
+              proc.kill();
             }
           } else if (type === "result" && event.subtype === "success") {
             resultText = (event.result as string) ?? "";
@@ -737,7 +756,7 @@ export async function claudeStream(
   // Exit 130 = SIGINT (PM2 shutdown / Ctrl-C forwarded to process group)
   // Exit 143 = SIGTERM — both are graceful cancellations, not real errors.
   // Return whatever partial result accumulated rather than throwing.
-  if (exitCode === 130 || exitCode === 143) {
+  if (exitCode === 130 || exitCode === 143 || maxTurnsReached) {
     return (resultText || lastAssistantText).trim();
   }
   if (exitCode !== 0) {
