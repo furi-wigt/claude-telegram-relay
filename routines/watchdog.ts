@@ -25,6 +25,7 @@
 import { createRequire } from "module";
 import { sendToGroup } from "../src/utils/sendToGroup.ts";
 import { GROUPS, validateGroup } from "../src/config/groups.ts";
+import { getDb } from "../src/local/db.ts";
 
 // ============================================================
 // CONFIGURATION
@@ -289,6 +290,76 @@ function buildAlert(issues: HealthIssue[], statusLines: string[]): string | null
 }
 
 // ============================================================
+// HEARTBEAT RESPONSIVENESS PROBE
+// ============================================================
+
+export interface ResponsivenessResult {
+  ok: boolean;
+  lastUserAt: string | null;
+  lastBotAt: string | null;
+  gapMinutes: number;
+  pendingCount: number;
+}
+
+/**
+ * Check if the bot is actually responding to messages.
+ * Pure function — accepts a db-like object for testability.
+ */
+export function checkBotResponsiveness(
+  db: { prepare: (sql: string) => { get: (...args: unknown[]) => Record<string, unknown> | undefined } },
+  thresholdMin: number = 10,
+): ResponsivenessResult {
+  const lastUser = db
+    .prepare("SELECT MAX(created_at) as ts FROM messages WHERE role = 'user'")
+    .get() as { ts: string | null } | undefined;
+
+  const lastBot = db
+    .prepare("SELECT MAX(created_at) as ts FROM messages WHERE role = 'assistant'")
+    .get() as { ts: string | null } | undefined;
+
+  const lastUserAt = lastUser?.ts ?? null;
+  const lastBotAt = lastBot?.ts ?? null;
+
+  if (!lastUserAt) {
+    return { ok: true, lastUserAt: null, lastBotAt: null, gapMinutes: 0, pendingCount: 0 };
+  }
+
+  const pending = db
+    .prepare(
+      "SELECT COUNT(*) as cnt FROM messages WHERE role = 'user' AND created_at > COALESCE((SELECT MAX(created_at) FROM messages WHERE role = 'assistant'), '1970-01-01')"
+    )
+    .get() as { cnt: number } | undefined;
+
+  const pendingCount = pending?.cnt ?? 0;
+
+  // Gap = how long since the earliest unanswered user message (time waiting for a response).
+  // When user sent after bot's last reply, gap = now - lastBot (time since bot went quiet).
+  // When bot never replied, gap = now - lastUser (time user has been waiting).
+  let gapMinutes = 0;
+  if (lastUserAt && lastBotAt && new Date(lastUserAt) > new Date(lastBotAt)) {
+    gapMinutes = Math.round((Date.now() - new Date(lastBotAt).getTime()) / 60_000);
+  } else if (lastUserAt && !lastBotAt) {
+    gapMinutes = Math.round((Date.now() - new Date(lastUserAt).getTime()) / 60_000);
+  }
+
+  const ok = gapMinutes < thresholdMin || pendingCount === 0;
+  return { ok, lastUserAt, lastBotAt, gapMinutes, pendingCount };
+}
+
+export function buildResponsivenessAlert(result: ResponsivenessResult): string {
+  return [
+    "Bot Responsiveness Alert",
+    "",
+    `Last user message: ${result.lastUserAt ?? "none"}`,
+    `Last bot response: ${result.lastBotAt ?? "none"}`,
+    `Gap: ${result.gapMinutes} minutes`,
+    `Pending messages: ${result.pendingCount}`,
+    "",
+    "The bot may be stuck in a long-running session. Check PM2 logs or send /cancel.",
+  ].join("\n");
+}
+
+// ============================================================
 // MAIN
 // ============================================================
 
@@ -326,6 +397,22 @@ async function main() {
     console.log("Alert sent to General group");
   } else {
     console.log("All processes healthy — no alert needed");
+  }
+
+  // Heartbeat responsiveness probe
+  const thresholdMin = parseInt(process.env.WATCHDOG_HEARTBEAT_THRESHOLD_MIN || "10");
+  try {
+    const db = getDb();
+    const responsiveness = checkBotResponsiveness(db, thresholdMin);
+    if (!responsiveness.ok) {
+      const respAlert = buildResponsivenessAlert(responsiveness);
+      await sendToGroup(GROUPS.GENERAL.chatId, respAlert, { topicId: GROUPS.GENERAL.topicId });
+      console.log("[watchdog] Responsiveness alert sent");
+    } else {
+      console.log("[watchdog] Responsiveness ok");
+    }
+  } catch (err) {
+    console.warn("[watchdog] Responsiveness probe failed (non-fatal):", err instanceof Error ? err.message : err);
   }
 }
 
