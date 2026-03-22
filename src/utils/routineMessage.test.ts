@@ -14,6 +14,7 @@ const callRoutineModelMock = mock(async (_prompt: string, _options?: unknown): P
 
 mock.module("../routines/routineModel.ts", () => ({
   callRoutineModel: callRoutineModelMock,
+  getLastProvider: () => "mlx",
 }));
 
 // Import AFTER mocking so routineMessage.ts picks up our mock

@@ -4,6 +4,7 @@ import { describe, test, expect, mock, beforeEach } from "bun:test";
 const mockGenerate = mock(() => Promise.resolve("AWS Lambda cost optimization"));
 mock.module("../routines/routineModel.ts", () => ({
   callRoutineModel: mockGenerate,
+  getLastProvider: () => "mlx",
 }));
 
 const { generateTopic } = await import("./topicGenerator.ts");

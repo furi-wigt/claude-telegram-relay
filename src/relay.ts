@@ -41,7 +41,7 @@ import {
 } from "./memory/longTermExtractor.ts";
 import { learnTopicName, learnChatName, getTopicName } from "./utils/chatNames.ts";
 import { checkOllamaAvailable, getModel } from "./ollama/index.ts";
-import { callRoutineModel } from "./routines/routineModel.ts";
+import { callRoutineModel, getLastProvider } from "./routines/routineModel.ts";
 import { getAgentForChat, autoDiscoverGroup, loadGroupMappings } from "./routing/groupRouter.ts";
 // Router removed: always use Sonnet for simplicity and predictable latency
 import { loadSession as loadGroupSession, updateSessionIdGuarded, initSessions, loadAllSessions, saveSession, isResumeReliable, didResumeFail, lockActiveCwd, resetSession, getSessionSince } from "./session/groupSessions.ts";
@@ -767,16 +767,17 @@ async function callClaude(
       if (notifyChatId != null) {
         bot.api.sendMessage(
           notifyChatId,
-          `⚠️ Claude unavailable — retrying with ${chatModel}…`,
+          `⚠️ Claude unavailable — retrying with local model…`,
           notifyThreadId != null ? { message_thread_id: notifyThreadId } : undefined
         ).catch(() => {});
       }
       try {
         const fallbackResponse = await callRoutineModel(prompt, { label: "chat-fallback", timeoutMs: 60_000 });
-        return `[via ${chatModel}]\n\n${fallbackResponse}`;
+        const provider = getLastProvider() === "mlx" ? "Qwen3.5-9B (MLX)" : chatModel;
+        return `[via ${provider}]\n\n${fallbackResponse}`;
       } catch (fallbackError) {
         console.error("Fallback also failed:", fallbackError);
-        return `Error: Both Claude and ${chatModel} failed. Please try again in a moment.`;
+        return `Error: Both Claude and local model failed. Please try again in a moment.`;
       }
     }
 
