@@ -58,17 +58,33 @@ export async function callMlxGenerate(
 
     const exitCode = await proc.exited;
 
+    const result = stdout.trim();
+
+    // If stdout has content, use it — resource_tracker warnings can cause
+    // non-zero exit AFTER generation completes successfully
+    if (result) {
+      return result;
+    }
+
+    // No stdout: check stderr for real errors (filter Python noise)
     if (exitCode !== 0) {
-      const errMsg = stderr.trim().split("\n").pop() ?? `exit code ${exitCode}`;
+      const realErrors = stderr
+        .split("\n")
+        .filter(
+          (line) =>
+            line.trim() !== "" &&
+            !line.includes("resource_tracker:") &&
+            !line.includes("warnings.warn") &&
+            !line.includes("Fetching") &&
+            !line.match(/^\s*\d+%\|/)
+        )
+        .join("\n")
+        .trim();
+      const errMsg = realErrors.split("\n").pop() || `exit code ${exitCode}`;
       throw new Error(`mlx-qwen failed: ${errMsg}`);
     }
 
-    const result = stdout.trim();
-    if (!result) {
-      throw new Error("mlx-qwen returned empty response");
-    }
-
-    return result;
+    throw new Error("mlx-qwen returned empty response");
   } finally {
     clearTimeout(timer);
   }

@@ -38,5 +38,4 @@ Thumbs.db
 *.swp
 
 worktrees/
-!.claude/setings.json
 .claude/

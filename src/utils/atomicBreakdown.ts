@@ -72,7 +72,7 @@ DECOMPOSITION EXAMPLES:
 - "Review BCP plan" → sub-tasks: "Read current BCP document and note gaps", "Draft improvement recommendations", "Share findings with team lead"
 - "Set up CI/CD pipeline" → sub-tasks: "Research CI/CD options for the project stack", "Configure build pipeline in GitHub Actions", "Add deployment step and test end-to-end"
 
-For simple tasks (already atomic, ≤2h, single action), keep them as-is with parentTitle: null.
+For simple tasks (already atomic, ≤2h, single clear action like "Buy groceries", "Reply to email", "Review PR #42"), keep them as-is with parentTitle: null. Do NOT over-decompose — only break down tasks that genuinely require multiple distinct steps.
 
 CALENDAR (slot tasks around these — DO NOT create tasks for calendar events):
 ${calendarContext}
