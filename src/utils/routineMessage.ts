@@ -16,7 +16,7 @@
 
 import { sendToGroup } from "./sendToGroup.ts";
 import { markdownToHtml, splitMarkdown } from "./htmlFormat.ts";
-import { callOllamaGenerate } from "../ollama/index.ts";
+import { callRoutineModel } from "../routines/routineModel.ts";
 import { ROUTINE_SOURCE } from "../memory/shortTermMemory.ts";
 import { insertMessageRecord } from "../local/storageBackend";
 
@@ -42,7 +42,7 @@ export async function summarizeRoutineMessage(
     content;
 
   try {
-    const summary = await callOllamaGenerate(prompt, { purpose: "routine-summary", timeoutMs: 30_000 });
+    const summary = await callRoutineModel(prompt, { label: "summarizeRoutine", timeoutMs: 30_000 });
     if (!summary) throw new Error("empty summary");
     return summary;
   } catch (err) {
