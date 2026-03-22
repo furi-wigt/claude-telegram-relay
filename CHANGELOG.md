@@ -1,6 +1,23 @@
 # Changelog
 
-## [Unreleased] / 2026-03-22 — MLX-only local inference: remove Ollama dependency
+## [Unreleased] / 2026-03-23 — Documentation overhaul: purge Ollama refs, update to MLX-only
+
+### Changed
+- **docs/architecture.md**: Replaced all Ollama references with MLX — diagrams, component table, tech stack, directory structure
+- **docs/FALLBACK.md**: Complete rewrite — now documents MLX fallback system instead of Ollama (gemma3-4b)
+- **docs/memory-system.md**: Updated all embedding refs from "Ollama BGE-M3" to "MLX BGE-M3", fixed sequence diagrams
+- **docs/memory-system-user-guide.md**: Fixed Ollama embedding reference to MLX bge-m3
+- **docs/observability.md**: Replaced Ollama health checks with MLX health endpoint, updated diagnostic commands and flowcharts
+- **docs/prompt_builder.md**: Replaced "nomic-embed-text" with "bge-m3 via MLX", updated all sequence diagrams
+- **docs/ADDING-NEW-JOBS.md**: Complete rewrite — launchd instructions replaced with PM2/ecosystem.config.cjs patterns
+- **docs/WATCHDOG.md**: Complete rewrite — launchd labels replaced with PM2 watchdog routine
+
+### Removed
+- **docs/SERVICE-STATUS.md**: Deleted — launchd service status doc is obsolete (PM2-SETUP.md is the source of truth)
+
+---
+
+## 2026-03-22 — MLX-only local inference: remove Ollama dependency
 
 ### Changed
 - **MLX client** (`src/mlx/client.ts`): Rewritten from subprocess spawning (`mlx-qwen generate`) to HTTP client calling `mlx serve` on port 8800 via OpenAI-compatible `/v1/chat/completions`. `isMlxAvailable()` is now async (HTTP health check). New export: `getMlxBaseUrl()`.

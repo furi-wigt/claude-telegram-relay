@@ -1,158 +1,157 @@
 # Watchdog System
 
-The watchdog monitors all your scheduled jobs and alerts you via Telegram if anything fails.
+The watchdog monitors all PM2-managed services and alerts you via Telegram when something is down or misbehaving.
+
+## Overview
+
+| Property | Value |
+|---|---|
+| Script | `routines/watchdog.ts` |
+| PM2 service name | `watchdog` |
+| Schedule | Every 2 hours (`0 */2 * * *`) |
+| autorestart | `false` (one-shot cron job) |
+| Alert target | General AI Assistant group |
 
 ## What It Monitors
 
-- **Morning Briefing** (7:00 AM daily) - ETF stock analysis
-- **Night Summary** (11:00 PM daily) - Daily review and reflection
-- Future scheduled jobs you add
+### PM2 process health
 
-## How It Works
+The watchdog auto-discovers all services from `ecosystem.config.cjs` at runtime. For each process it checks:
 
-The watchdog runs **6 times per day** at:
-- 12:15 AM (after midnight, checks if night summary ran)
-- 6:00 AM (early morning check)
-- 8:00 AM (verifies morning briefing ran)
-- 12:00 PM (midday check)
-- 6:00 PM (evening check)
-- 11:30 PM (verifies night summary ran)
+1. **Existence** — Is the process registered in PM2?
+2. **Status** — Is it `online`, `stopped`, or `errored`?
+3. **Restart count** — Has it exceeded the restart threshold (default: 10), indicating a crash loop?
 
-### What It Checks
+If auto-discovery fails (e.g. ecosystem config is missing), it falls back to a hardcoded list: `telegram-relay`, `morning-summary`, `smart-checkin`, `night-summary`, `weekly-etf`, `watchdog`.
 
-For each job:
-1. **Service Status** - Is the job loaded in launchd?
-2. **Execution** - Did it run when scheduled?
-3. **Success** - Did it complete without errors?
-4. **Logs** - Are there error messages in the log files?
+### Bot responsiveness
 
-### Alert Logic
+After checking PM2 processes, the watchdog probes the SQLite database to detect whether the bot is actually responding to user messages:
 
-- **Smart Throttling** - Won't spam you. Each issue triggers ONE alert per 6 hours.
-- **Overdue Detection** - Alerts if a job is more than 30 minutes late.
-- **Error Detection** - Scans logs for common error patterns.
-- **Success Validation** - Checks that jobs actually completed successfully.
+- Compares timestamps of the most recent user message vs. the most recent bot response
+- If the gap exceeds a threshold (default: 10 minutes) and there are pending unanswered messages, it sends a responsiveness alert
+- Configurable via `WATCHDOG_HEARTBEAT_THRESHOLD_MIN` env var
+
+### Auto-restart
+
+Always-on processes (those with `autorestart: true` in the ecosystem config, such as `telegram-relay`) are automatically restarted if found in a `stopped` or `errored` state. The alert notes whether the auto-restart succeeded.
+
+## Alert Behavior
+
+- Alerts are sent only when problems are detected — no noise when everything is healthy
+- Alerts go to the General AI Assistant group (resolved via `GROUPS.GENERAL`)
+- Each alert includes the issue severity, affected service, error details, and current status of all processes
+- Severity levels: **CRITICAL** (always-on process down, extreme restart count) and **WARNING** (cron job errored, elevated restart count, missing process)
+
+### Example alert
+
+```
+Watchdog Alert
+
+CRITICAL:
+  [!] telegram-relay: Status: stopped (auto-restarted)
+
+WARNINGS:
+  [~] morning-summary: Last run errored — check logs
+
+Process status:
+  telegram-relay: online | up 2h 15m | 45.2 MB | 1 restarts
+  morning-summary: errored | up - | - | 0 restarts
+  smart-checkin: online | up 1h 30m | 32.1 MB | 0 restarts
+  night-summary: stopped | up - | - | 0 restarts
+  watchdog: online | up 0s | 28.4 MB | 0 restarts
+
+Run 'npx pm2 logs <name>' to inspect. Reply to acknowledge.
+```
+
+### Responsiveness alert
+
+```
+Bot Responsiveness Alert
+
+Last user message: 2026-03-23T14:05:00Z
+Last bot response: 2026-03-23T13:50:00Z
+Gap: 15 minutes
+Pending messages: 3
+
+The bot may be stuck in a long-running session. Check PM2 logs or send /cancel.
+```
+
+## Configuration
+
+No special environment variables are required. The watchdog uses existing project configuration:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `WATCHDOG_HEARTBEAT_THRESHOLD_MIN` | `10` | Minutes before an unanswered message triggers a responsiveness alert |
+
+Group routing (General Assistant chat ID and topic ID) is resolved from `config/agents.json` via the `GROUPS` registry. The watchdog exits gracefully if the General group is not configured.
+
+## PM2 Commands
+
+```bash
+# View watchdog output
+npx pm2 logs watchdog
+
+# Force an immediate health check
+npx pm2 restart watchdog
+
+# Check watchdog status
+npx pm2 show watchdog
+
+# Run manually outside PM2
+bun run routines/watchdog.ts
+```
 
 ## Installation
 
-Already installed! When you ran:
-```bash
-bun run setup:launchd -- --service watchdog
-```
-
-The watchdog is now running in the background.
-
-## Verify It's Running
+The watchdog is included in the standard PM2 setup:
 
 ```bash
-# Check if watchdog is loaded
-launchctl list | grep watchdog
-
-# View watchdog logs
-tail -f logs/com.claude.watchdog.log
-
-# Run watchdog manually (for testing)
-bun run setup/watchdog.ts
+bun run setup:pm2 -- --service all
 ```
 
-## What Alerts Look Like
+Or start it individually:
 
-When the watchdog detects issues, you'll get a Telegram message like:
-
-```
-🚨 Watchdog Alert
-
-**Morning Briefing** is overdue.
-Schedule: Daily at 7:00 AM
-Last run: Never
-Max delay: 30 minutes
-
----
-
-**Night Summary** has errors in logs.
-```
-Error: Missing ANTHROPIC_API_KEY
-```
-```
-
-## Adding New Jobs to Monitor
-
-Edit `setup/watchdog.ts` and add to the `JOBS` array:
-
-```typescript
-{
-  name: "My New Job",
-  label: "com.claude.my-job",       // launchd service label
-  script: "examples/my-job.ts",     // script path
-  schedule: "Daily at 9:00 AM",     // human-readable
-  expectedHours: [9],               // when it should run
-  maxDelayMinutes: 30,              // acceptable delay
-  checkLogFile: true                // should we scan logs?
-}
-```
-
-## State Persistence
-
-The watchdog maintains state in `logs/watchdog-state.json`:
-- Last check time
-- Alert history (prevents spam)
-- Recent issues
-
-This file is automatically managed - no manual intervention needed.
-
-## Self-Monitoring
-
-The watchdog checks its own health on every run. If the watchdog itself fails to run, the scheduled jobs will still execute, but you won't get alerts if they fail.
-
-To verify the watchdog is healthy:
 ```bash
-launchctl list | grep com.claude.watchdog
+npx pm2 start ecosystem.config.cjs --only watchdog
+npx pm2 save
 ```
-
-You should see it in the list with a status of `0`.
 
 ## Troubleshooting
 
 ### Watchdog not running
+
 ```bash
-# Reload the service
-bun run setup:launchd -- --service watchdog
+# Check if it is registered
+npx pm2 status
+
+# If missing, start it
+npx pm2 start ecosystem.config.cjs --only watchdog
+npx pm2 save
 ```
 
-### Too many alerts
-The watchdog throttles alerts to once per 6 hours per issue. If you're getting spammed:
-1. Check `logs/watchdog-state.json` for alert history
-2. Fix the underlying issue (the watchdog is telling you something is broken)
+### No alerts despite known issues
 
-### False positives
-If a job legitimately failed but you want to suppress the alert:
-1. Fix the job
-2. Wait 6 hours (alert will not repeat for the same issue)
-3. Or delete `logs/watchdog-state.json` to reset alert state
+1. Check watchdog logs: `npx pm2 logs watchdog --lines 50`
+2. Verify the General group is configured: ensure `chatId` is set for the General agent in `config/agents.json`
+3. Run manually to see output: `bun run routines/watchdog.ts`
 
-### Missing alerts
-If you expect an alert but didn't get one:
-1. Check `logs/com.claude.watchdog.log` to see what the watchdog detected
-2. Run manually: `bun run setup/watchdog.ts`
-3. Verify Telegram credentials in `.env`
+### False positives for cron jobs
+
+Cron-based routines (morning-summary, night-summary) normally show `stopped` status between runs. The watchdog only flags `stopped` as an issue for always-on processes. For cron jobs, only the `errored` state triggers a warning.
+
+### Watchdog itself fails
+
+If the watchdog encounters a fatal error, it sends a failure notification to the General group before exiting. Since `autorestart: false`, it waits for the next cron cycle (2 hours) to retry. Check logs with:
+
+```bash
+npx pm2 logs watchdog --err --lines 50
+```
 
 ## Log Files
 
-Each service writes to its own log file in `logs/`:
-- `com.claude.morning-briefing.log` - Morning briefing output
-- `com.claude.night-summary.log` - Night summary output
-- `com.claude.watchdog.log` - Watchdog's own logs
-- `watchdog-state.json` - Watchdog state (alert history)
+PM2 manages watchdog logs at `~/.claude-relay/logs/`:
 
-## Uninstalling
-
-To stop the watchdog:
-```bash
-launchctl unload ~/Library/LaunchAgents/com.claude.watchdog.plist
-rm ~/Library/LaunchAgents/com.claude.watchdog.plist
-```
-
-Or reinstall everything:
-```bash
-bun run setup:launchd -- --service all
-```
+- `watchdog-out.log` — standard output (health check results)
+- `watchdog-error.log` — errors and exceptions
