@@ -572,6 +572,9 @@ export async function claudeStream(
         }
 
         for (const line of lines) {
+          // Stop processing buffered lines once the kill has been issued.
+          // Without this guard, tool_use events in subsequent lines inflate turnCount.
+          if (maxTurnsReached) break;
           const trimmed = line.trim();
           if (!trimmed) continue;
           let event: Record<string, unknown>;
@@ -651,6 +654,7 @@ export async function claudeStream(
                   options?.onProgress?.(`⚠️ Turn limit reached (${maxTurns} tool calls) — returning partial result`);
                   maxTurnsReached = true;
                   proc.kill();
+                  break; // Stop counting parallel blocks in this assistant message
                 }
               }
             }

@@ -209,6 +209,66 @@ describe("claudeStream maxTurns", () => {
     expect(result).toBeDefined();
   });
 
+  test("parallel tool_use blocks in one assistant message must not overshoot maxTurns", async () => {
+    // Regression: 3 tool_use blocks in single assistant message with maxTurns=2
+    // should kill after the 2nd block, NOT continue to count block 3 (which gave 3/2).
+    let killCount = 0;
+    let finalTurnCount = 0;
+    const progressMessages: string[] = [];
+
+    const lines = [
+      // Single assistant message with 3 parallel tool_use blocks
+      assistantWithToolUse(["Read", "Grep", "Edit"]),
+      resultLine("partial"),
+    ].join("\n") + "\n";
+
+    spawnMock.mockImplementation(() =>
+      mockProc({ stdout: lines, exitDelay: 500, onKill: () => { killCount++; } })
+    );
+
+    await claudeStream("test", {
+      maxTurns: 2,
+      onProgress: (msg) => progressMessages.push(msg),
+    });
+
+    expect(killCount).toBeGreaterThanOrEqual(1);
+    // Warning must fire exactly ONCE — not once per parallel block past the limit
+    const warnings = progressMessages.filter((m) => m.includes("Turn limit reached"));
+    expect(warnings.length).toBe(1);
+  });
+
+  test("buffered lines after maxTurnsReached — outer loop must stop", async () => {
+    // Regression: when multiple NDJSON lines are buffered together (arrive in one chunk),
+    // the outer lines loop must stop processing after maxTurnsReached is set.
+    // Without the fix, tool_use events in subsequent buffered lines inflate turnCount.
+    let killCount = 0;
+    const progressMessages: string[] = [];
+
+    // 3 separate top-level tool_use lines buffered together, maxTurns=1
+    // Without fix: all 3 lines are processed → turnCount=3, warning fires 3 times
+    // With fix: loop stops after line 1 → turnCount=1, warning fires once
+    const lines = [
+      toolUseLine("Read"),
+      toolUseLine("Grep"),
+      toolUseLine("Edit"),
+      resultLine("partial"),
+    ].join("\n") + "\n";
+
+    spawnMock.mockImplementation(() =>
+      mockProc({ stdout: lines, exitDelay: 500, onKill: () => { killCount++; } })
+    );
+
+    await claudeStream("test", {
+      maxTurns: 1,
+      onProgress: (msg) => progressMessages.push(msg),
+    });
+
+    expect(killCount).toBeGreaterThanOrEqual(1);
+    const warnings = progressMessages.filter((m) => m.includes("Turn limit reached"));
+    // Must fire exactly once — not once per buffered line
+    expect(warnings.length).toBe(1);
+  });
+
   test("uses CLAUDE_MAX_TURNS env var as default", async () => {
     process.env.CLAUDE_MAX_TURNS = "2";
     let killed = false;
