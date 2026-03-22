@@ -1,4 +1,12 @@
 # Decision Journal
+## 2026-03-22 — Replace Claude CLI subprocess with Ollama in smart-checkin [pending]
+
+**Change**: `decideCheckin()` in `smart-checkin.ts` now uses `callOllamaGenerate` (Ollama HTTP, `think: false`) instead of spawning a Claude CLI subprocess (`claude -p ... --model claude-haiku-4-5-20251001`).
+**Why**: Claude CLI subprocess had no timeout and hung indefinitely — OAuth init + CLI startup takes 15s+ minimum, and with no AbortController the process would block forever. Ollama responds in ~4s via local HTTP. This matches the same migration done for `atomicBreakdown.ts`.
+**Rejected**: Adding a timeout to the Claude CLI subprocess — still has 15s+ startup latency per invocation (runs every 30 min), and Ollama handles the structured YES/NO decision adequately.
+**Branch**: feat/smart_routines
+
+
 
 ## 2026-03-20 — Migrate memory cleanup from Supabase to local stack [fe62b53]
 

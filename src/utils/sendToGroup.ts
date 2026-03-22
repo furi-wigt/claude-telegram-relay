@@ -68,11 +68,12 @@ export function chunkMessage(message: string, maxLength: number = TELEGRAM_MAX_L
 async function sendChunk(
   chatId: number,
   text: string,
-  options?: { parseMode?: "Markdown" | "HTML"; topicId?: number | null }
-): Promise<void> {
+  options?: { parseMode?: "Markdown" | "HTML"; topicId?: number | null; reply_markup?: unknown }
+): Promise<number | undefined> {
   const body: Record<string, unknown> = { chat_id: chatId, text };
   if (options?.parseMode) body.parse_mode = options.parseMode;
   if (options?.topicId) body.message_thread_id = options.topicId;
+  if (options?.reply_markup) body.reply_markup = options.reply_markup;
 
   const response = await fetch(
     `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`,
@@ -92,6 +93,10 @@ async function sendChunk(
     }
     throw new Error(`Telegram API error (${response.status}): ${errorData}`);
   }
+
+  // Return the message_id so callers can reference it for inline keyboards
+  const result = await response.json() as { result?: { message_id?: number } };
+  return result?.result?.message_id;
 }
 
 /**
@@ -107,8 +112,8 @@ async function sendChunk(
 export async function sendToGroup(
   chatId: number,
   message: string,
-  options?: { parseMode?: "Markdown" | "HTML"; topicId?: number | null }
-): Promise<void> {
+  options?: { parseMode?: "Markdown" | "HTML"; topicId?: number | null; reply_markup?: unknown }
+): Promise<number | undefined> {
   if (!BOT_TOKEN) {
     throw new Error("TELEGRAM_BOT_TOKEN not set");
   }
@@ -119,14 +124,18 @@ export async function sendToGroup(
 
   try {
     const chunks = chunkMessage(message);
+    let lastMessageId: number | undefined;
 
-    for (const chunk of chunks) {
-      await sendChunk(chatId, chunk, options);
+    for (let i = 0; i < chunks.length; i++) {
+      // Only attach reply_markup to the last chunk
+      const chunkOpts = i === chunks.length - 1 ? options : { ...options, reply_markup: undefined };
+      lastMessageId = await sendChunk(chatId, chunks[i], chunkOpts);
     }
 
     const topicSuffix = options?.topicId ? ` (topic ${options.topicId})` : "";
     const chunkInfo = chunks.length > 1 ? ` [${chunks.length} chunks]` : "";
     console.log(`Sent routine message to chat ${chatId}${chunkInfo}${topicSuffix}`);
+    return lastMessageId;
   } catch (error) {
     console.error(`Failed to send to chat ${chatId}:`, error);
     throw error;

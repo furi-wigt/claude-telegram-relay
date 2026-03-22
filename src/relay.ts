@@ -52,6 +52,7 @@ import { registerCallbackHandler } from "./routines/routineHandler.ts";
 import { getTROQAState, appendQAAnswer } from "./tro/troQAState.ts";
 import { registerDedupReviewCallbackHandler } from "./memory/dedupReviewCallbackHandler.ts";
 import { registerConflictCallbackHandler } from "./memory/conflictCallbackHandler.ts";
+import { registerTaskSuggestionHandler } from "./callbacks/taskSuggestionHandler.ts";
 import { InteractiveStateMachine } from "./interactive/index.ts";
 import { claudeText, claudeStream, enrichProgressText, type AskUserQuestionItem, type AskUserQuestionEvent } from "./claude-process.ts";
 import { ProgressIndicator } from "./utils/progressIndicator.ts";
@@ -656,6 +657,9 @@ registerDedupReviewCallbackHandler(bot);
 
 // Register memory conflict resolution callback handler (mcr_keep / mcr_all / mcr_skip from /memory dedup)
 registerConflictCallbackHandler(bot);
+
+// Register task suggestion callback handler (ts:all / ts:skip from morning-summary / smart-checkin)
+registerTaskSuggestionHandler(bot);
 
 // Kept for backward compat: handles "New topic / Continue" button clicks from any
 // context-switch prompts that were sent before topic detection was removed. Safe to

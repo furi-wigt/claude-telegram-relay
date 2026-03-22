@@ -23,7 +23,7 @@
 
 import { join } from "path";
 import { runPrompt } from "../integrations/claude/index.ts";
-import { callOllamaGenerate } from "../src/ollama/index.ts";
+import { callRoutineModel } from "../src/routines/routineModel.ts";
 import { sendAndRecord } from "../src/utils/routineMessage.ts";
 import { sendToGroup } from "../src/utils/sendToGroup.ts";
 import { GROUPS, validateGroup } from "../src/config/groups.ts";
@@ -377,7 +377,7 @@ async function analyzeDay(
 
   return analyzeWithProviders(prompt, {
     claude: (p) => runPrompt(p, { model: CLAUDE_MODEL, timeoutMs: CLAUDE_TIMEOUT_MS }),
-    ollama: (p: string) => callOllamaGenerate(p, { purpose: "routine-summary" }),
+    ollama: (p: string) => callRoutineModel(p, { label: "night-summary" }),
   });
 }
 

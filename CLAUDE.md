@@ -107,25 +107,53 @@ Do not rush all phases at once. Start with Phase 1. When it works, move to Phase
 
 Your bot's memory runs entirely locally — no cloud APIs needed. It uses SQLite for structured data, Qdrant for vector search, and Ollama for generating embeddings.
 
-### Step 1: Install Ollama
+### Step 1: Install MLX Qwen (Apple Silicon — primary routine model)
 
-Ollama provides local LLM inference for embeddings and fallback AI.
+MLX provides native Apple Silicon inference at ~2x Ollama speed. Used as the primary model for all scheduled routines (morning summary, smart check-in, night summary).
+
+**What to tell them (macOS only):**
+1. Ensure Python 3.12+ is installed: `brew install python@3.12`
+2. Install the `mlx-qwen` CLI tool:
+   ```bash
+   uv tool install --editable ~/.claude/tools/mlx-qwen --python python3.12
+   ```
+3. Download model weights (~5.6 GB):
+   ```bash
+   mlx-qwen pull
+   ```
+4. Verify: `mlx-qwen generate "Say hello" -t 50`
+
+> **Cloudflare/corporate proxy:** The tool auto-injects `/etc/ssl/Cloudflare_CA.pem` if present. No manual cert config needed.
+
+**Commands:**
+| Command | What it does |
+|---------|-------------|
+| `mlx-qwen generate "prompt"` | One-shot generation (thinking auto-disabled) |
+| `mlx-qwen serve` | OpenAI-compatible API on `localhost:8800` |
+| `mlx-qwen pull` | Download/update model weights |
+| `mlx-qwen info` | Show cached models and sizes |
+
+### Step 2: Install Ollama (fallback + embeddings)
+
+Ollama provides embeddings and serves as the fallback when MLX is unavailable (e.g., non-Apple-Silicon machines).
 
 **What to tell them:**
 1. Go to [ollama.com](https://ollama.com) and install Ollama
-2. Pull the embedding model and a general-purpose model:
+2. Pull the required models:
    ```bash
-   ollama pull nomic-embed-text
-   ollama pull gemma3:4b
+   ollama pull nomic-embed-text       # embeddings (required)
+   ollama pull qwen2.5:7b-instruct-Q6_K  # general fallback
    ```
 
 **What you do:**
 1. Save in `.env`:
    - `OLLAMA_URL=http://localhost:11434`
-   - `OLLAMA_MODEL=gemma3:4b`
+   - `OLLAMA_MODEL=qwen2.5:7b-instruct-Q6_K`
    - `OLLAMA_EMBED_MODEL=nomic-embed-text`
 
-### Step 2: Install Qdrant
+> **Routine model cascade:** Routines call `callRoutineModel()` which tries MLX first (Qwen3.5 9B via `mlx-qwen`), then falls back to Ollama (`OLLAMA_ROUTINE_MODEL` or `OLLAMA_MODEL`). Set `OLLAMA_ROUTINE_MODEL` only if you want a specific Ollama model for the fallback.
+
+### Step 3: Install Qdrant
 
 Qdrant is a local vector database for semantic search over messages and memory.
 
@@ -145,7 +173,7 @@ docker run -d --name qdrant -p 6333:6333 -v ~/.qdrant/storage:/qdrant/storage qd
 1. Verify Qdrant is reachable: `curl http://localhost:6333/healthz`
 2. The bot auto-creates its collections on first run — no manual schema setup needed
 
-### Step 3: Verify
+### Step 4: Verify
 
 1. Confirm Ollama is running: `ollama list` should show the pulled models
 2. Confirm Qdrant is reachable: `curl http://localhost:6333/healthz`

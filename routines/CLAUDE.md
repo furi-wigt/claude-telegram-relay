@@ -335,21 +335,23 @@ npx pm2 save
 
 ## LLM provider order
 
-For text-only tasks (summarization, extraction, classification), use **local Ollama
-first** with Claude Haiku as fallback. Always log which provider succeeded or failed.
+For text-only tasks (summarization, extraction, classification), use `callRoutineModel()`
+which cascades: **MLX first → Ollama fallback**. Logging is handled automatically.
 
 ```ts
-try {
-  result = await callOllamaGenerate(prompt, { purpose: "routine-summary", timeoutMs: 30_000 });
-  console.log("[my-routine] Ollama succeeded");
-} catch (ollamaErr) {
-  console.warn("[my-routine] Ollama failed, falling back to Haiku:", ollamaErr instanceof Error ? ollamaErr.message : ollamaErr);
-  result = await claudeText(prompt, { model: "claude-haiku-4-5-20251001", timeoutMs: 30_000 });
-  console.log("[my-routine] Haiku fallback succeeded");
-}
+import { callRoutineModel } from "../src/routines/routineModel.ts";
+
+const result = await callRoutineModel(prompt, {
+  label: "my-routine",
+  timeoutMs: 30_000,
+});
 ```
 
-**Note:** Local Ollama (qwen) does **not** support tool use. If a routine needs
+**Provider cascade:**
+1. **MLX** (`mlx-qwen generate`) — Qwen3.5 9B 4-bit, Apple Silicon native, ~60 tok/s
+2. **Ollama** (`callOllamaGenerate`) — `OLLAMA_ROUTINE_MODEL` or `OLLAMA_MODEL`, HTTP API
+
+**Note:** Local models do **not** support tool use. If a routine needs
 Claude tools/agentic capabilities, use `claudeText`/`claudeStream` directly.
 
 ---

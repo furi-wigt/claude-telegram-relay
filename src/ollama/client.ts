@@ -14,7 +14,10 @@ export function getBaseUrl(): string {
 }
 
 /**
- * Send a prompt to Ollama's /api/generate endpoint.
+ * Send a prompt to Ollama.
+ *
+ * Uses /api/chat when think=false (required for Qwen3 thinking models),
+ * otherwise /api/generate.
  *
  * Model resolution:
  *   - options.model (explicit override) > purpose-based lookup > global default
@@ -26,6 +29,8 @@ export async function callOllamaGenerate(
     purpose?: OllamaPurpose;
     baseUrl?: string;
     timeoutMs?: number;
+    /** Set false to disable extended thinking (required for qwen3.x models). */
+    think?: boolean;
   }
 ): Promise<string> {
   const model =
@@ -33,15 +38,21 @@ export async function callOllamaGenerate(
     (options?.purpose ? getModel(options.purpose) : getModel("chat-fallback"));
   const baseUrl = options?.baseUrl ?? getBaseUrl();
   const timeoutMs = options?.timeoutMs ?? OLLAMA_TIMEOUT_MS;
+  const useChat = options?.think === false;
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const response = await fetch(`${baseUrl}/api/generate`, {
+    const url = useChat ? `${baseUrl}/api/chat` : `${baseUrl}/api/generate`;
+    const body = useChat
+      ? JSON.stringify({ model, messages: [{ role: "user", content: prompt }], think: false, stream: false })
+      : JSON.stringify({ model, prompt, stream: false });
+
+    const response = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model, prompt, stream: false }),
+      body,
       signal: controller.signal,
     });
 
@@ -49,12 +60,18 @@ export async function callOllamaGenerate(
       throw new Error(`Ollama API error: HTTP ${response.status}`);
     }
 
-    const data = (await response.json()) as { response?: unknown };
+    if (useChat) {
+      const data = (await response.json()) as { message?: { content?: unknown } };
+      if (typeof data.message?.content !== "string") {
+        throw new Error("Ollama API: unexpected chat response shape");
+      }
+      return data.message.content.trim();
+    }
 
+    const data = (await response.json()) as { response?: unknown };
     if (typeof data.response !== "string") {
       throw new Error("Ollama API: unexpected response shape");
     }
-
     return data.response.trim();
   } finally {
     clearTimeout(timer);

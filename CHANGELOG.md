@@ -1,6 +1,28 @@
 # Changelog
 
-## [Unreleased]
+## [Unreleased] / 2026-03-22 — Smart Routines: Calendar-aware check-in, Ollama atomic task breakdown, Things 3 inline keyboard
+
+### Added
+- **Atomic Task Breakdown Engine** (`src/utils/atomicBreakdown.ts`): Ollama-powered (`OLLAMA_ROUTINE_MODEL=qwen3.5:4b`) decomposition of complex tasks into ≤2h atomic execution steps. Pulls from Things 3 (`today` + `deadlines`), `.claude/todos/` pending items, calendar events, and active goals. Shared `formatAtomicTaskBlock()` helper used by both routines.
+- **Things 3 CLI wrapper** (`src/utils/t3Helper.ts`): Subprocess wrapper for `t3` CLI. Fetches tasks from any Things 3 view with JSON parsing and UUID deduplication. 10s timeout. Fixed: removed erroneous `--json` flag (`t3` outputs JSON by default).
+- **Task Suggestion Callback Handler** (`src/callbacks/taskSuggestionHandler.ts`): In-memory session store (1h TTL) and Grammy callback handler for `ts:all:{sessionId}` / `ts:skip:{sessionId}` inline keyboard buttons. Confirmed tap batch-adds tasks to Things 3 via URL scheme.
+- **`sendToGroup` / `sendAndRecord`**: Accept `reply_markup?: unknown`, attached to last chunk only. Return `message_id`.
+
+### Changed
+- **Morning Summary** (`routines/morning-summary.ts`): Replaced `suggestTasks()` with `breakdownTasks()` + `formatAtomicTaskBlock()`. Shows numbered "Today's Action Plan" with time slots, durations, source attribution, and "Add All to Things 3" inline keyboard. Recap Ollama timeout raised 30s → 90s for qwen3.5:4b.
+- **Smart Check-in** (`routines/smart-checkin.ts`): Complete rewrite. Calendar-aware context with meeting prep reminders (30min before start), post-meeting debrief suggestions, Things 3 task context. Decision engine uses local Ollama (`callOllamaGenerate` with `think: false`) for YES/NO check-in decisions — replaced Claude CLI subprocess (Haiku) which hung due to OAuth/startup latency with no timeout. Schedule guard: Mon–Sat 06–22, Sun 12–23.
+- **Ollama client** (`src/ollama/client.ts`): `callOllamaGenerate` accepts `think?: boolean`. When `false`, routes to `/api/chat` with `think: false` (required for `qwen3.x` thinking models — `/api/generate` does not support this flag). All routine Ollama calls now pass `think: false`.
+- **Bot startup** (`src/relay.ts`): Registers `registerTaskSuggestionHandler(bot)` for `ts:*` callback queries.
+
+### Removed
+- `suggestTasks()`, `getFallbackTasks()`, `scheduleTaskReminders()`, `SuggestedTask` type, `BOT_TOKEN` constant from `morning-summary.ts`.
+
+### Notes
+- **Ollama model**: `OLLAMA_ROUTINE_MODEL=qwen3.5:4b` in `~/.claude-relay/.env`. Controls both recap and atomic breakdown.
+- **qwen3.5:4b thinking**: Extended thinking disabled via `think: false` in all routine Ollama calls. Without it the model enters a multi-minute thinking loop and times out at any reasonable threshold.
+- **Calendar + PM2/launchd**: `calendar-helper` TCC access is granted to the spawning process. PM2 starts under launchd with no UI context — calendar degrades gracefully to `null`. Fix: run `calendar-helper check-access` from an interactive terminal session once to register TCC for that terminal app, then start PM2 from that session.
+
+---
 
 ### Added
 - Structured observability system for debugging message flow and LTM extraction (`src/utils/tracer.ts`)

@@ -25,6 +25,7 @@ export interface RoutineMessageOptions {
   routineName: string;  // e.g. 'smart-checkin', 'morning-summary'
   agentId?: string;     // e.g. 'general-assistant', 'aws-architect'
   topicId?: number | null;  // forum topic thread ID (message_thread_id)
+  reply_markup?: unknown;   // Telegram InlineKeyboard JSON (attached to last chunk)
 }
 
 /**
@@ -82,11 +83,13 @@ export async function sendAndRecord(
   // 1. Send to Telegram first (don't block on storage)
   if (!options.parseMode) {
     const chunks = splitMarkdown(message, MARKDOWN_SPLIT_LEN);
-    for (const chunk of chunks) {
-      await sendToGroup(chatId, markdownToHtml(chunk), { parseMode: "HTML", topicId: options.topicId });
+    for (let i = 0; i < chunks.length; i++) {
+      // Attach reply_markup only to the last chunk
+      const markup = i === chunks.length - 1 ? options.reply_markup : undefined;
+      await sendToGroup(chatId, markdownToHtml(chunks[i]), { parseMode: "HTML", topicId: options.topicId, reply_markup: markup });
     }
   } else {
-    await sendToGroup(chatId, message, { parseMode: options.parseMode, topicId: options.topicId });
+    await sendToGroup(chatId, message, { parseMode: options.parseMode, topicId: options.topicId, reply_markup: options.reply_markup });
   }
 
   // 2. Generate summary at insert time (async — routine already fired)
