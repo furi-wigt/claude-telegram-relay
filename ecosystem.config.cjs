@@ -14,6 +14,7 @@ const ENV = {
 };
 
 const QDRANT_BIN = process.env.QDRANT_BIN || HOME + "/.qdrant/bin/qdrant";
+const MLX_BIN = process.env.MLX_BIN || HOME + "/.local/bin/mlx";
 
 module.exports = {
   apps: [
@@ -33,6 +34,23 @@ module.exports = {
       env: ENV,
       error_file: LOGS_DIR + "/qdrant-error.log",
       out_file: LOGS_DIR + "/qdrant-out.log",
+      log_date_format: "YYYY-MM-DD HH:mm:ss Z",
+    },
+
+    {
+      name: "mlx",
+      script: MLX_BIN,
+      args: "serve",
+      interpreter: "none",
+      exec_mode: "fork",
+      cwd: CWD,
+      instances: 1,
+      autorestart: true,
+      watch: false,
+      kill_timeout: 10000,
+      env: ENV,
+      error_file: LOGS_DIR + "/mlx-error.log",
+      out_file: LOGS_DIR + "/mlx-out.log",
       log_date_format: "YYYY-MM-DD HH:mm:ss Z",
     },
 
