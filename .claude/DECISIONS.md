@@ -8,6 +8,27 @@
 
 
 
+## 2026-03-22 — Use Ollama (qwen3.5:9b) instead of Claude Haiku for atomic task breakdown [feat/smart_routines]
+
+**Change**: `atomicBreakdown.ts` switched from `claudeText` (Claude CLI subprocess) to `callOllamaGenerate` with `OLLAMA_ROUTINE_MODEL=qwen3.5:9b`.
+**Why**: `claudeText` spawns a CLI subprocess — 15s startup overhead + OAuth auth + model time regularly exceeded 30s timeout. Ollama HTTP fetch responds in ~4s with no auth required. qwen3.5:9b produces better structured JSON for multi-step task decomposition than qwen2.5:7b.
+**Rejected**: (1) Raise `claudeText` timeout to 120s — doesn't fix startup overhead under launchd; (2) Use `qwen2.5:7b` — lower quality task breakdowns; (3) Keep Haiku as primary, Ollama as fallback — inverts the latency tradeoff.
+**Branch**: feat/smart_routines
+
+## 2026-03-22 — Disable qwen3.5:9b extended thinking via /api/chat think:false [feat/smart_routines]
+
+**Change**: `callOllamaGenerate` in `src/ollama/client.ts` accepts `think?: boolean`. When `false`, routes to `/api/chat` with `think: false` instead of `/api/generate`.
+**Why**: `qwen3.5:9b` enters extended chain-of-thought by default — `/api/generate` cannot disable it. The model runs for >2 minutes on Mac M-series before responding. `/api/chat` with `think: false` disables thinking entirely. Measured: >120s timeout → 4s response.
+**Rejected**: (1) `/no_think` prompt prefix — not reliable at Ollama 0.18.2; (2) Global switch to qwen2.5:7b — less capable; (3) 5min timeout — blocks routine and causes PM2 false-positive restarts.
+**Branch**: feat/smart_routines
+
+## 2026-03-22 — Harden CLI subprocess instead of migrating to Agent SDK [pending]
+
+**Change**: Added maxTurns kill to `claudeStream` and heartbeat responsiveness probe to watchdog, staying on CLI subprocess architecture.
+**Why**: Agent SDK requires `ANTHROPIC_API_KEY` with separate billing; user's Claude Max subscription uses OAuth through CLI only. CLI subprocess gives the same control (kill, abort, turn counting) without paying twice. The 27-minute freeze was caused by no hard turn limit — PM2 showed the process as "online" but it was stuck in an agentic loop. Two fixes: (1) turn counter kills after N tool_use events (default 50), (2) watchdog now checks message timestamps, not just PM2 status.
+**Rejected**: (1) Migrate to Agent SDK — requires separate API key/billing, OAuth not supported. (2) Soft ceiling only (notify but don't kill) — user can't act on a notification while the bot is frozen. (3) Time-based kill only — a legitimate long session with active tool use shouldn't be killed; counting tool_use events is more precise.
+**Branch**: feat/stream_reliability
+
 ## 2026-03-20 — Migrate memory cleanup from Supabase to local stack [fe62b53]
 
 **Change**: Replaced all Supabase calls in memory-cleanup.ts, memory-dedup-review.ts, and dedupReviewCallbackHandler.ts with local SQLite + Qdrant + Ollama BGE-M3.
