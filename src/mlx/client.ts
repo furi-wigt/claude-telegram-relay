@@ -10,9 +10,14 @@
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 const DEFAULT_MAX_TOKENS = 2048;
+const DEFAULT_MLX_MODEL = "mlx-community/Qwen3.5-9B-MLX-4bit";
 
 export function getMlxBaseUrl(): string {
   return process.env.MLX_URL ?? "http://localhost:8800";
+}
+
+export function getMlxModel(): string {
+  return process.env.MLX_MODEL ?? DEFAULT_MLX_MODEL;
 }
 
 /** Check if the MLX server is reachable. */
@@ -54,7 +59,7 @@ export async function callMlxGenerate(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: "default",
+        model: getMlxModel(),
         messages: [{ role: "user", content: prompt }],
         max_tokens: maxTokens,
         temperature: 0,
