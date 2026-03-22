@@ -429,7 +429,7 @@ flowchart LR
 
 ```mermaid
 flowchart TD
-    A[/memory] --> B[Inline keyboard:\nFacts / Goals / Dates / Preferences]
+    A["/memory"] --> B[Inline keyboard:\nFacts / Goals / Dates / Preferences]
     B --> C{User taps category}
     C -->|Facts| D[List facts with snippets\n+ Delete button per entry]
     C -->|Goals| E[List active goals\nwith deadlines + priority]

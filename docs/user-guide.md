@@ -263,9 +263,9 @@ Tap any category to browse entries. Each entry shows a snippet and options to de
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Active: /goals +text\nor [GOAL: ...] tag
+    [*] --> Active: /goals +text or GOAL tag
 
-    Active --> Done: /goals *N\nor [DONE: text] tag
+    Active --> Done: /goals *N or DONE tag
 
     Done --> Active: /goals *N\n(toggle back)
 

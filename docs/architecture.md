@@ -380,12 +380,12 @@ flowchart TD
 
     REG2 --> AGENT
     JSON -->|Yes| REG3[registerGroup from JSON]
-    JSON -->|No| DEFAULT[Use general-assistant\n(default fallback)]
+    JSON -->|No| DEFAULT["Use general-assistant\n(default fallback)"]
 
     REG3 --> AGENT
     DEFAULT --> AGENT
 
-    AGENT --> PROMPT[Load System Prompt\n~/.claude-relay/prompts/{id}.md\nor config/prompts/{id}.md]
+    AGENT --> PROMPT["Load System Prompt\n~/.claude-relay/prompts/{id}.md\nor config/prompts/{id}.md"]
     PROMPT --> CLAUDE[Spawn Claude with\nagent system prompt]
 ```
 

@@ -132,10 +132,10 @@ gantt
 flowchart TD
     CRON[PM2 cron fires\nat scheduled time] --> SPAWN[PM2 spawns:\nbun routines/name.ts]
 
-    SPAWN --> ENTRY{_isEntry guard\nimport.meta.main ||\npm_exec_path matches?}
+    SPAWN --> ENTRY{"_isEntry guard\nimport.meta.main or\npm_exec_path matches?"}
 
-    ENTRY -->|false — should never happen| EXIT0_EARLY[exit 0]
-    ENTRY -->|true| MAIN[main()]
+    ENTRY -->|false - should never happen| EXIT0_EARLY[exit 0]
+    ENTRY -->|true| MAIN["main()"]
 
     MAIN --> VALID{validateGroup\nGENERAL, AWS, etc.}
     VALID -->|Group not configured| EXIT0_SKIP[exit 0\nlog: group not configured]

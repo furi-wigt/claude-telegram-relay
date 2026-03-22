@@ -105,7 +105,7 @@ flowchart TD
     REG_JSON --> AGENT
     DEFAULT --> AGENT
 
-    AGENT --> PROMPT[Load system prompt:\n1. ~/.claude-relay/prompts/{id}.md\n2. config/prompts/{id}.md\n3. Minimal inline fallback]
+    AGENT --> PROMPT["Load system prompt:\n1. ~/.claude-relay/prompts/{id}.md\n2. config/prompts/{id}.md\n3. Minimal inline fallback"]
 
     PROMPT --> CLAUDE[Spawn Claude with\nagent system prompt]
 ```
