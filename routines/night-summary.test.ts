@@ -13,6 +13,7 @@ import { describe, it, expect } from "bun:test";
 import {
   buildReflectionPrompt,
   buildDayTimeline,
+  buildQaPairs,
   formatSummary,
   analyzeWithProviders,
   type DayMessage,
@@ -132,10 +133,25 @@ describe("buildReflectionPrompt()", () => {
     expect(hasMotivation).toBe(true);
   });
 
-  it("requests detailed output (400+ words target)", () => {
+  it("requests detailed output (500+ words target)", () => {
     const prompt = buildReflectionPrompt([], [], []);
     // The prompt should instruct for a detailed response, not a brief one
-    expect(prompt).toContain("400");
+    expect(prompt).toContain("500");
+  });
+
+  it("includes a Q&A sessions context section", () => {
+    const messages = [
+      makeMessage({ role: "user", content: "Explain bun:sqlite WAL mode." }),
+      makeMessage({ role: "assistant", content: "WAL mode enables concurrent reads while writes proceed." }),
+    ];
+    const prompt = buildReflectionPrompt(messages, [], []);
+    expect(prompt).toContain("Q&A Sessions");
+    expect(prompt).toContain("bun:sqlite WAL mode");
+  });
+
+  it("includes 'Today's Learning Lessons' instruction in the prompt", () => {
+    const prompt = buildReflectionPrompt([], [], []);
+    expect(prompt).toContain("Learning Lessons");
   });
 
   it("includes all messages when no summaries are provided (no arbitrary cap)", () => {
@@ -343,6 +359,122 @@ describe("analyzeWithProviders() — MLX-first, Claude fallback", () => {
     });
 
     expect(capturedPrompt).toBe("my exact prompt text");
+  });
+});
+
+// ============================================================
+// buildQaPairs() — pure function
+// ============================================================
+
+describe("buildQaPairs()", () => {
+  it("returns an empty array for empty input", () => {
+    expect(buildQaPairs([])).toEqual([]);
+  });
+
+  it("returns an empty array when only assistant messages exist", () => {
+    const messages = [makeMessage({ role: "assistant", content: "Hello" })];
+    expect(buildQaPairs(messages)).toEqual([]);
+  });
+
+  it("pairs a user message with the following assistant message", () => {
+    const messages = [
+      makeMessage({ role: "user", content: "How does WAL mode work?", created_at: "2025-02-21T10:00:00Z" }),
+      makeMessage({ role: "assistant", content: "WAL mode allows concurrent reads.", created_at: "2025-02-21T10:01:00Z" }),
+    ];
+    const pairs = buildQaPairs(messages);
+    expect(pairs).toHaveLength(1);
+    expect(pairs[0].question).toBe("How does WAL mode work?");
+    expect(pairs[0].answer).toBe("WAL mode allows concurrent reads.");
+  });
+
+  it("records the user message timestamp in the pair", () => {
+    const messages = [
+      makeMessage({ role: "user", created_at: "2025-02-21T09:30:00Z" }),
+      makeMessage({ role: "assistant", created_at: "2025-02-21T09:31:00Z" }),
+    ];
+    const pairs = buildQaPairs(messages);
+    expect(pairs[0].time).toBe("2025-02-21T09:30:00Z");
+  });
+
+  it("handles an orphaned user message (no assistant follow-up)", () => {
+    const messages = [
+      makeMessage({ role: "user", content: "What is the answer?" }),
+    ];
+    const pairs = buildQaPairs(messages);
+    expect(pairs).toHaveLength(1);
+    expect(pairs[0].answer).toBe("(no response yet)");
+  });
+
+  it("produces multiple pairs from interleaved user/assistant messages", () => {
+    const messages = [
+      makeMessage({ role: "user", content: "Q1" }),
+      makeMessage({ role: "assistant", content: "A1" }),
+      makeMessage({ role: "user", content: "Q2" }),
+      makeMessage({ role: "assistant", content: "A2" }),
+    ];
+    const pairs = buildQaPairs(messages);
+    expect(pairs).toHaveLength(2);
+    expect(pairs[0].question).toBe("Q1");
+    expect(pairs[1].question).toBe("Q2");
+  });
+
+  it("does not double-count the assistant message as a question", () => {
+    const messages = [
+      makeMessage({ role: "user", content: "Q1" }),
+      makeMessage({ role: "assistant", content: "A1" }),
+      makeMessage({ role: "assistant", content: "A2 — follow-up" }), // second assistant in a row
+    ];
+    const pairs = buildQaPairs(messages);
+    // Only one user turn → one pair
+    expect(pairs).toHaveLength(1);
+  });
+
+  it("truncates question to 600 chars", () => {
+    const longQuestion = "x".repeat(700);
+    const messages = [
+      makeMessage({ role: "user", content: longQuestion }),
+      makeMessage({ role: "assistant", content: "Short answer" }),
+    ];
+    const pairs = buildQaPairs(messages);
+    expect(pairs[0].question.length).toBe(600);
+  });
+
+  it("truncates answer to 800 chars", () => {
+    const longAnswer = "y".repeat(900);
+    const messages = [
+      makeMessage({ role: "user", content: "Short Q" }),
+      makeMessage({ role: "assistant", content: longAnswer }),
+    ];
+    const pairs = buildQaPairs(messages);
+    expect(pairs[0].answer.length).toBe(800);
+  });
+
+  it("captures agent_id from the user message", () => {
+    const messages = [
+      makeMessage({ role: "user", content: "Q", agent_id: "aws-architect" }),
+      makeMessage({ role: "assistant", content: "A" }),
+    ];
+    const pairs = buildQaPairs(messages);
+    expect(pairs[0].agent).toBe("aws-architect");
+  });
+
+  it("falls back to agent_id from assistant message when user has none", () => {
+    const messages = [
+      makeMessage({ role: "user", content: "Q", agent_id: null }),
+      makeMessage({ role: "assistant", content: "A", agent_id: "security-analyst" }),
+    ];
+    const pairs = buildQaPairs(messages);
+    expect(pairs[0].agent).toBe("security-analyst");
+  });
+
+  it("agent is undefined/null when neither message has agent_id", () => {
+    const messages = [
+      makeMessage({ role: "user", content: "Q" }),
+      makeMessage({ role: "assistant", content: "A" }),
+    ];
+    const pairs = buildQaPairs(messages);
+    // agent should be falsy (null or undefined)
+    expect(pairs[0].agent).toBeFalsy();
   });
 });
 
