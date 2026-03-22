@@ -206,9 +206,16 @@ describe("formatSummary()", () => {
     expect(summary.toLowerCase()).toContain("night");
   });
 
-  it("contains a footer mentioning Claude", () => {
-    const summary = formatSummary("Monday, February 21", 5, 2, "Analysis.");
-    expect(summary.toLowerCase()).toContain("claude");
+  it("contains 'Claude Haiku' in footer when provider is claude", () => {
+    const summary = formatSummary("Monday, February 21", 5, 2, "Analysis.", "claude");
+    expect(summary).toContain("Claude Haiku");
+  });
+
+  it("contains the model name in footer when provider is mlx", () => {
+    const summary = formatSummary("Monday, February 21", 5, 2, "Analysis.", "mlx");
+    // Footer should contain the last segment of the MLX model path (e.g. "Qwen3.5-9B-MLX-4bit")
+    expect(summary.toLowerCase()).toContain("powered by");
+    expect(summary).not.toContain("Claude Haiku");
   });
 
   it("returns a non-empty string for zero counts", () => {

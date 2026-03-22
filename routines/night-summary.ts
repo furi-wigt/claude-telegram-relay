@@ -30,6 +30,7 @@ import { GROUPS, validateGroup } from "../src/config/groups.ts";
 import { USER_NAME, USER_TIMEZONE } from "../src/config/userConfig.ts";
 import { shouldSkipRecently, markRanToday } from "../src/routines/runOnceGuard.ts";
 import { getPm2LogsDir } from "../config/observability.ts";
+import { getMlxModel } from "../src/mlx/client.ts";
 
 const LAST_RUN_FILE = join(getPm2LogsDir(), "night-summary.lastrun");
 
@@ -235,7 +236,8 @@ export function formatSummary(
   dateStr: string,
   messageCount: number,
   factCount: number,
-  analysis: string
+  analysis: string,
+  provider: "claude" | "mlx" | null = null
 ): string {
   const lines: string[] = [];
 
@@ -245,7 +247,14 @@ export function formatSummary(
   lines.push(analysis);
   lines.push("");
   lines.push("---");
-  lines.push("*Powered by Claude Haiku. Reply to reflect further.*");
+
+  const providerLabel =
+    provider === "mlx"
+      ? getMlxModel().split("/").pop() ?? "MLX"
+      : provider === "claude"
+        ? "Claude Haiku"
+        : "Unknown";
+  lines.push(`*Powered by ${providerLabel}. Reply to reflect further.*`);
 
   return lines.join("\n");
 }
@@ -402,7 +411,7 @@ async function buildSummary(): Promise<{ summary: string; provider: "claude" | "
   ]);
 
   const result = await analyzeDay(messages, facts, goals, summaries);
-  const summary = formatSummary(dateStr, messages.length, facts.length, result.text);
+  const summary = formatSummary(dateStr, messages.length, facts.length, result.text, result.provider);
 
   return { summary, provider: result.provider };
 }
