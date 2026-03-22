@@ -38,11 +38,15 @@ export type RoutineModelProvider = "mlx" | "ollama";
 let _lastProvider: RoutineModelProvider = "mlx";
 export function getLastProvider(): RoutineModelProvider { return _lastProvider; }
 
+/** Minimum timeout to attempt MLX — cold start needs ~8-15s to load 5.6GB model. */
+const MLX_MIN_TIMEOUT_MS = 10_000;
+
 /**
  * Call the best available local model for routine tasks.
  *
  * Tries MLX first (faster, better reasoning on 9B), falls back to Ollama.
  * MLX calls are serialized — concurrent callers wait in queue.
+ * Callers with timeoutMs < 10s skip MLX entirely (cold start too slow).
  */
 export async function callRoutineModel(
   prompt: string,
@@ -52,8 +56,8 @@ export async function callRoutineModel(
   const timeoutMs = options?.timeoutMs ?? 120_000;
   const maxTokens = options?.maxTokens ?? 2048;
 
-  // Try MLX first (serialized via mutex)
-  if (isMlxAvailable()) {
+  // Skip MLX for tight timeouts — cold start needs ~8-15s to load model
+  if (isMlxAvailable() && timeoutMs >= MLX_MIN_TIMEOUT_MS) {
     try {
       const result = await withMlxLock(() =>
         callMlxGenerate(prompt, { timeoutMs, maxTokens })
@@ -67,6 +71,8 @@ export async function callRoutineModel(
         mlxErr instanceof Error ? mlxErr.message : mlxErr
       );
     }
+  } else if (isMlxAvailable()) {
+    console.log(`[${label}] Skipping MLX (timeout ${timeoutMs}ms < ${MLX_MIN_TIMEOUT_MS}ms min)`);
   }
 
   // Fallback to Ollama
