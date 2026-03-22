@@ -19,7 +19,7 @@ This project turns Telegram into a personal AI assistant powered by Claude Code 
 
 **What you get:**
 - 5 specialised AI agents, each in their own Telegram supergroup (AWS Architect, Security, Documentation, Code Quality, General)
-- Long-term memory: facts, goals, preferences stored locally with semantic search (SQLite + Qdrant + Ollama)
+- Long-term memory: facts, goals, preferences stored locally with semantic search (SQLite + Qdrant + MLX bge-m3)
 - Scheduled routines: morning briefing, evening summary, proactive check-ins, health watchdog
 - Document RAG: upload PDFs, ask questions, get answers grounded in your documents
 - Voice transcription: send voice messages, bot transcribes and responds
@@ -51,7 +51,7 @@ All user data lives outside the project directory in `~/.claude-relay/`:
 **Storage stack:**
 - **SQLite** (`~/.claude-relay/data/local.sqlite`) — messages, memory entries, goals, conversation summaries, logs
 - **Qdrant** (local vector DB) — semantic search over messages and memory
-- **Ollama** (local LLM) — generates embeddings and handles fallback AI tasks
+- **MLX** (`mlx serve`) — text generation (Qwen3.5-9B) + embeddings (bge-m3) via OpenAI-compatible HTTP API on port 8800
 
 ## Prerequisites
 
@@ -105,7 +105,7 @@ Do not rush all phases at once. Start with Phase 1. When it works, move to Phase
 
 ## Phase 2: Local Memory & Search (~10 min)
 
-Your bot's memory runs entirely locally — no cloud APIs needed. It uses SQLite for structured data, Qdrant for vector search, and Ollama for generating embeddings.
+Your bot's memory runs entirely locally — no cloud APIs needed. It uses SQLite for structured data, Qdrant for vector search, and MLX (bge-m3) for generating embeddings.
 
 ### Step 1: Install MLX Qwen (Apple Silicon — primary routine model)
 
@@ -133,25 +133,24 @@ MLX provides native Apple Silicon inference at ~2x Ollama speed. Used as the pri
 | `mlx-qwen pull` | Download/update model weights |
 | `mlx-qwen info` | Show cached models and sizes |
 
-### Step 2: Install Ollama (fallback + embeddings)
+### Step 2: Start MLX server (embeddings + text generation)
 
-Ollama provides embeddings and serves as the fallback when MLX is unavailable (e.g., non-Apple-Silicon machines).
+The MLX server (`mlx serve`) handles both text generation (Qwen3.5-9B) and embeddings (bge-m3) on port 8800. No separate embedding service needed.
 
 **What to tell them:**
-1. Go to [ollama.com](https://ollama.com) and install Ollama
-2. Pull the required models:
+1. Start the server (model weights load on first request — allow ~30s):
    ```bash
-   ollama pull nomic-embed-text       # embeddings (required)
-   ollama pull qwen2.5:7b-instruct-Q6_K  # general fallback
+   mlx serve
    ```
+2. Verify it's running: `curl http://localhost:8800/health`
 
 **What you do:**
-1. Save in `.env`:
-   - `OLLAMA_URL=http://localhost:11434`
-   - `OLLAMA_MODEL=qwen2.5:7b-instruct-Q6_K`
-   - `OLLAMA_EMBED_MODEL=nomic-embed-text`
+1. The env vars are pre-configured. Optionally override in `~/.claude-relay/.env`:
+   - `MLX_URL=http://localhost:8800`
+   - `MLX_MODEL=mlx-community/Qwen3.5-9B-MLX-4bit`
+   - `EMBED_MODEL=bge-m3`
 
-> **Routine model cascade:** Routines call `callRoutineModel()` which tries MLX first (Qwen3.5 9B via `mlx-qwen`), then falls back to Ollama (`OLLAMA_ROUTINE_MODEL` or `OLLAMA_MODEL`). Set `OLLAMA_ROUTINE_MODEL` only if you want a specific Ollama model for the fallback.
+> **Apple Silicon only.** MLX requires Apple Silicon (M1/M2/M3/M4). The relay uses MLX exclusively for all local inference.
 
 ### Step 3: Install Qdrant
 
@@ -175,11 +174,11 @@ docker run -d --name qdrant -p 6333:6333 -v ~/.qdrant/storage:/qdrant/storage qd
 
 ### Step 4: Verify
 
-1. Confirm Ollama is running: `ollama list` should show the pulled models
+1. Confirm MLX server is running: `curl http://localhost:8800/health` → `{"status":"ok"}`
 2. Confirm Qdrant is reachable: `curl http://localhost:6333/healthz`
 3. Confirm SQLite database path exists: `ls ~/.claude-relay/data/`
 
-**Done when:** Ollama models are pulled, Qdrant responds on port 6333, and `~/.claude-relay/data/` exists.
+**Done when:** MLX server responds on port 8800, Qdrant responds on port 6333, and `~/.claude-relay/data/` exists.
 
 ---
 
@@ -376,26 +375,21 @@ Lets the bot understand voice messages sent on Telegram.
 
 ---
 
-## Phase 8: Fallback AI — Ollama (Optional, ~5 min)
+## Phase 8: Fallback AI — MLX (~2 min)
 
-When Claude is unavailable, the bot auto-switches to a local Ollama model. Ollama is also used for memory extraction and embeddings.
+When Claude is unavailable, the bot auto-switches to the local MLX model (Qwen3.5-9B). MLX also handles all memory embeddings (bge-m3).
 
-> If you already set up Ollama in Phase 2, this phase just verifies the fallback works.
+> If you already set up MLX in Phase 2, this phase just verifies the fallback works.
 
 **Steps:**
 
-1. Install Ollama from ollama.com (if not done in Phase 2)
-2. Pull the default model:
-   ```
-   ollama pull gemma3:4b
-   ```
-3. Save in `.env`:
-   - `FALLBACK_MODEL=gemma3:4b`
-   - `OLLAMA_URL=http://localhost:11434`
-   - `OLLAMA_MODEL=gemma3:4b`
-4. Run `bun run test:fallback` to verify
+1. Ensure `mlx serve` is running (Phase 2)
+2. Save in `.env` (if not already done):
+   - `MLX_URL=http://localhost:8800`
+   - `MLX_MODEL=mlx-community/Qwen3.5-9B-MLX-4bit`
+3. Restart the relay and send a message
 
-**Done when:** `bun run test:fallback` passes.
+**Done when:** Relay startup log shows `Fallback model available: MLX (Qwen3.5-9B)`.
 
 ---
 
@@ -446,8 +440,8 @@ This relay already includes significant capabilities beyond basic chat:
 - **Production Routines** — the `routines/` directory has ready-to-use scheduled tasks. Read `routines/CLAUDE.md` (code patterns and PM2 safety rules) then `routines/user_journey.md` (full lifecycle guide) before creating your own.
 - **Document RAG** — upload PDFs to Telegram, query them with natural language via `/doc query`
 - **Forum Topic Support** — route messages to specific topics within supergroups for clean separation
-- **Fallback AI** — auto-switch to Ollama when Claude is unavailable
-- **Fully Local** — all data stays on your machine (SQLite + Qdrant + Ollama)
+- **Fallback AI** — auto-switch to local MLX (Qwen3.5-9B) when Claude is unavailable
+- **Fully Local** — all data stays on your machine (SQLite + Qdrant + MLX)
 
 **Want to personalise further?**
 - Edit `~/.claude-relay/prompts/*.md` to change each agent's persona, domain focus, or save paths
