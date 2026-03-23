@@ -97,6 +97,21 @@ export function detectMemoryCategory(content: string): string {
  *   [GOAL: text | DEADLINE: date] — stores a goal with deadline
  *   [DONE: search text]       — marks a matching goal as completed
  */
+
+/**
+ * Synchronously strips all memory intent tags from a response string.
+ * Use this to get clean display text before firing processMemoryIntents in the background.
+ */
+export function stripMemoryTags(text: string): string {
+  return text
+    .replace(/\[REMEMBER:\s*.+?\]/gi, "")
+    .replace(/\[REMEMBER_GLOBAL:\s*.+?\]/gi, "")
+    .replace(/\[GOAL:\s*.+?\]/gi, "")
+    .replace(/\[DONE:\s*.+?\]/gi, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 export async function processMemoryIntents(
   response: string,
   chatId?: number,
