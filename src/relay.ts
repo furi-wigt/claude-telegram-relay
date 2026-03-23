@@ -1639,7 +1639,9 @@ async function processTextMessage(
     const traceId = generateTraceId();
     trace({ event: "message_received", traceId, chatId, agentId: agent.id, textLength: text.length, threadId });
     console.log(`[${agent.name}] Message from chat ${chatId}: ${text.substring(0, 50)}...`);
-    await ctx.replyWithChatAction("typing");
+    // Fire typing action without awaiting — the progress indicator message (below) is
+    // more visible; we don't want to block 100-300ms before starting context fetch.
+    void ctx.replyWithChatAction("typing");
 
     const session = await loadGroupSession(chatId, agent.id, threadId);
 
@@ -1666,6 +1668,22 @@ async function processTextMessage(
     // Resolve model prefix before building prompt so stripped text flows everywhere.
     const { model: resolvedModel, label: modelLabel, text: cleanText } = resolveModelPrefix(text);
     text = cleanText;
+
+    // ── Show progress indicator immediately ──────────────────────────
+    // Started here — before context fetch — so the user sees feedback while
+    // SQLite queries, MLX embeds, and Qdrant searches run in the background.
+    // Previously placed after all pre-processing, causing a 600ms–1.4s blank window.
+    const cancelKey = streamKey(chatId, threadId);
+    const indicator = new ProgressIndicator();
+    indicator.start(chatId, bot, threadId, {
+      cancelKey,
+      onMessageId: (msgId) => {
+        const entry = activeStreams.get(cancelKey);
+        if (entry) entry.progressMessageId = msgId;
+      },
+    }).catch(() => {}); // fire-and-forget
+    indicator.setModelLabel(modelLabel);
+    void indicator.update(`Using ${modelLabel}`, { immediate: true });
 
     const userId = ctx.from?.id ?? 0;
     const [shortTermCtxRaw, userProfile, memoryContext, docSearchResult] = await Promise.all([
@@ -1798,19 +1816,6 @@ async function processTextMessage(
         console.error("[context-debug] Failed to write:", e.message)
       );
     }
-
-    // Start indicator before model routing so it's visible during the classifier call (3-8s)
-    const cancelKey = streamKey(chatId, threadId);
-    const indicator = new ProgressIndicator();
-    indicator.start(chatId, bot, threadId, {
-      cancelKey,
-      onMessageId: (msgId) => {
-        const entry = activeStreams.get(cancelKey);
-        if (entry) entry.progressMessageId = msgId;
-      },
-    }).catch(() => {}); // fire-and-forget
-    indicator.setModelLabel(modelLabel);
-    void indicator.update(`Using ${modelLabel}`, { immediate: true });
 
     // Lock activeCwd for this session (no-op if sessionId already set — resume coherence).
     await lockActiveCwd(chatId, threadId, PROJECT_DIR || undefined);
