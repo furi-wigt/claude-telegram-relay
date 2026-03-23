@@ -23,6 +23,7 @@ import { markdownToHtml, splitMarkdown } from "./utils/htmlFormat.ts";
 import { transcribe } from "./transcribe.ts";
 import {
   processMemoryIntents,
+  stripMemoryTags,
   getMemoryContext,
   getRelevantContext,
   GENERIC_COMMAND_RE,
@@ -1968,8 +1969,9 @@ async function processTextMessage(
     console.log(`Claude raw response length: ${rawResponse.length} (${callDurationMs}ms)`);
 
     const { nextStep, response: rawWithoutNext } = extractNextStep(rawResponse);
-    const response = await processMemoryIntents(rawWithoutNext, chatId, threadId);
-    console.log(`Processed response length: ${response.length}`);
+    // Strip tags synchronously so the user sees clean text immediately.
+    // The actual DB/Qdrant work runs in the background after sendResponse.
+    const displayResponse = stripMemoryTags(rawWithoutNext);
 
     // ── Detect resume failure ─────────────────────────────────────────
     // session.sessionId was updated in-memory by onSessionId callback above.
@@ -1980,31 +1982,11 @@ async function processTextMessage(
       session.messageCount = 1;
     }
 
-    // ── Update session metadata ──────────────────────────────────────
+    // ── Update session metadata in-memory (no await — persisted in background) ──
     if (!resumeFailed) {
       session.messageCount = (session.messageCount || 0) + 1;
     }
     session.lastActivity = new Date().toISOString();
-    await saveSession(session);
-
-    await saveMessage("user", text, undefined, chatId, agent.id, threadId);
-    await saveMessage("assistant", response || rawWithoutNext, undefined, chatId, agent.id, threadId);
-
-    // LTM auto-extraction removed (feat/ltm_overhaul) — memory now intentional-only
-    // via [REMEMBER:], [GOAL:], [DONE:] tags and /remember command.
-
-    // Async STM summarization (independent, every 5 messages)
-    if (session.messageCount % 5 === 0) {
-      setImmediate(async () => {
-        try {
-          if (await shouldSummarize(chatId, threadId)) {
-            await summarizeOldMessages(chatId, threadId);
-          }
-        } catch (err) {
-          console.error("STM summarization failed:", err);
-        }
-      });
-    }
 
     const footer: FooterData = {
       elapsedMs: Date.now() - requestStart,
@@ -2014,10 +1996,12 @@ async function processTextMessage(
       cwd: session.activeCwd,
     };
     // Append resume failure notice to the response itself
-    let finalResponse = response || rawWithoutNext || "No response generated";
+    let finalResponse = displayResponse || "No response generated";
     if (resumeFailed) {
       finalResponse += "\n\n⚠️ _Session was reset — context from previous turns may be incomplete_";
     }
+
+    // ── Send to Telegram immediately ──────────────────────────────────
     await sendResponse(ctx, finalResponse, footer);
 
     // Offer context re-injection after resume failure (shown after the response)
@@ -2025,6 +2009,31 @@ async function processTextMessage(
       const formattedCtx = formatShortTermContext(shortTermCtxRaw, USER_TIMEZONE);
       await sendResumeFailedKeyboard(ctx, chatId, threadId, formattedCtx);
     }
+
+    // ── Background post-processing (non-blocking) ─────────────────────
+    // Memory intents, message persistence, and session save happen after the
+    // reply is delivered so the user sees the response without the delay.
+    const capturedMessageCount = session.messageCount;
+    setImmediate(async () => {
+      try {
+        await processMemoryIntents(rawWithoutNext, chatId, threadId);
+        await saveSession(session);
+        await saveMessage("user", text, undefined, chatId, agent.id, threadId);
+        await saveMessage("assistant", displayResponse, undefined, chatId, agent.id, threadId);
+
+        // LTM auto-extraction removed (feat/ltm_overhaul) — memory now intentional-only
+        // via [REMEMBER:], [GOAL:], [DONE:] tags and /remember command.
+
+        // STM summarization check (every 5 messages)
+        if (capturedMessageCount % 5 === 0) {
+          if (await shouldSummarize(chatId, threadId)) {
+            await summarizeOldMessages(chatId, threadId);
+          }
+        }
+      } catch (err) {
+        console.error("[post-processing] background task failed:", err);
+      }
+    });
   } catch (error) {
     console.error("Text handler error:", error);
     try {
