@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased] / 2026-03-25 — Streaming progress for /report generate
+
+### Changed
+- **src/report/index.ts**: `/report generate` now streams per-section progress in real-time via Telegram message editing. Sends initial message immediately, detects `✓ Section` completion markers as stdout arrives, edits live progress (rate-limited to 1 edit/2s), and updates to final summary on completion. Replaces buffered fire-and-forget pattern.
+
 ## [Unreleased] / 2026-03-24 — Report Generator QA integration + embedding resilience
 
 ### Added
