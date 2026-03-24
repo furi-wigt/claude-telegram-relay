@@ -142,7 +142,7 @@ export function registerReportCommands(bot: Bot): ReportQAStateMachine {
         break;
       }
 
-      // ── Fire-and-forget: long-running ─────────────────────────────────────
+      // ── Streaming progress: long-running ──────────────────────────────────
       case "generate": {
         const slug = args[1];
         if (!slug) { await ctx.reply("Usage: /report generate <slug> [--format md|pptx|docx] [--force]"); break; }
@@ -150,34 +150,88 @@ export function registerReportCommands(bot: Bot): ReportQAStateMachine {
         const formatFlag = args.includes("--format") ? ["--format", args[args.indexOf("--format") + 1] ?? "md"] : [];
         const forceFlag = args.includes("--force") ? ["--force"] : [];
         const flags = [...formatFlag, ...forceFlag];
-        await ctx.reply(`Generating report for "${slug}"${forceFlag.length ? " (force)" : ""}... I'll notify you when done.`);
+        const threadId = ctx.message?.message_thread_id;
 
-        // Fire and forget
+        const initMsg = await ctx.reply(
+          `Generating report for "${slug}"${forceFlag.length ? " (force)" : ""}...`,
+        );
+        const progressMsgId = initMsg.message_id;
+
         const proc = Bun.spawn([REPORT_BINARY, "generate", slug, ...flags], {
           stdout: "pipe",
           stderr: "pipe",
         });
 
-        // Background: wait for completion and notify
+        // Background: stream stdout line-by-line, edit progress message
         (async () => {
-          const [stdout, stderr] = await Promise.all([
-            new Response(proc.stdout).text(),
-            new Response(proc.stderr).text(),
-          ]);
+          const completed: string[] = [];
+          let currentWave = "";
+          let lastEditAt = 0;
+          const EDIT_THROTTLE_MS = 2000; // max 1 edit/2s to stay under Telegram rate limit
+          let allStdout = "";
+          const stderrBuf = new Response(proc.stderr).text(); // read concurrently
+
+          function buildProgressText(): string {
+            const header = `Generating "${slug}"${forceFlag.length ? " (force)" : ""}`;
+            const waveLine = currentWave ? `\n${currentWave}` : "";
+            const doneLines = completed.map((s) => `  ✓ ${s}`).join("\n");
+            return `${header}${waveLine}${doneLines ? "\n" + doneLines : ""}`;
+          }
+
+          async function flushEdit() {
+            const now = Date.now();
+            if (now - lastEditAt < EDIT_THROTTLE_MS) return;
+            lastEditAt = now;
+            try {
+              await bot.api.editMessageText(chatId, progressMsgId, buildProgressText());
+            } catch {
+              // ignore "message not modified" errors
+            }
+          }
+
+          // Read stdout line by line
+          const reader = proc.stdout.getReader();
+          const decoder = new TextDecoder();
+          let buf = "";
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buf += decoder.decode(value, { stream: true });
+            const lines = buf.split("\n");
+            buf = lines.pop() ?? ""; // keep incomplete last line in buffer
+            for (const raw of lines) {
+              const line = stripAnsi(raw.trim());
+              allStdout += raw + "\n";
+              if (!line) continue;
+
+              // Detect wave header: "Wave 1/2: ..."
+              if (/Wave \d+\/\d+/i.test(line)) {
+                currentWave = line;
+                await flushEdit();
+              }
+              // Detect section completion: "✓ Section Name" or "  ✓ Section Name"
+              else if (/[✓✗]/.test(line)) {
+                const sectionName = line.replace(/^[✓✗]\s*/, "").trim();
+                if (sectionName) completed.push(sectionName);
+                await flushEdit();
+              }
+            }
+          }
+          // Flush remaining buffer
+          if (buf) allStdout += buf;
+
           const exitCode = await proc.exited;
-          const threadId = ctx.message?.message_thread_id;
+          const stderr = await stderrBuf;
 
           if (exitCode === 0) {
-            const outputLine = stripAnsi(stdout).split("\n").find((l) => l.includes("report_")) ?? "";
-            await bot.api.sendMessage(chatId, `Report generated for "${slug}".\n${outputLine}`, {
-              ...(threadId != null && { message_thread_id: threadId }),
-            });
+            const outputLine = stripAnsi(allStdout).split("\n").find((l) => l.includes("report_")) ?? "";
+            const finalText = `Report generated for "${slug}".\n${completed.length} section(s) done.${outputLine ? "\n" + outputLine : ""}`;
+            await bot.api.editMessageText(chatId, progressMsgId, finalText);
           } else {
-            await bot.api.sendMessage(chatId, `Report generation failed (exit ${exitCode}):\n${stripAnsi(stderr || stdout).slice(0, 1000)}`, {
-              ...(threadId != null && { message_thread_id: threadId }),
-            });
+            const errText = stripAnsi(stderr || allStdout).slice(0, 800);
+            await bot.api.editMessageText(chatId, progressMsgId, `Report generation failed (exit ${exitCode}):\n${errText}`);
           }
-        })().catch((err) => console.error("[report-qa] generate notify failed:", err));
+        })().catch((err) => console.error("[report-qa] generate stream failed:", err));
         break;
       }
 
