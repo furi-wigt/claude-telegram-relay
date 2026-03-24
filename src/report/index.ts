@@ -145,13 +145,15 @@ export function registerReportCommands(bot: Bot): ReportQAStateMachine {
       // ── Fire-and-forget: long-running ─────────────────────────────────────
       case "generate": {
         const slug = args[1];
-        if (!slug) { await ctx.reply("Usage: /report generate <slug> [--format md|pptx|docx]"); break; }
+        if (!slug) { await ctx.reply("Usage: /report generate <slug> [--format md|pptx|docx] [--force]"); break; }
 
         const formatFlag = args.includes("--format") ? ["--format", args[args.indexOf("--format") + 1] ?? "md"] : [];
-        await ctx.reply(`Generating report for "${slug}"... I'll notify you when done.`);
+        const forceFlag = args.includes("--force") ? ["--force"] : [];
+        const flags = [...formatFlag, ...forceFlag];
+        await ctx.reply(`Generating report for "${slug}"${forceFlag.length ? " (force)" : ""}... I'll notify you when done.`);
 
         // Fire and forget
-        const proc = Bun.spawn([REPORT_BINARY, "generate", slug, ...formatFlag], {
+        const proc = Bun.spawn([REPORT_BINARY, "generate", slug, ...flags], {
           stdout: "pipe",
           stderr: "pipe",
         });
@@ -209,7 +211,7 @@ export function registerReportCommands(bot: Bot): ReportQAStateMachine {
           "Reports:\n" +
           "  /report list [project] — List reports\n" +
           "  /report status <slug> — Report metadata\n" +
-          "  /report generate <slug> [--format md|pptx|docx] — Generate\n" +
+          "  /report generate <slug> [--format md|pptx|docx] [--force] — Generate\n" +
           "  /report publish <slug> — Publish to Confluence\n" +
           "  /report check — Health check\n\n" +
           "Projects:\n" +
