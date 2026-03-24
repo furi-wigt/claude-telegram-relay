@@ -339,8 +339,10 @@ export async function insertMessageRecord(
     thread_name?: string | null;
   }
 ): Promise<void> {
+  // Phase 1: SQLite insert — must always succeed
+  let id: string;
   try {
-    const id = sqliteInsertMessage({
+    id = sqliteInsertMessage({
       chat_id: record.chat_id?.toString() ?? null,
       thread_id: record.thread_id?.toString() ?? null,
       role: record.role,
@@ -350,21 +352,26 @@ export async function insertMessageRecord(
       thread_name: record.thread_name ?? null,
       agent_id: record.agent_id ?? null,
     });
+  } catch (err) {
+    console.error("[storage] SQLite message insert failed:", err);
+    return;
+  }
 
-    // Embed and upsert to Qdrant
+  // Phase 2: Embed + Qdrant upsert — best-effort, does not block message delivery
+  try {
     const vector = await localEmbed(record.content);
     await upsert("messages", id, vector, {
       role: record.role,
       chat_id: record.chat_id?.toString() ?? null,
       thread_id: record.thread_id?.toString() ?? null,
     });
-
-    // Enqueue async topic generation (fire-and-forget)
-    if (record.content.length >= 50) {
-      enqueueTopicGeneration(id, record.content);
-    }
   } catch (err) {
-    console.error("[storage] Local message insert failed:", err);
+    console.warn("[storage] Vector upsert skipped (SQLite row saved):", (err as Error).message);
+  }
+
+  // Phase 3: Topic generation — fire-and-forget
+  if (record.content.length >= 50) {
+    enqueueTopicGeneration(id, record.content);
   }
 }
 
