@@ -111,7 +111,7 @@ export function getActiveProject(): string | null {
   if (!existsSync(configPath)) return null;
   try {
     const config = JSON.parse(readFileSync(configPath, "utf-8"));
-    return config.activeProject ?? null;
+    return config.active_project ?? config.activeProject ?? null;
   } catch {
     return null;
   }
