@@ -106,7 +106,7 @@ No explanation, no markdown, just the JSON array.`;
   try {
     const response = await callRoutineModel(prompt, {
       label: "atomicBreakdown",
-      timeoutMs: 60_000,
+      timeoutMs: 120_000, // 120s — matches default; 60s was too tight after a cold-start recap call
     });
 
     if (!response) return fallbackTasks(thingsTasks);
