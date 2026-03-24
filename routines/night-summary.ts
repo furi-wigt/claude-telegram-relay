@@ -68,6 +68,13 @@ export interface DayGoal {
   completed_at?: string;
 }
 
+export interface QaPair {
+  time: string;           // ISO timestamp of the user question
+  question: string;       // user message content (truncated at 600 chars)
+  answer: string;         // assistant response content (truncated at 800 chars)
+  agent?: string | null;  // which agent handled this exchange
+}
+
 export interface AnalysisResult {
   text: string;
   provider: "claude" | "mlx" | null;
@@ -134,6 +141,37 @@ export function buildDayTimeline(
 }
 
 /**
+ * Pair user messages with the immediately following assistant response.
+ * Produces one QaPair per user turn. An orphaned user message with no
+ * assistant follow-up is included with answer="(no response yet)".
+ * Pure function — O(n) on messages, no side effects.
+ */
+export function buildQaPairs(messages: DayMessage[]): QaPair[] {
+  const pairs: QaPair[] = [];
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    if (msg.role !== "user") continue;
+
+    const next = messages[i + 1];
+    const answer =
+      next?.role === "assistant"
+        ? next.content.substring(0, 800)
+        : "(no response yet)";
+
+    pairs.push({
+      time: msg.created_at,
+      question: msg.content.substring(0, 600),
+      answer,
+      agent: msg.agent_id ?? next?.agent_id,
+    });
+
+    // skip the assistant turn so we don't re-pair it
+    if (next?.role === "assistant") i++;
+  }
+  return pairs;
+}
+
+/**
  * Build the reflection prompt from today's data.
  * Pure function — no side effects, no network I/O.
  */
@@ -152,6 +190,18 @@ export function buildReflectionPrompt(
     messages.length > 0 || daySummaries.length > 0
       ? buildDayTimeline(messages, daySummaries)
       : "No messages today";
+
+  const qaPairs = buildQaPairs(messages);
+  const qaSummary =
+    qaPairs.length > 0
+      ? qaPairs
+          .map((p, idx) => {
+            const time = formatTime(p.time);
+            const agent = p.agent ? ` [${p.agent}]` : "";
+            return `Q${idx + 1} [${time}]${agent}:\n  User: ${p.question}\n  Assistant: ${p.answer}`;
+          })
+          .join("\n\n")
+      : "No Q&A sessions today";
 
   const factsSummary =
     facts.length > 0
@@ -191,6 +241,9 @@ ${name} had a ${dayQuality} day (${messageCount} messages).
 ## Today's Conversations
 ${messagesSummary}
 
+## Today's Q&A Sessions (Full Detail)
+${qaSummary}
+
 ## New Knowledge Gained Today
 ${factsSummary}
 
@@ -211,8 +264,16 @@ List 3-5 specific things ${name} accomplished or made progress on today. Be spec
 ### 🎯 Goal Progress
 Analyse each active goal. Note any forward momentum, even small steps. Be encouraging and constructive.
 
-### 💡 Insights & Learnings
-2-3 meaningful insights from today's conversations or activities. What patterns or breakthroughs emerged?
+### 📚 Today's Learning Lessons
+This is the most important section. Analyse the Q&A sessions above and extract 4-6 concrete, specific lessons.
+For each lesson:
+- **Topic**: Name the concept or skill (e.g. "SQLite WAL mode", "PM2 bun entrypoint fix")
+- **What was learned**: The specific insight or answer discovered in today's conversation
+- **Why it matters**: Practical implication — when and why to apply this
+- **Takeaway**: One-line actionable rule (e.g. "Always use _isEntry, not import.meta.main, under PM2")
+
+If there were no Q&A sessions today, write one reflection lesson from any conversation or activity.
+Ground every lesson in actual exchanges — no generic observations.
 
 ### 🔥 Tomorrow's Focus
 Top 3 concrete, actionable priorities for tomorrow. Make them specific and achievable, building on today's momentum.
@@ -222,10 +283,10 @@ End with a 2-3 sentence motivational message personalised to ${name}'s situation
 
 Guidelines:
 - Use Markdown formatting throughout (headers, bullet points, **bold** for emphasis)
-- Be specific — reference actual topics from today's conversations
+- Be specific — reference actual topics and exchanges from today
 - Maintain a warm, encouraging, coach-like tone throughout
 - If the day was quiet, focus on rest and tomorrow's potential
-- Total length: 400-600 words`;
+- Total length: 500-700 words`;
 }
 
 /**
