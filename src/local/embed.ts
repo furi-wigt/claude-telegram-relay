@@ -1,12 +1,19 @@
 /**
  * Local embedding via MLX server (bge-m3).
  * Returns 1024-dim dense vectors.
+ *
+ * Resilience: retries once with 2x timeout on AbortError, since MLX is
+ * single-threaded and embedding requests queue behind text generation.
  */
 
 import { getMlxBaseUrl } from "../mlx/index.ts";
 
 const EMBED_MODEL = process.env.EMBED_MODEL || "bge-m3";
-const EMBED_TIMEOUT_MS = 8_000;
+
+/** Read timeout at call time so tests can override via process.env */
+function getTimeoutMs(): number {
+  return parseInt(process.env.EMBED_TIMEOUT_MS || "15000", 10);
+}
 
 export interface EmbedResult {
   vector: number[];
@@ -15,19 +22,36 @@ export interface EmbedResult {
 }
 
 /**
- * Embed a single text string using MLX bge-m3.
- * Returns a 1024-dimensional dense vector.
+ * Single fetch to MLX embedding endpoint with abort timeout.
  */
-export async function localEmbed(text: string): Promise<number[]> {
-  const baseUrl = getMlxBaseUrl();
+async function fetchEmbed(input: string | string[], timeoutMs: number): Promise<Response> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), EMBED_TIMEOUT_MS);
-  const res = await fetch(`${baseUrl}/v1/embeddings`, {
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  return fetch(`${getMlxBaseUrl()}/v1/embeddings`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model: EMBED_MODEL, input: text }),
+    body: JSON.stringify({ model: EMBED_MODEL, input }),
     signal: controller.signal,
   }).finally(() => clearTimeout(timer));
+}
+
+/**
+ * Embed a single text string using MLX bge-m3.
+ * Retries once with 2x timeout if first attempt is aborted (MLX busy with text gen).
+ */
+export async function localEmbed(text: string): Promise<number[]> {
+  const timeout = getTimeoutMs();
+  let res: Response;
+  try {
+    res = await fetchEmbed(text, timeout);
+  } catch (err) {
+    if ((err as Error).name === "AbortError") {
+      console.warn(`[embed] Timeout after ${timeout}ms, retrying with ${timeout * 2}ms`);
+      res = await fetchEmbed(text, timeout * 2);
+    } else {
+      throw err;
+    }
+  }
 
   if (!res.ok) {
     const body = await res.text();
@@ -45,20 +69,23 @@ export async function localEmbed(text: string): Promise<number[]> {
 
 /**
  * Embed multiple texts in a single batch call.
- * More efficient than calling localEmbed() in a loop.
+ * Retries once with 2x timeout on abort.
  */
 export async function localEmbedBatch(texts: string[]): Promise<number[][]> {
   if (texts.length === 0) return [];
 
-  const baseUrl = getMlxBaseUrl();
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), EMBED_TIMEOUT_MS * 2);
-  const res = await fetch(`${baseUrl}/v1/embeddings`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model: EMBED_MODEL, input: texts }),
-    signal: controller.signal,
-  }).finally(() => clearTimeout(timer));
+  const batchTimeout = getTimeoutMs() * 2;
+  let res: Response;
+  try {
+    res = await fetchEmbed(texts, batchTimeout);
+  } catch (err) {
+    if ((err as Error).name === "AbortError") {
+      console.warn(`[embed] Batch timeout after ${batchTimeout}ms, retrying with ${batchTimeout * 2}ms`);
+      res = await fetchEmbed(texts, batchTimeout * 2);
+    } else {
+      throw err;
+    }
+  }
 
   if (!res.ok) {
     const body = await res.text();

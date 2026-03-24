@@ -1,6 +1,14 @@
 # Changelog
 
-## [Unreleased] / 2026-03-23 — Documentation overhaul: purge Ollama refs, update to MLX-only
+## [Unreleased] / 2026-03-24 — Embedding resilience: retry on MLX contention
+
+### Fixed
+- **embed.ts**: Increased default embed timeout from 8s to 15s (configurable via `EMBED_TIMEOUT_MS` env var). Added retry-once with 2x timeout when MLX server is busy with text generation (single-threaded Python blocks embeddings behind `/v1/chat/completions`).
+- **storageBackend.ts**: Isolated SQLite message insert from embed+Qdrant upsert — SQLite write always succeeds even when embedding times out. Distinct log messages: `[storage] SQLite message insert failed` vs `[storage] Vector upsert skipped`.
+
+---
+
+## 2026-03-23 — Documentation overhaul: purge Ollama refs, update to MLX-only
 
 ### Changed
 - **docs/architecture.md**: Replaced all Ollama references with MLX — diagrams, component table, tech stack, directory structure
