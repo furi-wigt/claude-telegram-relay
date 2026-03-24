@@ -56,6 +56,7 @@ import { registerDedupReviewCallbackHandler } from "./memory/dedupReviewCallback
 import { registerConflictCallbackHandler } from "./memory/conflictCallbackHandler.ts";
 import { registerTaskSuggestionHandler } from "./callbacks/taskSuggestionHandler.ts";
 import { InteractiveStateMachine } from "./interactive/index.ts";
+import { registerReportCommands, hasActiveReportQA, RPQ_PREFIX } from "./report/index.ts";
 import { claudeText, claudeStream, enrichProgressText, type AskUserQuestionItem, type AskUserQuestionEvent } from "./claude-process.ts";
 import { ProgressIndicator } from "./utils/progressIndicator.ts";
 import { trace, generateTraceId } from "./utils/tracer.ts";
@@ -1165,6 +1166,9 @@ async function questionCallClaude(prompt: string): Promise<string> {
 const interactive = new InteractiveStateMachine(bot, callClaude, questionCallClaude);
 bot.command("plan", (ctx) => interactive.handlePlanCommand(ctx));
 
+// Report Generator integration (/report command + QA sessions)
+const reportQA = registerReportCommands(bot);
+
 // Cancel the active claudeStream for this chat/thread
 bot.command("cancel", async (ctx) => {
   const chatId = ctx.chat?.id;
@@ -1303,6 +1307,8 @@ bot.on("callback_query:data", async (ctx, next) => {
       form.reject(new Error("user cancelled"));
     }
     return;
+  } else if (data.startsWith("rpq:")) {
+    await reportQA.handleCallback(ctx, data);
   } else if (data.startsWith("iq:")) {
     await interactive.handleCallback(ctx, data);
   } else if (data.startsWith("cancel:")) {
@@ -2100,6 +2106,9 @@ bot.on("message:text", async (ctx) => {
     }
   }
 
+  // Priority 1.8: Report QA free-text capture (when user is in active QA session)
+  if (reportQA.handleFreeText(ctx, text)) return;
+
   // Priority 2: Interactive Q&A free-text answer (when user is mid-plan session)
   if (await interactive.handleFreeText(ctx, text)) return;
 
@@ -2182,6 +2191,12 @@ bot.on("message:voice", async (ctx) => {
         const transcription = await transcribe(buffer);
         if (!transcription) {
           await ctx.reply("Could not transcribe voice message.");
+          return;
+        }
+
+        // Report QA: if active, buffer the transcription as an answer part
+        if (reportQA.handleVoice(chatId, transcription)) {
+          await ctx.reply(`Voice captured for QA: "${transcription.slice(0, 100)}${transcription.length > 100 ? "…" : ""}"`);
           return;
         }
 

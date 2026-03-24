@@ -1,5 +1,25 @@
 # Changelog
 
+## [Unreleased] / 2026-03-24 — Report Generator QA integration via Telegram
+
+### Added
+- **src/report/**: New module for Report Generator integration — run report commands from Telegram chat
+- **QA session**: Conversational Q&A via Telegram with pause/resume mode switching (`/report qa <slug>`)
+  - Multi-message answer batching (text + voice + photos)
+  - Inline keyboard controls: Submit, Skip, Undo, Pause, End, Preview
+  - Session persistence: checkpoint to disk, resume across sessions
+  - Writes transcript in exact Report Generator format for compatibility
+  - Claude generates questions dynamically based on report archetype, sections, and existing research
+  - Findings summary auto-generated on session end
+- **CLI proxy**: Non-interactive commands via Telegram (`/report list`, `status`, `project`, `check`, `auth`)
+- **Fire-and-forget**: Long-running commands with completion notification (`/report generate`, `publish`)
+- **Voice capture**: Voice messages in QA mode are transcribed and buffered as answer parts
+
+### Changed
+- **relay.ts**: Added `rpq:*` callback routing, report QA free-text intercept, voice interception
+
+---
+
 ## [Unreleased] / 2026-03-23 — Documentation overhaul: purge Ollama refs, update to MLX-only
 
 ### Changed

@@ -1,4 +1,18 @@
 # Decision Journal
+## 2026-03-24 — Report QA: relay writes transcript directly (Option A) [pending]
+
+**Change**: Report Generator QA integration bypasses the CLI QA collector entirely. The relay writes transcript files directly in Report Generator format, then registers them in the manifest.
+**Why**: The CLI QA collector uses TTY readline — incompatible with Telegram subprocess. Option A (relay owns UX) gives richer input (voice, multi-message batching, inline keyboards) and async pause/resume.
+**Rejected**: Option B (stdin pipe to CLI QA collector) — requires Report Generator code changes, loses Telegram-native UX, no voice/photo support.
+**Branch**: feat/report_qa_session
+
+## 2026-03-24 — Report QA callback prefix: rpq: instead of rq: [pending]
+
+**Change**: Used rpq: prefix for Report QA inline keyboard callbacks instead of rq:.
+**Why**: rq: is already taken by the relay question form (AskUserQuestion relay). Collision would cause callbacks to route to the wrong handler.
+**Rejected**: Renaming the existing rq: prefix — would break existing relay form functionality.
+**Branch**: feat/report_qa_session
+
 ## 2026-03-22 — Replace Claude CLI subprocess with Ollama in smart-checkin [pending]
 
 **Change**: `decideCheckin()` in `smart-checkin.ts` now uses `callOllamaGenerate` (Ollama HTTP, `think: false`) instead of spawning a Claude CLI subprocess (`claude -p ... --model claude-haiku-4-5-20251001`).
