@@ -74,7 +74,7 @@ export async function generateQuestion(
 ): Promise<string> {
   const context = buildQaContext(session, manifest);
   const question = await claudeText(context, {
-    timeoutMs: 30_000,
+    timeoutMs: 90_000, // Claude CLI cold start + network + context processing
     dangerouslySkipPermissions: true,
   });
   return question.trim();
@@ -107,7 +107,7 @@ export function buildFindingsPrompt(session: ReportQASession): string {
 export async function generateFindings(session: ReportQASession): Promise<string> {
   const prompt = buildFindingsPrompt(session);
   const findings = await claudeText(prompt, {
-    timeoutMs: 60_000,
+    timeoutMs: 120_000, // findings generation is longer; full transcript as context
     dangerouslySkipPermissions: true,
   });
   return findings.trim();
