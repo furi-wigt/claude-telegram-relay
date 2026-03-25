@@ -32,9 +32,8 @@ class EmbeddingModel:
         click.echo(f"[mlx] Loading embedding model: {self.model_id}")
         from mlx_embeddings.utils import load as load_embed
         self._model, tok_wrapper = load_embed(self.model_id)
-        # Cast to fp16 to halve GPU memory (2.27GB → 1.13GB).
-        # Prevents macOS unified memory eviction after Qwen generation,
-        # which otherwise causes 20-60s reload stalls on next embed call.
+        # Ensure fp16 — mlx-community/bge-m3-mlx-fp16 is already fp16,
+        # but this guards against model ID override via --embed-model.
         self._model.set_dtype(mx.float16)
         self._tokenizer = tok_wrapper._tokenizer
         click.echo(f"[mlx] Embedding model ready: {self.model_id} (fp16)")
@@ -97,15 +96,6 @@ def run_server(model: str, embed_model: str, host: str, port: int):
 
     # Pre-init embedding model
     _embed = EmbeddingModel(embed_model)
-
-    # Ensure bge-m3 safetensors exist
-    from mlx_local.cli import _ensure_bge_m3_safetensors
-    from huggingface_hub import snapshot_download
-    try:
-        embed_path = snapshot_download(repo_id=embed_model, local_files_only=True)
-        _ensure_bge_m3_safetensors(embed_path)
-    except Exception:
-        pass
 
     class UnifiedHandler(APIHandler):
         """Extends mlx_lm APIHandler with /v1/embeddings and /health."""

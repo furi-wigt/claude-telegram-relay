@@ -3,7 +3,6 @@
 import os
 import click
 import json
-import sys
 import re
 
 # Fix Cloudflare WARP SSL: inject corporate CA into httpx/requests cert chain
@@ -21,29 +20,13 @@ if os.path.exists(_CLOUDFLARE_CA) and "SSL_CERT_FILE" not in os.environ:
     os.environ["REQUESTS_CA_BUNDLE"] = _combined
 
 DEFAULT_GEN_MODEL = "mlx-community/Qwen3.5-9B-MLX-4bit"
-DEFAULT_EMBED_MODEL = "BAAI/bge-m3"
+DEFAULT_EMBED_MODEL = "mlx-community/bge-m3-mlx-fp16"
 DEFAULT_MAX_TOKENS = 2048
 
 
 def _strip_think_tags(text: str) -> str:
     """Remove <think>...</think> blocks from output."""
     return re.sub(r"<think>.*?</think>\s*", "", text, flags=re.DOTALL).strip()
-
-
-def _ensure_bge_m3_safetensors(model_path: str) -> None:
-    """Convert pytorch_model.bin → model.safetensors if needed (one-time)."""
-    st_path = os.path.join(model_path, "model.safetensors")
-    bin_path = os.path.join(model_path, "pytorch_model.bin")
-    if os.path.exists(st_path):
-        return
-    if not os.path.exists(bin_path):
-        return
-    click.echo("Converting pytorch_model.bin → model.safetensors (one-time)...")
-    import torch
-    from safetensors.torch import save_file
-    state = torch.load(bin_path, map_location="cpu", weights_only=True)
-    save_file(state, st_path)
-    click.echo(f"Converted: {st_path}")
 
 
 @click.group()
@@ -142,8 +125,7 @@ def pull(model: str, embed: bool):
 
     if embed:
         click.echo(f"Downloading {DEFAULT_EMBED_MODEL}...")
-        embed_path = snapshot_download(repo_id=DEFAULT_EMBED_MODEL, ignore_patterns=["onnx/*"])
-        _ensure_bge_m3_safetensors(embed_path)
+        embed_path = snapshot_download(repo_id=DEFAULT_EMBED_MODEL)
         click.echo(f"Cached: {embed_path}")
 
 
