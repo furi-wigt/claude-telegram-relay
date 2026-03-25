@@ -1,17 +1,22 @@
 # Changelog
 
-## [Unreleased] / 2026-03-25 — MLX embed server — dedicated embedding process
+## [Unreleased] / 2026-03-26 — Split MLX into separate generation + embedding servers
 
 ### Added
-- **tools/mlx-local**: `mlx serve-embed` command — starts an embedding-only HTTP server on port 8801 (default). Uses its own `threading.Lock` independent from the generation server's `_gpu_lock`, so bge-m3 embedding requests never queue behind long-running Qwen text generation calls.
-- **ecosystem.config.cjs**: `mlx-embed` PM2 service — runs `mlx serve-embed` alongside the existing `mlx` generation service.
+- **tools/mlx-local**: `mlx serve-embed` command — standalone embedding-only server on port 8801. Runs as a separate process with its own Metal command queue, eliminating GPU lock contention with text generation.
+- **ecosystem.config.cjs**: `mlx-embed` PM2 service — always-on, auto-restart, dedicated logs.
 
 ### Changed
-- **src/local/embed.ts**: `fetchEmbed` now targets `EMBED_URL` (default `http://localhost:8801`) instead of `MLX_URL`. Exports new `getEmbedBaseUrl()` for testability. Set `EMBED_URL` in `.env` to override.
-- **src/local/embed.test.ts**: Test mock server pointed via `EMBED_URL` instead of `MLX_URL`.
+- **src/local/embed.ts**: Uses `EMBED_URL` env var (default `http://localhost:8801`) instead of `MLX_URL`. Embedding requests now route to the dedicated server, never blocked by generation.
+- **tools/mlx-local/server.py**: Extracted shared `_handle_embeddings()` and `_send_json()` helpers used by both unified and standalone servers.
 
-### Fixed
-- Embedding starvation: previously a 60-90s Qwen generation held `_gpu_lock`, causing all embed requests to time out and cascade into vector search failures. Separate server eliminates contention entirely.
+## [Unreleased] / 2026-03-26 — Switch embed model to mlx-community/bge-m3-mlx-fp16
+
+### Changed
+- **tools/mlx-local**: `DEFAULT_EMBED_MODEL` changed from `BAAI/bge-m3` (PyTorch) to `mlx-community/bge-m3-mlx-fp16` (native MLX). Model ships with safetensors in MLX format — no one-time conversion step required.
+- **tools/mlx-local**: Removed `_ensure_bge_m3_safetensors()` and the `snapshot_download` conversion block in `run_server()` — dead code now that the model is natively MLX.
+- **tools/mlx-local/pyproject.toml**: Removed `torch` and `safetensors` dependencies (~2 GB reduction in install size). Only `mlx-lm`, `mlx-embeddings`, and `click` required.
+- `set_dtype(mx.float16)` retained as a no-op guard for `--embed-model` overrides at runtime. Mean-pooling still computed in fp32 for numerical stability.
 
 ## [Unreleased] / 2026-03-25 — Streaming progress for /report generate
 

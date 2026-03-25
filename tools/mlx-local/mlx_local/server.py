@@ -1,6 +1,8 @@
-"""Unified MLX server — text generation (/v1/chat/completions) + embeddings (/v1/embeddings).
+"""MLX servers — unified (generation + embeddings) and standalone embedding-only.
 
-Extends mlx_lm.server with a /v1/embeddings endpoint powered by mlx-embeddings.
+Unified server: extends mlx_lm.server with /v1/embeddings endpoint.
+Embedding server: lightweight HTTP server for embeddings only — no GPU lock contention
+with generation. Run as a separate process on a different port.
 """
 
 import json
@@ -20,13 +22,11 @@ _gpu_lock = threading.Lock()
 class EmbeddingModel:
     """Lazy-loaded embedding model with thread-safe inference."""
 
-    def __init__(self, model_id: str, lock: "threading.Lock | None" = None):
+    def __init__(self, model_id: str):
         self.model_id = model_id
         self._model = None
         self._tokenizer = None
-        # Use caller-supplied lock (embed-only server gets its own lock,
-        # independent from _gpu_lock — generation cannot starve embeddings).
-        self._lock = lock if lock is not None else _gpu_lock
+        self._lock = _gpu_lock
 
     def _ensure_loaded(self):
         if self._model is not None:
@@ -34,9 +34,8 @@ class EmbeddingModel:
         click.echo(f"[mlx] Loading embedding model: {self.model_id}")
         from mlx_embeddings.utils import load as load_embed
         self._model, tok_wrapper = load_embed(self.model_id)
-        # Cast to fp16 to halve GPU memory (2.27GB → 1.13GB).
-        # Prevents macOS unified memory eviction after Qwen generation,
-        # which otherwise causes 20-60s reload stalls on next embed call.
+        # Ensure fp16 — mlx-community/bge-m3-mlx-fp16 is already fp16,
+        # but this guards against model ID override via --embed-model.
         self._model.set_dtype(mx.float16)
         self._tokenizer = tok_wrapper._tokenizer
         click.echo(f"[mlx] Embedding model ready: {self.model_id} (fp16)")
@@ -90,6 +89,54 @@ def _build_args(model: str) -> argparse.Namespace:
     )
 
 
+def _handle_embeddings(handler, embed_ref, emb_model):
+    """Shared embedding request handler for both unified and standalone servers."""
+    try:
+        content_length = int(handler.headers.get("Content-Length", 0))
+        body = json.loads(handler.rfile.read(content_length))
+
+        input_data = body.get("input", [])
+        if isinstance(input_data, str):
+            input_data = [input_data]
+
+        vectors = embed_ref.embed(input_data)
+
+        response = {
+            "object": "list",
+            "model": emb_model,
+            "data": [
+                {"object": "embedding", "index": i, "embedding": vec}
+                for i, vec in enumerate(vectors)
+            ],
+            "usage": {
+                "prompt_tokens": sum(len(t.split()) for t in input_data),
+                "total_tokens": sum(len(t.split()) for t in input_data),
+            },
+        }
+        _send_json(handler, response)
+
+    except BrokenPipeError:
+        click.echo("[mlx] Client disconnected before response (broken pipe)", err=True)
+    except Exception as e:
+        try:
+            _send_json(
+                handler,
+                {"error": {"message": str(e), "type": "server_error"}}, 500
+            )
+        except BrokenPipeError:
+            click.echo(f"[mlx] Client disconnected, could not send error: {e}", err=True)
+
+
+def _send_json(handler, data: dict, status: int = 200):
+    """Shared JSON response helper."""
+    body = json.dumps(data).encode()
+    handler.send_response(status)
+    handler.send_header("Content-Type", "application/json")
+    handler.send_header("Content-Length", str(len(body)))
+    handler.end_headers()
+    handler.wfile.write(body)
+
+
 def run_server(model: str, embed_model: str, host: str, port: int):
     """Start unified server with text generation + embeddings."""
     from mlx_lm.server import (
@@ -97,17 +144,7 @@ def run_server(model: str, embed_model: str, host: str, port: int):
         LRUPromptCache, _run_http_server,
     )
 
-    # Pre-init embedding model
     _embed = EmbeddingModel(embed_model)
-
-    # Ensure bge-m3 safetensors exist
-    from mlx_local.cli import _ensure_bge_m3_safetensors
-    from huggingface_hub import snapshot_download
-    try:
-        embed_path = snapshot_download(repo_id=embed_model, local_files_only=True)
-        _ensure_bge_m3_safetensors(embed_path)
-    except Exception:
-        pass
 
     class UnifiedHandler(APIHandler):
         """Extends mlx_lm APIHandler with /v1/embeddings and /health."""
@@ -118,8 +155,7 @@ def run_server(model: str, embed_model: str, host: str, port: int):
 
         def do_POST(self):
             if self.path == "/v1/embeddings":
-                return self._handle_embeddings()
-            # Hold GPU lock during generation to prevent Metal command buffer race
+                return _handle_embeddings(self, self.embed_ref, self.emb_model)
             with _gpu_lock:
                 try:
                     return super().do_POST()
@@ -128,54 +164,11 @@ def run_server(model: str, embed_model: str, host: str, port: int):
 
         def do_GET(self):
             if self.path == "/health":
-                return self._send_json({"status": "ok", "models": {
+                return _send_json(self, {"status": "ok", "models": {
                     "generation": self.gen_model,
                     "embedding": self.emb_model,
                 }})
             return super().do_GET()
-
-        def _handle_embeddings(self):
-            try:
-                content_length = int(self.headers.get("Content-Length", 0))
-                body = json.loads(self.rfile.read(content_length))
-
-                input_data = body.get("input", [])
-                if isinstance(input_data, str):
-                    input_data = [input_data]
-
-                vectors = self.embed_ref.embed(input_data)
-
-                response = {
-                    "object": "list",
-                    "model": self.emb_model,
-                    "data": [
-                        {"object": "embedding", "index": i, "embedding": vec}
-                        for i, vec in enumerate(vectors)
-                    ],
-                    "usage": {
-                        "prompt_tokens": sum(len(t.split()) for t in input_data),
-                        "total_tokens": sum(len(t.split()) for t in input_data),
-                    },
-                }
-                self._send_json(response)
-
-            except BrokenPipeError:
-                click.echo("[mlx] Client disconnected before response (broken pipe)", err=True)
-            except Exception as e:
-                try:
-                    self._send_json(
-                        {"error": {"message": str(e), "type": "server_error"}}, 500
-                    )
-                except BrokenPipeError:
-                    click.echo(f"[mlx] Client disconnected, could not send error: {e}", err=True)
-
-        def _send_json(self, data: dict, status: int = 200):
-            body = json.dumps(data).encode()
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
 
     click.echo(f"[mlx] Unified server starting on {host}:{port}")
     click.echo(f"[mlx]   Generation: {model}")
@@ -199,109 +192,52 @@ def run_server(model: str, embed_model: str, host: str, port: int):
     cache = LRUPromptCache(args.prompt_cache_size)
     response_gen = ResponseGenerator(provider, cache)
 
-    # Call _run_http_server directly with our handler class
-    # (mlx_lm.server.run() has a bug: accepts handler_class but never passes it)
     _run_http_server(host, port, response_gen, handler_class=UnifiedHandler)
 
 
 def run_embed_server(embed_model: str, host: str, port: int):
-    """Start embedding-only server on a dedicated port.
+    """Start embedding-only server — no generation model, no GPU lock contention.
 
-    Uses its own threading.Lock independent from _gpu_lock so embedding
-    requests never queue behind text generation on the main server.
+    Runs as a separate process from the generation server so embedding requests
+    are never blocked by long-running text generation. Each process gets its own
+    Metal command queue via macOS unified memory.
     """
-    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from http.server import HTTPServer, BaseHTTPRequestHandler
 
-    _embed_lock = threading.Lock()
-    _embed = EmbeddingModel(embed_model, lock=_embed_lock)
-
-    # Ensure bge-m3 safetensors exist
-    from mlx_local.cli import _ensure_bge_m3_safetensors
-    from huggingface_hub import snapshot_download
-    try:
-        embed_path = snapshot_download(repo_id=embed_model, local_files_only=True)
-        _ensure_bge_m3_safetensors(embed_path)
-    except Exception:
-        pass
+    # Private lock — not shared with generation process
+    _embed = EmbeddingModel(embed_model)
+    _embed._lock = threading.Lock()
 
     class EmbedHandler(BaseHTTPRequestHandler):
-        """Minimal HTTP handler — serves /v1/embeddings and /health only."""
-
-        log_message = lambda self, *a, **kw: None  # suppress access log noise
-
-        def do_GET(self):
-            if self.path == "/health":
-                self._send_json({"status": "ok", "model": embed_model})
-            else:
-                self._send_json({"error": "not found"}, 404)
+        """Lightweight HTTP handler for embeddings only."""
 
         def do_POST(self):
             if self.path == "/v1/embeddings":
-                self._handle_embeddings()
-            else:
-                self._send_json({"error": "not found"}, 404)
+                return _handle_embeddings(self, _embed, embed_model)
+            _send_json(self, {"error": {"message": "Not found", "type": "invalid_request"}}, 404)
 
-        def _handle_embeddings(self):
-            try:
-                content_length = int(self.headers.get("Content-Length", 0))
-                body = json.loads(self.rfile.read(content_length))
+        def do_GET(self):
+            if self.path in ("/health", "/healthz"):
+                return _send_json(self, {"status": "ok", "model": embed_model})
+            _send_json(self, {"error": {"message": "Not found", "type": "invalid_request"}}, 404)
 
-                input_data = body.get("input", [])
-                if isinstance(input_data, str):
-                    input_data = [input_data]
-
-                vectors = _embed.embed(input_data)
-
-                response = {
-                    "object": "list",
-                    "model": embed_model,
-                    "data": [
-                        {"object": "embedding", "index": i, "embedding": vec}
-                        for i, vec in enumerate(vectors)
-                    ],
-                    "usage": {
-                        "prompt_tokens": sum(len(t.split()) for t in input_data),
-                        "total_tokens": sum(len(t.split()) for t in input_data),
-                    },
-                }
-                self._send_json(response)
-
-            except BrokenPipeError:
-                click.echo("[mlx-embed] Client disconnected (broken pipe)", err=True)
-            except Exception as e:
-                try:
-                    self._send_json(
-                        {"error": {"message": str(e), "type": "server_error"}}, 500
-                    )
-                except BrokenPipeError:
-                    click.echo(f"[mlx-embed] Client disconnected, could not send error: {e}", err=True)
-
-        def _send_json(self, data: dict, status: int = 200):
-            body = json.dumps(data).encode()
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-
-    if mx.metal.is_available():
-        wired_limit = mx.device_info()["max_recommended_working_set_size"]
-        mx.set_wired_limit(wired_limit)
-
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(levelname)s - %(message)s",
-    )
+        def log_message(self, format, *args):
+            click.echo(f"[mlx-embed] {args[0]} {args[1]} {args[2]}")
 
     click.echo(f"[mlx-embed] Embedding server starting on {host}:{port}")
     click.echo(f"[mlx-embed]   Model: {embed_model}")
     click.echo(f"[mlx-embed] Endpoints:")
     click.echo(f"[mlx-embed]   POST /v1/embeddings — embeddings")
-    click.echo(f"[mlx-embed]   GET  /health        — health check")
+    click.echo(f"[mlx-embed]   GET  /health         — health check")
 
-    server = ThreadingHTTPServer((host, port), EmbedHandler)
+    if mx.metal.is_available():
+        wired_limit = mx.device_info()["max_recommended_working_set_size"]
+        mx.set_wired_limit(wired_limit)
+
+    server = HTTPServer((host, port), EmbedHandler)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         click.echo("[mlx-embed] Shutting down")
-        server.shutdown()
+    finally:
+        server.server_close()

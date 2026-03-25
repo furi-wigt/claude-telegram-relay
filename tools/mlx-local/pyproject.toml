@@ -7,8 +7,6 @@ dependencies = [
     "mlx-lm>=0.22",
     "mlx-embeddings>=0.0.5",
     "click>=8.0",
-    "torch",
-    "safetensors",
 ]
 
 [project.scripts]
