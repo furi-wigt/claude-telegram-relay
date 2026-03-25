@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased] / 2026-03-26 — Switch embed model to mlx-community/bge-m3-mlx-fp16
+
+### Changed
+- **tools/mlx-local**: `DEFAULT_EMBED_MODEL` changed from `BAAI/bge-m3` (PyTorch) to `mlx-community/bge-m3-mlx-fp16` (native MLX). Model ships with safetensors in MLX format — no one-time conversion step required.
+- **tools/mlx-local**: Removed `_ensure_bge_m3_safetensors()` and the `snapshot_download` conversion block in `run_server()` — dead code now that the model is natively MLX.
+- **tools/mlx-local/pyproject.toml**: Removed `torch` and `safetensors` dependencies (~2 GB reduction in install size). Only `mlx-lm`, `mlx-embeddings`, and `click` required.
+- `set_dtype(mx.float16)` retained as a no-op guard for `--embed-model` overrides at runtime. Mean-pooling still computed in fp32 for numerical stability.
+
 ## [Unreleased] / 2026-03-25 — Streaming progress for /report generate
 
 ### Changed
