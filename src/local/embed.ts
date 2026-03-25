@@ -1,23 +1,20 @@
 /**
- * Local embedding via MLX embed server (bge-m3).
+ * Local embedding via Ollama (bge-m3).
  * Returns 1024-dim dense vectors.
  *
- * Targets the dedicated embed server (EMBED_URL, default port 8801) which
- * runs independently from the generation server (MLX_URL, port 8800).
- * Embeddings no longer queue behind long-running text generation calls.
+ * Uses Ollama's /api/embed endpoint (default port 11434).
  *
- * Resilience: still retries once with 2x timeout for transient errors.
+ * Resilience: retries once with 2x timeout for transient errors.
  */
 
 const EMBED_MODEL = process.env.EMBED_MODEL || "bge-m3";
 
 /**
- * Base URL for the dedicated embedding server.
- * Defaults to port 8801 (embed-only); falls back to MLX_URL for backward
- * compatibility if EMBED_URL is not set.
+ * Base URL for the Ollama embedding server.
+ * Defaults to http://localhost:11434.
  */
 export function getEmbedBaseUrl(): string {
-  return process.env.EMBED_URL ?? "http://localhost:8801";
+  return process.env.EMBED_URL ?? "http://localhost:11434";
 }
 
 /** Read timeout at call time so tests can override via process.env */
@@ -32,12 +29,12 @@ export interface EmbedResult {
 }
 
 /**
- * Single fetch to MLX embedding endpoint with abort timeout.
+ * Single fetch to Ollama /api/embed endpoint with abort timeout.
  */
 async function fetchEmbed(input: string | string[], timeoutMs: number): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
-  return fetch(`${getEmbedBaseUrl()}/v1/embeddings`, {
+  return fetch(`${getEmbedBaseUrl()}/api/embed`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ model: EMBED_MODEL, input }),
@@ -46,8 +43,8 @@ async function fetchEmbed(input: string | string[], timeoutMs: number): Promise<
 }
 
 /**
- * Embed a single text string using MLX bge-m3.
- * Retries once with 2x timeout if first attempt is aborted (MLX busy with text gen).
+ * Embed a single text string using Ollama bge-m3.
+ * Retries once with 2x timeout if first attempt is aborted.
  */
 export async function localEmbed(text: string): Promise<number[]> {
   const timeout = getTimeoutMs();
@@ -65,16 +62,16 @@ export async function localEmbed(text: string): Promise<number[]> {
 
   if (!res.ok) {
     const body = await res.text();
-    throw new Error(`MLX embed failed (${res.status}): ${body}`);
+    throw new Error(`Ollama embed failed (${res.status}): ${body}`);
   }
 
   const data = (await res.json()) as {
-    data?: Array<{ embedding: number[] }>;
+    embeddings?: number[][];
   };
-  if (!data.data?.[0]?.embedding?.length) {
-    throw new Error("MLX returned empty embedding");
+  if (!data.embeddings?.[0]?.length) {
+    throw new Error("Ollama returned empty embedding");
   }
-  return data.data[0].embedding;
+  return data.embeddings[0];
 }
 
 /**
@@ -99,22 +96,22 @@ export async function localEmbedBatch(texts: string[]): Promise<number[][]> {
 
   if (!res.ok) {
     const body = await res.text();
-    throw new Error(`MLX batch embed failed (${res.status}): ${body}`);
+    throw new Error(`Ollama batch embed failed (${res.status}): ${body}`);
   }
 
   const data = (await res.json()) as {
-    data?: Array<{ embedding: number[] }>;
+    embeddings?: number[][];
   };
-  if (!data.data || data.data.length !== texts.length) {
+  if (!data.embeddings || data.embeddings.length !== texts.length) {
     throw new Error(
-      `MLX returned ${data.data?.length ?? 0} embeddings for ${texts.length} inputs`
+      `Ollama returned ${data.embeddings?.length ?? 0} embeddings for ${texts.length} inputs`
     );
   }
-  return data.data.map((d) => d.embedding);
+  return data.embeddings;
 }
 
 /**
- * Health check — verifies MLX server is running and bge-m3 is loaded.
+ * Health check — verifies Ollama is running and bge-m3 is loaded.
  */
 export async function checkEmbedHealth(): Promise<boolean> {
   try {

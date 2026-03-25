@@ -19,7 +19,7 @@ This project turns Telegram into a personal AI assistant powered by Claude Code 
 
 **What you get:**
 - 5 specialised AI agents, each in their own Telegram supergroup (AWS Architect, Security, Documentation, Code Quality, General)
-- Long-term memory: facts, goals, preferences stored locally with semantic search (SQLite + Qdrant + MLX bge-m3)
+- Long-term memory: facts, goals, preferences stored locally with semantic search (SQLite + Qdrant + Ollama bge-m3)
 - Scheduled routines: morning briefing, evening summary, proactive check-ins, health watchdog
 - Document RAG: upload PDFs, ask questions, get answers grounded in your documents
 - Voice transcription: send voice messages, bot transcribes and responds
@@ -51,7 +51,8 @@ All user data lives outside the project directory in `~/.claude-relay/`:
 **Storage stack:**
 - **SQLite** (`~/.claude-relay/data/local.sqlite`) — messages, memory entries, goals, conversation summaries, logs
 - **Qdrant** (local vector DB) — semantic search over messages and memory
-- **MLX** (`mlx serve`) — text generation (Qwen3.5-9B) + embeddings (bge-m3) via OpenAI-compatible HTTP API on port 8800
+- **Osaurus** — text generation (Qwen3.5-4B) via OpenAI-compatible API on port 1337
+- **Ollama** — embeddings (bge-m3, 1024-dim) via `/api/embed` on port 11434
 
 ## Prerequisites
 
@@ -105,52 +106,45 @@ Do not rush all phases at once. Start with Phase 1. When it works, move to Phase
 
 ## Phase 2: Local Memory & Search (~10 min)
 
-Your bot's memory runs entirely locally — no cloud APIs needed. It uses SQLite for structured data, Qdrant for vector search, and MLX (bge-m3) for generating embeddings.
+Your bot's memory runs entirely locally — no cloud APIs needed. It uses SQLite for structured data, Qdrant for vector search, Osaurus for text generation, and Ollama for embeddings.
 
-### Step 1: Install MLX Qwen (Apple Silicon — primary routine model)
+### Step 1: Install Osaurus (text generation)
 
-MLX provides native Apple Silicon inference at ~2x Ollama speed. Used as the primary model for all scheduled routines (morning summary, smart check-in, night summary).
-
-**What to tell them (macOS only):**
-1. Ensure Python 3.12+ is installed: `brew install python@3.12`
-2. Install the `mlx-qwen` CLI tool:
-   ```bash
-   uv tool install --editable tools/mlx-local --python python3.12
-   ```
-3. Download model weights (~5.6 GB):
-   ```bash
-   mlx-qwen pull
-   ```
-4. Verify: `mlx-qwen generate "Say hello" -t 50`
-
-> **Cloudflare/corporate proxy:** The tool auto-injects `/etc/ssl/Cloudflare_CA.pem` if present. No manual cert config needed.
-
-**Commands:**
-| Command | What it does |
-|---------|-------------|
-| `mlx-qwen generate "prompt"` | One-shot generation (thinking auto-disabled) |
-| `mlx-qwen serve` | OpenAI-compatible API on `localhost:8800` |
-| `mlx-qwen pull` | Download/update model weights |
-| `mlx-qwen info` | Show cached models and sizes |
-
-### Step 2: Start MLX server (embeddings + text generation)
-
-The MLX server (`mlx serve`) handles both text generation (Qwen3.5-9B) and embeddings (bge-m3) on port 8800. No separate embedding service needed.
+Osaurus is a native macOS LLM server for Apple Silicon. Used for all scheduled routines and Claude fallback.
 
 **What to tell them:**
-1. Start the server (model weights load on first request — allow ~30s):
+1. Install Osaurus:
    ```bash
-   mlx serve
+   brew install --cask osaurus
    ```
-2. Verify it's running: `curl http://localhost:8800/health`
+2. Open Osaurus.app → Model Manager → search for `Qwen3.5-4B-MLX-4bit` → Download
+3. Start the server:
+   ```bash
+   osaurus serve
+   ```
+4. Verify: `curl http://localhost:1337/v1/models`
+
+### Step 2: Install Ollama (embeddings)
+
+Ollama handles bge-m3 embeddings for semantic search.
+
+**What to tell them:**
+```bash
+brew install ollama
+ollama pull bge-m3
+ollama serve
+```
+
+Verify: `curl -s http://localhost:11434/api/embed -d '{"model":"bge-m3","input":"test"}' | head -c 100`
 
 **What you do:**
-1. The env vars are pre-configured. Optionally override in `~/.claude-relay/.env`:
-   - `MLX_URL=http://localhost:8800`
-   - `MLX_MODEL=mlx-community/Qwen3.5-9B-MLX-4bit`
+1. Optionally override in `~/.claude-relay/.env`:
+   - `LOCAL_LLM_URL=http://localhost:1337`
+   - `LOCAL_LLM_MODEL=mlx-community/Qwen3.5-4B-MLX-4bit`
+   - `EMBED_URL=http://localhost:11434`
    - `EMBED_MODEL=bge-m3`
 
-> **Apple Silicon only.** MLX requires Apple Silicon (M1/M2/M3/M4). The relay uses MLX exclusively for all local inference.
+> **Apple Silicon only.** Osaurus requires M1/M2/M3/M4. Ollama works on any Mac but benefits from Apple Silicon.
 
 ### Step 3: Install Qdrant
 
@@ -174,11 +168,12 @@ docker run -d --name qdrant -p 6333:6333 -v ~/.qdrant/storage:/qdrant/storage qd
 
 ### Step 4: Verify
 
-1. Confirm MLX server is running: `curl http://localhost:8800/health` → `{"status":"ok"}`
-2. Confirm Qdrant is reachable: `curl http://localhost:6333/healthz`
-3. Confirm SQLite database path exists: `ls ~/.claude-relay/data/`
+1. Osaurus running: `curl http://localhost:1337/v1/models` → model list
+2. Ollama running: `curl http://localhost:11434/api/embed -d '{"model":"bge-m3","input":"test"}'` → embeddings
+3. Qdrant reachable: `curl http://localhost:6333/healthz`
+4. SQLite database path exists: `ls ~/.claude-relay/data/`
 
-**Done when:** MLX server responds on port 8800, Qdrant responds on port 6333, and `~/.claude-relay/data/` exists.
+**Done when:** Osaurus responds on port 1337, Ollama on port 11434, Qdrant on port 6333, and `~/.claude-relay/data/` exists.
 
 ---
 
@@ -375,21 +370,21 @@ Lets the bot understand voice messages sent on Telegram.
 
 ---
 
-## Phase 8: Fallback AI — MLX (~2 min)
+## Phase 8: Fallback AI — Osaurus (~2 min)
 
-When Claude is unavailable, the bot auto-switches to the local MLX model (Qwen3.5-9B). MLX also handles all memory embeddings (bge-m3).
+When Claude is unavailable, the bot auto-switches to the local Osaurus model (Qwen3.5-4B).
 
-> If you already set up MLX in Phase 2, this phase just verifies the fallback works.
+> If you already set up Osaurus in Phase 2, this phase just verifies the fallback works.
 
 **Steps:**
 
-1. Ensure `mlx serve` is running (Phase 2)
+1. Ensure `osaurus serve` is running (Phase 2)
 2. Save in `.env` (if not already done):
-   - `MLX_URL=http://localhost:8800`
-   - `MLX_MODEL=mlx-community/Qwen3.5-9B-MLX-4bit`
+   - `LOCAL_LLM_URL=http://localhost:1337`
+   - `LOCAL_LLM_MODEL=mlx-community/Qwen3.5-4B-MLX-4bit`
 3. Restart the relay and send a message
 
-**Done when:** Relay startup log shows `Fallback model available: MLX (Qwen3.5-9B)`.
+**Done when:** Relay startup log shows `Fallback model available: Osaurus (Qwen3.5-4B)`.
 
 ---
 
@@ -440,8 +435,8 @@ This relay already includes significant capabilities beyond basic chat:
 - **Production Routines** — the `routines/` directory has ready-to-use scheduled tasks. Read `routines/CLAUDE.md` (code patterns and PM2 safety rules) then `routines/user_journey.md` (full lifecycle guide) before creating your own.
 - **Document RAG** — upload PDFs to Telegram, query them with natural language via `/doc query`
 - **Forum Topic Support** — route messages to specific topics within supergroups for clean separation
-- **Fallback AI** — auto-switch to local MLX (Qwen3.5-9B) when Claude is unavailable
-- **Fully Local** — all data stays on your machine (SQLite + Qdrant + MLX)
+- **Fallback AI** — auto-switch to local Osaurus (Qwen3.5-4B) when Claude is unavailable
+- **Fully Local** — all data stays on your machine (SQLite + Qdrant + Osaurus + Ollama)
 
 **Want to personalise further?**
 - Edit `~/.claude-relay/prompts/*.md` to change each agent's persona, domain focus, or save paths

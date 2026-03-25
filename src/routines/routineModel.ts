@@ -1,13 +1,13 @@
 /**
- * Unified routine model caller — MLX only.
+ * Unified routine model caller — Osaurus (local LLM).
  *
  * All routine code should call `callRoutineModel()` instead of
  * `callMlxGenerate()` directly. This provides a single place to
  * control generation for scheduled routines.
  *
- * Provider: MLX server (Qwen3.5 9B 4-bit, Apple Silicon native via mlx serve)
+ * Provider: Osaurus (Qwen3.5 4B, Apple Silicon native, port 1337)
  *
- * Concurrency: MLX calls are serialized via a mutex — only one
+ * Concurrency: calls are serialized via a mutex — only one
  * generation can run at a time (GPU memory is shared).
  */
 
@@ -20,25 +20,25 @@ export interface RoutineModelOptions {
   label?: string;
 }
 
-// Simple mutex: serializes MLX calls to prevent concurrent GPU access
-let _mlxLock: Promise<void> = Promise.resolve();
+// Simple mutex: serializes LLM calls to prevent concurrent GPU access
+let _llmLock: Promise<void> = Promise.resolve();
 
-function withMlxLock<T>(fn: () => Promise<T>): Promise<T> {
-  const prev = _mlxLock;
+function withLlmLock<T>(fn: () => Promise<T>): Promise<T> {
+  const prev = _llmLock;
   let release: () => void;
-  _mlxLock = new Promise<void>((r) => { release = r; });
+  _llmLock = new Promise<void>((r) => { release = r; });
   return prev.then(fn).finally(() => release!());
 }
 
 /** Which provider actually handled the last call (for display labels). */
-export type RoutineModelProvider = "mlx";
-let _lastProvider: RoutineModelProvider = "mlx";
+export type RoutineModelProvider = "local";
+let _lastProvider: RoutineModelProvider = "local";
 export function getLastProvider(): RoutineModelProvider { return _lastProvider; }
 
 /**
- * Call the MLX local model for routine tasks.
+ * Call the local LLM (Osaurus) for routine tasks.
  *
- * MLX calls are serialized — concurrent callers wait in queue.
+ * Calls are serialized — concurrent callers wait in queue.
  */
 export async function callRoutineModel(
   prompt: string,
@@ -48,10 +48,10 @@ export async function callRoutineModel(
   const timeoutMs = options?.timeoutMs ?? 120_000;
   const maxTokens = options?.maxTokens ?? 2048;
 
-  const result = await withMlxLock(() =>
+  const result = await withLlmLock(() =>
     callMlxGenerate(prompt, { timeoutMs, maxTokens })
   );
-  _lastProvider = "mlx";
-  console.log(`[${label}] MLX succeeded`);
+  _lastProvider = "local";
+  console.log(`[${label}] Local LLM succeeded`);
   return result;
 }

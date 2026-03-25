@@ -504,9 +504,9 @@ let fallbackAvailable = false;
 {
   fallbackAvailable = await isMlxAvailable();
   if (fallbackAvailable) {
-    console.log("Fallback model available: MLX (Qwen3.5-9B)");
+    console.log("Fallback model available: Osaurus (Qwen3.5-4B)");
   } else {
-    console.warn("MLX server not reachable. Claude will be used exclusively.");
+    console.warn("Osaurus server not reachable. Claude will be used exclusively.");
   }
 }
 

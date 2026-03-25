@@ -28,7 +28,8 @@
 |-------------|---------|---------|
 | **Bun** | ≥ 1.0 | `curl -fsSL https://bun.sh/install \| bash` |
 | **Claude Code CLI** | latest | `npm install -g @anthropic-ai/claude-code && claude login` |
-| **MLX** | Python 3.12 + uv | `uv tool install --editable tools/mlx-local --python python3.12` |
+| **Osaurus** | macOS (Apple Silicon) | `brew install --cask osaurus` |
+| **Ollama** | macOS | `brew install ollama && ollama pull bge-m3` |
 | **Qdrant** | latest | Binary or Docker (see CLAUDE.md Phase 2) |
 | **Git** | any | pre-installed on macOS |
 | **Telegram** | any | Mobile or desktop app |
@@ -40,7 +41,7 @@ flowchart LR
     A[Clone repo] --> B[bun run setup]
     B --> C[Add bot token\n& user ID to .env]
     C --> D[bun run test:telegram\nVerify connectivity]
-    D --> E[Install MLX & Qdrant\nmlx pull, see CLAUDE.md Phase 2]
+    D --> E[Install Osaurus & Ollama & Qdrant\nsee CLAUDE.md Phase 2]
     E --> F[bun run start\nTest a message]
     F --> G[bun run setup:pm2\nMake it always-on]
 ```
@@ -330,7 +331,7 @@ sequenceDiagram
     participant U as User
     participant B as Bot
     participant DP as DocumentProcessor
-    participant MLX as MLX Server
+    participant OL as Ollama
     participant QD as Qdrant
 
     U->>B: Upload PDF
@@ -341,8 +342,8 @@ sequenceDiagram
     B->>DP: ingestDocument(title, text, chatId)
     DP->>DP: chunkByHeadings() or splitByParagraph()
     loop For each chunk
-        DP->>MLX: localEmbed(chunk) → POST /v1/embeddings
-        MLX-->>DP: vector[1024]
+        DP->>OL: localEmbed(chunk) → POST /api/embed
+        OL-->>DP: vector[1024]
         DP->>QD: upsert("documents", id, vector)
     end
     B->>U: "Indexed 47 chunks from EDEN Security Runbook"
@@ -403,7 +404,7 @@ Between messages, the bot automatically tries to resume the Claude session:
 | Bot not responding | Service offline | `npx pm2 status` — restart if `errored` |
 | Response very slow | Large context window | `/new` to reset session |
 | "Working..." never resolves | Claude stream hung | Send `/cancel` or restart relay |
-| Memory not saving | Qdrant or MLX down | `curl http://localhost:6333/healthz`, `curl http://localhost:8800/health` |
+| Memory not saving | Qdrant or Ollama down | `curl http://localhost:6333/healthz`, `curl http://localhost:11434/api/embed -d '{"model":"bge-m3","input":"test"}'` |
 | Voice not transcribing | Missing API key or binary | Check `VOICE_PROVIDER` + `GROQ_API_KEY` in `.env` |
 | Document search returns nothing | No docs indexed or Qdrant down | `/doc list` to check, `bun run setup:verify` |
 | Wrong group / agent not responding | Group not registered | Check `GROUP_*_CHAT_ID` or re-run `bun run test:groups` |

@@ -1,29 +1,29 @@
 /**
- * MLX local LLM client — HTTP client for the `mlx serve` server.
+ * Local LLM client — HTTP client for Osaurus (or any OpenAI-compatible server).
  *
- * Calls the unified MLX server (text generation + embeddings) via
- * OpenAI-compatible /v1/chat/completions endpoint on localhost:8800.
+ * Calls /v1/chat/completions on Osaurus (default localhost:1337).
+ * Model: Qwen3.5 4B via Osaurus on Apple Silicon.
  *
- * Install: `uv tool install --editable tools/mlx-local --python python3.12`
- * Serve:   `mlx serve` (or via PM2)
+ * Install: `brew install --cask osaurus`
+ * Serve:   `osaurus serve` (or launch Osaurus.app)
  */
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 const DEFAULT_MAX_TOKENS = 2048;
-const DEFAULT_MLX_MODEL = "mlx-community/Qwen3.5-9B-MLX-4bit";
+const DEFAULT_LOCAL_MODEL = "mlx-community/Qwen3.5-4B-MLX-4bit";
 
 export function getMlxBaseUrl(): string {
-  return process.env.MLX_URL ?? "http://localhost:8800";
+  return process.env.LOCAL_LLM_URL ?? "http://localhost:1337";
 }
 
 export function getMlxModel(): string {
-  return process.env.MLX_MODEL ?? DEFAULT_MLX_MODEL;
+  return process.env.LOCAL_LLM_MODEL ?? DEFAULT_LOCAL_MODEL;
 }
 
-/** Check if the MLX server is reachable. */
+/** Check if the local LLM server (Osaurus) is reachable. */
 export async function isMlxAvailable(): Promise<boolean> {
   try {
-    const response = await fetch(`${getMlxBaseUrl()}/health`, {
+    const response = await fetch(`${getMlxBaseUrl()}/v1/models`, {
       signal: AbortSignal.timeout(3_000),
     });
     return response.ok;
@@ -33,10 +33,9 @@ export async function isMlxAvailable(): Promise<boolean> {
 }
 
 /**
- * Generate text using MLX server (Apple Silicon native inference).
+ * Generate text using local LLM server (Osaurus on Apple Silicon).
  *
- * Calls /v1/chat/completions on the unified MLX server.
- * Model weights stay warm in the server process.
+ * Calls /v1/chat/completions — OpenAI-compatible endpoint.
  *
  * @throws Error on timeout, HTTP error, or empty response
  */
@@ -70,7 +69,7 @@ export async function callMlxGenerate(
 
     if (!response.ok) {
       const body = await response.text().catch(() => "");
-      throw new Error(`MLX API error: HTTP ${response.status} — ${body}`);
+      throw new Error(`Local LLM API error: HTTP ${response.status} — ${body}`);
     }
 
     const data = (await response.json()) as {
@@ -79,7 +78,7 @@ export async function callMlxGenerate(
 
     const content = data.choices?.[0]?.message?.content?.trim();
     if (!content) {
-      throw new Error("MLX returned empty response");
+      throw new Error("Local LLM returned empty response");
     }
     return content;
   } finally {

@@ -65,11 +65,11 @@ mock.module("../src/utils/routineMessage.ts", () => ({
   sendAndRecord: async () => {},
 }));
 
-// -- Routine model mock (MLX/Ollama cascade) --
+// -- Routine model mock (Osaurus/Ollama) --
 // Without this mock, buildEnhancedBriefing tests hang waiting for local LLM.
 mock.module("../src/routines/routineModel.ts", () => ({
   callRoutineModel: async () => "No activity to summarize.",
-  getLastProvider: () => "mlx",
+  getLastProvider: () => "local",
 }));
 
 // -- Things 3 mock (fetchThingsTasks calls real CLI without this) --

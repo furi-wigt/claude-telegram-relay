@@ -1,7 +1,7 @@
 /**
  * Memory Conflict Resolver
  *
- * Detects contradictory facts in memory by using Ollama to group
+ * Detects contradictory facts in memory by using local LLM to group
  * semantically related entries and identify conflicts. Users can
  * then resolve conflicts via `/memory dedup` in Telegram.
  *

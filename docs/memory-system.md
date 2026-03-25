@@ -35,7 +35,7 @@ graph TB
 
     subgraph L1["Layer 1: Short-Term Memory"]
         STM[Rolling Window\nLast 20 messages verbatim]
-        SUM[Conversation Summaries\nOlder batches summarized by MLX]
+        SUM[Conversation Summaries\nOlder batches summarized by Osaurus]
     end
 
     subgraph L2["Layer 2: Long-Term Memory"]
@@ -45,7 +45,7 @@ graph TB
     end
 
     subgraph L3["Layer 3: Semantic Search"]
-        EMB[Embeddings\nBGE-M3 via MLX\n1024 dims]
+        EMB[Embeddings\nBGE-M3 via Ollama\n1024 dims]
         QD[Qdrant\nVector Similarity Search]
     end
 
@@ -123,7 +123,7 @@ sequenceDiagram
     participant ME as memory.ts\nprocessMemoryIntents()
     participant JF as junkFilter.ts
     participant DD as Dedup Check
-    participant MLX as MLX\nlocalEmbed()
+    participant OL as Ollama\nlocalEmbed()
     participant QD as Qdrant
     participant DB as SQLite
 
@@ -136,8 +136,8 @@ sequenceDiagram
     DD->>DB: SELECT similar content\n(levenshtein > 95%)
     DB-->>DD: No near-duplicate found
 
-    ME->>MLX: localEmbed(fact)
-    MLX-->>ME: vector[1024]
+    ME->>OL: localEmbed(fact)
+    OL-->>ME: vector[1024]
 
     ME->>QD: search("memory", vector,\nfilter={chatId}, limit=5)
     QD-->>ME: [{score: 0.65, content: "..."}]
@@ -164,7 +164,7 @@ flowchart TD
 
     TEXT -->|Yes — exact/near-exact duplicate| SKIP1[Skip insertion\nIncrement access_count\non existing entry]
 
-    TEXT -->|No| EMBED[Generate embedding\nMLX BGE-M3]
+    TEXT -->|No| EMBED[Generate embedding\nOllama BGE-M3]
 
     EMBED --> SEM{Semantic dedup:\nQdrant cosine similarity\n≥ 0.8?}
 
@@ -198,14 +198,14 @@ Memory is retrieved on every message and injected into the Claude prompt.
 sequenceDiagram
     participant R as relay.ts
     participant Mem as memory.ts\ngetMemoryContext()
-    participant MLX as MLX
+    participant OL as Ollama
     participant QD as Qdrant
     participant DB as SQLite
     participant CP as Claude Prompt
 
     R->>Mem: getMemoryContext(chatId, userQuery, limit=5)
-    Mem->>MLX: localEmbed(userQuery)
-    MLX-->>Mem: vector[1024]
+    Mem->>OL: localEmbed(userQuery)
+    OL-->>Mem: vector[1024]
     Mem->>QD: search("memory",\nvector,\nfilter={chat_id, status='active'},\nlimit=5)
     QD-->>Mem: top-5 by cosine similarity\n[{id, score, content, type, category}]
     Mem->>DB: SELECT active goals\nORDER BY priority DESC, deadline ASC
@@ -231,7 +231,7 @@ sequenceDiagram
 
 ## Short-Term Memory: Rolling Window & Summarization
 
-Short-term memory keeps the last 20 messages verbatim, summarising older batches with MLX (via `callRoutineModel()`) to stay within context limits.
+Short-term memory keeps the last 20 messages verbatim, summarising older batches with Osaurus (via `callRoutineModel()`) to stay within context limits.
 
 ```mermaid
 stateDiagram-v2
@@ -351,7 +351,7 @@ stateDiagram-v2
 | `documents` | 1024 | Cosine | `name`, `chunk_heading`, `chat_id`, `chunk_index` | Document RAG search |
 | `summaries` | 1024 | Cosine | `chat_id`, `thread_id`, `from_timestamp` | Summary search |
 
-**Embedding model**: `bge-m3` via MLX (`src/local/embed.ts`) — 1024-dimensional, multilingual, strong at long-context retrieval. Served on port 8800 via `/v1/embeddings` (OpenAI-compatible API).
+**Embedding model**: `bge-m3` via Ollama (`src/local/embed.ts`) — 1024-dimensional, multilingual, strong at long-context retrieval. Served on port 11434 via `/api/embed`.
 
 ---
 

@@ -18,7 +18,7 @@ const STALE_THRESHOLD_MS = 4 * 60 * 60 * 1000;   // 4 hours = definitely stale
 const RELEVANCE_THRESHOLD = 0.25;                  // below this = suggest new context
 
 import { callMlxGenerate, getMlxBaseUrl } from "../mlx/index.ts";
-const MLX_RELEVANCE_TIMEOUT_MS = 4000; // hard cutoff — fallback if exceeded
+const LLM_RELEVANCE_TIMEOUT_MS = 4000; // hard cutoff — fallback if exceeded
 
 // Stop words to ignore during keyword extraction
 const STOP_WORDS = new Set([
@@ -166,7 +166,7 @@ export async function checkContextRelevanceWithMLX(
 
   try {
     const raw = (await callMlxGenerate(prompt, {
-      timeoutMs: MLX_RELEVANCE_TIMEOUT_MS,
+      timeoutMs: LLM_RELEVANCE_TIMEOUT_MS,
       maxTokens: 5,
     })).trim().toUpperCase();
 

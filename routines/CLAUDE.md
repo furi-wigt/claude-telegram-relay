@@ -72,7 +72,7 @@ if (_isEntry) {
 
 **Always use `sendAndRecord` for conversational messages.** It sends to
 Telegram AND persists the message to the local database so it appears in the
-bot's rolling short-term memory window (with a pre-computed MLX summary).
+bot's rolling short-term memory window (with a pre-computed local LLM summary).
 
 Using `sendToGroup` directly bypasses memory — correct for infra alerts,
 wrong for anything the user might want to reference later.
@@ -220,7 +220,7 @@ export function buildMessage(data: MyData): string { ... }
 // ✓ exportable — injectable providers, no real I/O
 export async function analyzeWithProviders(
   prompt: string,
-  providers: { claude: (p: string) => Promise<string>; mlx: ... }
+  providers: { claude: (p: string) => Promise<string>; local: ... }
 ): Promise<Result> { ... }
 
 // ✗ keep private — real I/O
@@ -336,7 +336,7 @@ npx pm2 save
 ## LLM provider order
 
 For text-only tasks (summarization, extraction, classification), use `callRoutineModel()`
-which calls the **MLX server** (`mlx serve`). Logging is handled automatically.
+which calls the **Osaurus server** (`osaurus serve`). Logging is handled automatically.
 
 ```ts
 import { callRoutineModel } from "../src/routines/routineModel.ts";
@@ -347,7 +347,7 @@ const result = await callRoutineModel(prompt, {
 });
 ```
 
-**Provider:** MLX server (`/v1/chat/completions`) — Qwen3.5 9B 4-bit, Apple Silicon native, ~60 tok/s
+**Provider:** Osaurus (`/v1/chat/completions`) — Qwen3.5-4B, Apple Silicon native
 
 **Note:** Local models do **not** support tool use. If a routine needs
 Claude tools/agentic capabilities, use `claudeText`/`claudeStream` directly.

@@ -1,5 +1,5 @@
 /**
- * Local storage backend — Qdrant + SQLite + Ollama BGE-M3.
+ * Local storage backend — Qdrant + SQLite + Ollama bge-m3.
  * Barrel export for all local modules.
  */
 export { localEmbed, localEmbedBatch, checkEmbedHealth } from "./embed";
