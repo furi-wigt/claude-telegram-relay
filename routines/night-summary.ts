@@ -8,15 +8,15 @@
  */
 
 /**
- * Night Summary Routine (MLX-first, Haiku fallback)
+ * Night Summary Routine (Local LLM-first, Haiku fallback)
  *
  * Schedule: 11:00 PM daily (SGT)
  * Target: General AI Assistant group
  *
  * Pulls the day's messages, facts, and goals from local SQLite, then uses
- * local MLX to generate a detailed, motivational day-end reflection
- * formatted in Markdown. Falls back to Claude Haiku when MLX is unavailable.
- * Notifies the user if both providers fail.
+ * local Osaurus (Qwen3.5-4B) to generate a detailed, motivational day-end
+ * reflection formatted in Markdown. Falls back to Claude Haiku when Osaurus
+ * is unavailable. Notifies the user if both providers fail.
  *
  * Run manually: bun run routines/night-summary.ts
  */
@@ -77,7 +77,7 @@ export interface QaPair {
 
 export interface AnalysisResult {
   text: string;
-  provider: "claude" | "mlx" | null;
+  provider: "claude" | "local" | null;
 }
 
 // ============================================================
@@ -298,7 +298,7 @@ export function formatSummary(
   messageCount: number,
   factCount: number,
   analysis: string,
-  provider: "claude" | "mlx" | null = null
+  provider: "claude" | "local" | null = null
 ): string {
   const lines: string[] = [];
 
@@ -310,8 +310,8 @@ export function formatSummary(
   lines.push("---");
 
   const providerLabel =
-    provider === "mlx"
-      ? getMlxModel().split("/").pop() ?? "MLX"
+    provider === "local"
+      ? getMlxModel().split("/").pop() ?? "Osaurus"
       : provider === "claude"
         ? "Claude Haiku"
         : "Unknown";
@@ -321,32 +321,32 @@ export function formatSummary(
 }
 
 /**
- * Attempt to generate a reflection using MLX, falling back to Claude Haiku.
+ * Attempt to generate a reflection using local LLM, falling back to Claude Haiku.
  * Returns the analysis text and which provider succeeded (or null if both failed).
  */
 export async function analyzeWithProviders(
   prompt: string,
   providers: {
     claude: (p: string) => Promise<string>;
-    mlx: (p: string) => Promise<string>;
+    local: (p: string) => Promise<string>;
   }
 ): Promise<AnalysisResult> {
   try {
-    const text = await providers.mlx(prompt);
-    console.log("[night-summary] MLX succeeded");
-    return { text, provider: "mlx" };
-  } catch (mlxError) {
-    console.warn("[night-summary] MLX failed, falling back to Haiku:", mlxError instanceof Error ? mlxError.message : mlxError);
+    const text = await providers.local(prompt);
+    console.log("[night-summary] Local LLM succeeded");
+    return { text, provider: "local" };
+  } catch (localError) {
+    console.warn("[night-summary] Local LLM failed, falling back to Haiku:", localError instanceof Error ? localError.message : localError);
     try {
       const text = await providers.claude(prompt);
       console.log("[night-summary] Haiku fallback succeeded");
       return { text, provider: "claude" };
     } catch (claudeError) {
-      console.error("[night-summary] Both MLX and Haiku failed:");
-      console.error("  MLX:", mlxError);
+      console.error("[night-summary] Both local LLM and Haiku failed:");
+      console.error("  Local:", localError);
       console.error("  Claude:", claudeError);
       return {
-        text: "Day review unavailable — both MLX and Claude are offline.",
+        text: "Day review unavailable — both Osaurus and Claude are offline.",
         provider: null,
       };
     }
@@ -447,7 +447,7 @@ async function analyzeDay(
 
   return analyzeWithProviders(prompt, {
     claude: (p) => runPrompt(p, { model: CLAUDE_MODEL, timeoutMs: CLAUDE_TIMEOUT_MS }),
-    mlx: (p: string) => callRoutineModel(p, { label: "night-summary" }),
+    local: (p: string) => callRoutineModel(p, { label: "night-summary" }),
   });
 }
 
@@ -455,7 +455,7 @@ async function analyzeDay(
 // BUILD SUMMARY
 // ============================================================
 
-async function buildSummary(): Promise<{ summary: string; provider: "claude" | "mlx" | null }> {
+async function buildSummary(): Promise<{ summary: string; provider: "claude" | "local" | null }> {
   const now = new Date();
   const dateStr = now.toLocaleDateString("en-US", {
     weekday: "long",
@@ -482,7 +482,7 @@ async function buildSummary(): Promise<{ summary: string; provider: "claude" | "
 // ============================================================
 
 async function main() {
-  console.log("Running Night Summary (MLX-first, Haiku fallback)...");
+  console.log("Running Night Summary (Osaurus-first, Haiku fallback)...");
 
   if (shouldSkipRecently(LAST_RUN_FILE, 2)) {
     console.log("[night-summary] Already ran within the last 2 hours, skipping.");
@@ -500,8 +500,8 @@ async function main() {
   if (provider === null) {
     const failureMessage =
       "⚠️ **Night summary unavailable**\n\n" +
-      "Both MLX and Claude are offline right now.\n" +
-      "- MLX: check that `mlx serve` is running (PM2 or manual)\n" +
+      "Both Osaurus and Claude are offline right now.\n" +
+      "- Osaurus: check that `osaurus serve` is running\n" +
       "- Claude: check that the Claude CLI is installed and authenticated\n\n" +
       "Your day was still great — pick this up tomorrow! 🌟";
 

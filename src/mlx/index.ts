@@ -1,4 +1,4 @@
 /**
- * MLX module — Apple Silicon native inference via mlx serve HTTP server.
+ * Local LLM module — Osaurus (OpenAI-compatible) text generation.
  */
 export { callMlxGenerate, isMlxAvailable, getMlxBaseUrl } from "./client.ts";

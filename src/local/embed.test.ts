@@ -1,12 +1,12 @@
 /**
  * Unit tests for embed.ts — retry-once logic and timeout handling.
  *
- * Uses a local HTTP server to simulate MLX responses and delays.
+ * Uses a local HTTP server to simulate Ollama /api/embed responses.
  */
 import { describe, it, expect, beforeAll, afterAll } from "bun:test";
 import { localEmbed, localEmbedBatch } from "./embed";
 
-// ── Test server to simulate MLX ─────────────────────────────────────────────
+// ── Test server to simulate Ollama ──────────────────────────────────────────
 
 let server: ReturnType<typeof Bun.serve>;
 let callCount = 0;
@@ -26,11 +26,7 @@ beforeAll(() => {
       callCount++;
       const url = new URL(req.url);
 
-      if (url.pathname === "/health") {
-        return new Response(JSON.stringify({ status: "ok" }));
-      }
-
-      if (url.pathname === "/v1/embeddings") {
+      if (url.pathname === "/api/embed") {
         if (delayMs > 0) {
           await new Promise((r) => setTimeout(r, delayMs));
         }
@@ -41,19 +37,17 @@ beforeAll(() => {
 
         const body = (await req.json()) as { input: string | string[] };
         const inputs = Array.isArray(body.input) ? body.input : [body.input];
-        const data = inputs.map((_, i) => ({
-          object: "embedding",
-          index: i,
-          embedding: Array.from({ length: 1024 }, () => Math.random()),
-        }));
-        return Response.json({ object: "list", data });
+        const embeddings = inputs.map(() =>
+          Array.from({ length: 1024 }, () => Math.random())
+        );
+        return Response.json({ model: "bge-m3", embeddings });
       }
 
       return new Response("Not found", { status: 404 });
     },
   });
 
-  // Point embed module at our test server (dedicated embed server port)
+  // Point embed module at our test server
   process.env.EMBED_URL = `http://localhost:${server.port}`;
   // Use short timeouts for faster tests
   process.env.EMBED_TIMEOUT_MS = "500";

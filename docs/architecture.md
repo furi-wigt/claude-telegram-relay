@@ -25,7 +25,7 @@ Claude Telegram Relay is a production-ready personal AI assistant that turns Tel
 
 **Core capabilities:**
 - **6 specialised AI agents**, each living in a dedicated Telegram supergroup with a tailored persona
-- **Persistent local memory** — facts, goals, and preferences stored in SQLite with semantic search via Qdrant + MLX (bge-m3)
+- **Persistent local memory** — facts, goals, and preferences stored in SQLite with semantic search via Qdrant + Ollama bge-m3
 - **Scheduled routines** — 12 PM2-managed cron jobs for morning briefings, health checks, investment screening, and memory maintenance
 - **Document RAG** — upload PDFs/XLSX/CSV, query with natural language
 - **Voice transcription** — Groq (cloud) or local Whisper
@@ -46,7 +46,8 @@ C4Context
     System_Ext(telegram, "Telegram API", "Message delivery, file uploads, inline keyboards")
     System_Ext(claude_cli, "Claude Code CLI", "Anthropic AI — spawned as subprocess per message")
     System(qdrant, "Qdrant", "Local vector database for semantic search")
-    System(mlx, "MLX Server", "Local inference — embeddings (bge-m3) + Qwen3.5-9B fallback")
+    System(osaurus, "Osaurus", "Local LLM — Qwen3.5-4B text generation + Claude fallback (port 1337)")
+    System(ollama, "Ollama", "Local embeddings — bge-m3 1024-dim (port 11434)")
     SystemDb(sqlite, "SQLite", "~/.claude-relay/data/local.sqlite — messages, memory, documents")
     System_Ext(groq, "Groq API (optional)", "Cloud Whisper transcription")
 
@@ -55,7 +56,8 @@ C4Context
     Rel(relay, claude_cli, "Spawns subprocess per request")
     Rel(relay, sqlite, "Read/write messages, memory, documents")
     Rel(relay, qdrant, "Vector upsert + similarity search")
-    Rel(relay, mlx, "Generate embeddings + fallback completions")
+    Rel(relay, osaurus, "Fallback completions + routine model")
+    Rel(relay, ollama, "Generate bge-m3 embeddings")
     Rel(relay, telegram, "Send responses, inline keyboards")
     Rel(relay, groq, "Transcribe voice (if VOICE_PROVIDER=groq)")
     Rel(claude_cli, relay, "NDJSON stream (text, tool_use, progress)")
@@ -85,7 +87,7 @@ graph TB
 
     subgraph AI["AI Layer"]
         Claude[Claude Process\nclaude-process.ts]
-        MLX[MLX Client\nmlx/client.ts]
+        LocalLLM[Local LLM Client\nmlx/client.ts]
     end
 
     subgraph Storage["Local Storage — ~/.claude-relay/"]
@@ -110,14 +112,14 @@ graph TB
     Claude --> MemMgr
     MemMgr --> SQLite
     MemMgr --> Qdrant
-    MemMgr --> MLX
+    MemMgr --> LocalLLM
     DocMgr --> SQLite
     DocMgr --> Qdrant
-    DocMgr --> MLX
+    DocMgr --> LocalLLM
     Voice --> TG
     Vision --> Claude
     Routines --> SQLite
-    Routines --> MLX
+    Routines --> LocalLLM
     Routines --> TG
     SessionMgr --> Sessions
 ```
@@ -136,11 +138,11 @@ graph TB
 | **Prompt Builder** | `src/agents/promptBuilder.ts` | Assemble final system prompt: agent + profile + context + memory | shortTermMemory, memory |
 | **Session Manager** | `src/session/groupSessions.ts` | Per-chat Claude session state: sessionId, resume reliability, /new reset | fs (disk persistence) |
 | **Message Queue** | `src/queue/groupQueueManager.ts` | Per-chat FIFO queues, backpressure, idle cleanup | messageQueue |
-| **Short-Term Memory** | `src/memory/shortTermMemory.ts` | Rolling window (20 verbatim) + MLX summarization of older chunks | db, mlx/client |
+| **Short-Term Memory** | `src/memory/shortTermMemory.ts` | Rolling window (20 verbatim) + local LLM summarization of older chunks | db, mlx/client |
 | **Storage Backend** | `src/local/storageBackend.ts` | Unified CRUD: route ops to SQLite + Qdrant | db, vectorStore, embed |
 | **SQLite DB** | `src/local/db.ts` | Schema, CRUD, WAL mode, all table operations | bun:sqlite |
 | **Vector Store** | `src/local/vectorStore.ts` | Qdrant REST client: upsert, search, delete, init collections | @qdrant/js-client-rest |
-| **Embeddings** | `src/local/embed.ts` | Generate 1024-dim bge-m3 vectors via MLX `/v1/embeddings` (8s timeout) | MLX HTTP API |
+| **Embeddings** | `src/local/embed.ts` | Generate 1024-dim bge-m3 vectors via Ollama `/api/embed` (8s timeout) | Ollama HTTP API |
 | **Search Service** | `src/local/searchService.ts` | Hybrid search: keyword (SQLite FTS) + semantic (Qdrant) | db, vectorStore, embed |
 | **Document Processor** | `src/documents/documentProcessor.ts` | Ingest PDFs/XLSX/CSV: extract, chunk, embed, store | unpdf, xlsx, embed, vectorStore |
 | **Vision Client** | `src/vision/visionClient.ts` | Analyze photos via Claude Sonnet subprocess | claude-process |
@@ -149,8 +151,8 @@ graph TB
 | **Env Loader** | `src/config/envLoader.ts` | Layered .env: project → `~/.claude-relay/.env` → process.env | dotenv |
 | **Bot Commands** | `src/commands/botCommands.ts` | /help, /new, /memory, /goals, /history, /routines | memoryCommands |
 | **Cancel Handler** | `src/cancel.ts` | Interrupt active Claude streams via callback or /cancel | active stream registry |
-| **MLX Client** | `src/mlx/client.ts` | MLX HTTP client with health check, text generation, embeddings | MLX HTTP API (port 8800) |
-| **Routine Model** | `src/routines/routineModel.ts` | MLX-only model for all scheduled routines (no Ollama fallback) | MLX HTTP API |
+| **Local LLM Client** | `src/mlx/client.ts` | Osaurus HTTP client with availability check, text generation | Osaurus HTTP API (port 1337) |
+| **Routine Model** | `src/routines/routineModel.ts` | Local LLM model for all scheduled routines (Osaurus) | Osaurus HTTP API |
 
 ---
 
@@ -171,7 +173,7 @@ sequenceDiagram
     participant Store as storageBackend
     participant DB as SQLite
     participant QD as Qdrant
-    participant OL as MLX Server
+    participant OL as Ollama
 
     U->>TG: Send message
     TG->>R: grammy on("message:text")
@@ -238,9 +240,12 @@ graph LR
         QSUM[summaries collection\n1024-dim BGE-M3]
     end
 
-    subgraph MLXServer["MLX Server — localhost:8800"]
+    subgraph OllamaServer["Ollama — localhost:11434"]
         EMB[bge-m3\nEmbedding model\n1024 dims]
-        LLM[Qwen3.5-9B-MLX-4bit\nFallback/summarization]
+    end
+
+    subgraph OsaurusServer["Osaurus — localhost:1337"]
+        LLM[Qwen3.5-4B-MLX-4bit\nFallback/summarization]
     end
 
     M <-->|id sync| QM
@@ -442,7 +447,8 @@ stateDiagram-v2
 | **Runtime** | Bun | ≥ 1.0 | TypeScript execution, native SQLite, fast startup |
 | **Bot Framework** | grammy | latest | Telegram Bot API (webhooks/polling, inline keyboards) |
 | **AI (primary)** | Claude Code CLI | latest | Core AI — spawned as subprocess per request |
-| **AI (fallback/embed)** | MLX (`mlx serve`) | latest | Apple Silicon native — bge-m3 embeddings + Qwen3.5-9B fallback (~60 tok/s) |
+| **AI (fallback/routines)** | Osaurus | latest | Apple Silicon native — Qwen3.5-4B text generation (port 1337) |
+| **Embeddings** | Ollama + bge-m3 | latest | 1024-dim semantic vectors via `/api/embed` (port 11434) |
 | **Vector DB** | Qdrant | latest | Local semantic search — 4 collections |
 | **Relational DB** | SQLite (bun:sqlite) | native | Messages, memory, documents, summaries |
 | **Voice (cloud)** | Groq SDK | latest | Whisper transcription (optional) |

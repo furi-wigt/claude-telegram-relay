@@ -216,11 +216,11 @@ flowchart TD
     PM2 -->|All online| QD{Qdrant:\nGET /healthz = 200?}
     PM2 -->|Service errored or offline| ALERT1[Send alert:\n⚠️ Service X is offline\nAction: npx pm2 restart X]
 
-    QD -->|200 OK| MLX{MLX:\nGET /health on port 8800\nreturns status ok?}
+    QD -->|200 OK| OSR{Osaurus:\nGET /v1/models on port 1337\nreturns model list?}
     QD -->|Error| ALERT2[Send alert:\n⚠️ Qdrant unreachable\nAction: check port 6333]
 
-    MLX -->|OK| DB{SQLite:\nDB size + WAL size OK?}
-    MLX -->|Error| ALERT3[Send alert:\n⚠️ MLX server unavailable\nFallback AI disabled]
+    OSR -->|OK| DB{SQLite:\nDB size + WAL size OK?}
+    OSR -->|Error| ALERT3[Send alert:\n⚠️ Osaurus unavailable\nFallback AI disabled]
 
     DB -->|OK| DONE[No issues — silent exit]
     DB -->|WAL > 100MB| ALERT4[Send alert:\n⚠️ SQLite WAL large\nConsider PRAGMA wal_checkpoint]
@@ -232,7 +232,7 @@ flowchart TD
 
 Services:  ✅ qdrant ✅ telegram-relay ❌ morning-summary (errored)
 Qdrant:    ✅ healthy (port 6333)
-MLX:       ✅ Qwen3.5-9B-MLX-4bit available (port 8800)
+Osaurus:   ✅ Qwen3.5-4B-MLX-4bit available (port 1337)
 SQLite:    ✅ 42MB (WAL: 1.2MB)
 
 Action needed: npx pm2 restart morning-summary
@@ -265,7 +265,7 @@ flowchart TD
     B --> C{_isEntry guard hit?}
     C -->|No log output at all| D[PM2 cron not triggering\nCheck cron_restart in ecosystem.config.cjs]
     C -->|"group not configured"| E[Set GROUP_*_CHAT_ID in .env\nor set chatId in agents.json]
-    C -->|Error in fetch| F[Check MLX server running\ncurl http://localhost:8800/health]
+    C -->|Error in fetch| F[Check Osaurus running\ncurl http://localhost:1337/v1/models]
     C -->|Telegram send error| G[Bot token valid?\nnpx pm2 logs telegram-relay]
 ```
 
@@ -315,15 +315,19 @@ rm ~/.claude-relay/sessions/{chatId}_null.json
 curl http://localhost:6333/healthz
 # Expected: {"title":"qdrant - vector search engine","version":"...","commit":"..."}
 
-# Check MLX server
-curl http://localhost:8800/health
-# Expected: {"status":"ok"}
+# Check Osaurus server
+curl http://localhost:1337/v1/models
+# Expected: {"object":"list","data":[...]}
+
+# Check Ollama embed
+curl -s http://localhost:11434/api/embed -d '{"model":"bge-m3","input":"test"}' | head -c 80
+# Expected: {"model":"bge-m3","embeddings":[[...]]}
 
 # Check SQLite write
 sqlite3 ~/.claude-relay/data/local.sqlite "SELECT count(*) FROM memory;"
 
-# Check for MLX/embedding errors in relay logs
-npx pm2 logs telegram-relay --nocolor | grep -i "embed\|mlx\|qdrant"
+# Check for embedding errors in relay logs
+npx pm2 logs telegram-relay --nocolor | grep -i "embed\|ollama\|osaurus\|qdrant"
 ```
 
 ### Voice Transcription Failing
@@ -384,7 +388,8 @@ cat config/agents.json | jq '.[].id, .[].chatId, .[].groupName'
 | `bun run test:voice` | Voice transcription | Sample transcribed |
 | `bun run test:fallback` | MLX fallback | Sample response |
 | `curl http://localhost:6333/healthz` | Qdrant health | `{"title":"qdrant..."` |
-| `curl http://localhost:8800/health` | MLX server health | `{"status":"ok"}` |
+| `curl http://localhost:1337/v1/models` | Osaurus health | `{"object":"list","data":[...]}` |
+| `curl -s http://localhost:11434/api/embed -d '{"model":"bge-m3","input":"test"}'` | Ollama embed health | `{"model":"bge-m3","embeddings":[[...]]}` |
 | `sqlite3 ~/.claude-relay/data/local.sqlite ".tables"` | DB tables exist | `documents memory messages ...` |
 | `sqlite3 ~/.claude-relay/data/local.sqlite "SELECT count(*) FROM memory;"` | Memory count | number > 0 |
 | `ls -la ~/.claude-relay/sessions/` | Session files | JSON files per group |
@@ -432,8 +437,8 @@ flowchart TD
     SV[bun run setup:verify] --> ENV[Check .env:\nRequired vars present?]
     ENV --> TG[Check Telegram:\nBot token valid?]
     TG --> CL[Check Claude CLI:\nclaude --version?]
-    CL --> MLX[Check MLX:\nGET /health on port 8800?]
-    MLX --> QD[Check Qdrant:\n/healthz = 200?]
+    CL --> OSR[Check Osaurus:\nGET /v1/models on port 1337?]
+    OSR --> QD[Check Qdrant:\n/healthz = 200?]
     QD --> DB[Check SQLite:\nall tables exist?]
     DB --> PM2[Check PM2:\ntelegram-relay online?]
     PM2 --> OUT[Print summary:\n✅/❌ per component]
@@ -446,7 +451,8 @@ Claude Telegram Relay — Health Check
 ✅ .env: TELEGRAM_BOT_TOKEN, TELEGRAM_USER_ID present
 ✅ Telegram: Bot connected, username @myrelaybot
 ✅ Claude CLI: claude 1.x.x
-✅ MLX: Qwen3.5-9B-MLX-4bit + bge-m3 available (127.0.0.1:8800)
+✅ Osaurus: Qwen3.5-4B-MLX-4bit available (127.0.0.1:1337)
+✅ Ollama: bge-m3 available (127.0.0.1:11434)
 ✅ Qdrant: healthy v1.x (127.0.0.1:6333)
 ✅ SQLite: 4 tables, 342 memory entries, 1,847 messages
 ✅ PM2: telegram-relay online (uptime: 3d 14h)

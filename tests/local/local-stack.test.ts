@@ -1,13 +1,13 @@
 /**
- * Integration tests for local storage stack: MLX bge-m3 + Qdrant + SQLite.
+ * Integration tests for local storage stack: Ollama bge-m3 + Qdrant + SQLite.
  *
  * Prerequisites (must be running):
- * - MLX server (`mlx serve`) with bge-m3 embeddings
+ * - Ollama with bge-m3 (`ollama serve`, `ollama pull bge-m3`)
  * - Qdrant on localhost:6333
  */
 import { describe, it, expect, beforeAll, afterAll, setDefaultTimeout } from "bun:test";
 
-// MLX first-call loads model — can take 30s+
+// Ollama first-call loads model — can take 30s+
 setDefaultTimeout(30_000);
 import { localEmbed, localEmbedBatch, checkEmbedHealth } from "../../src/local/embed";
 import {
@@ -37,20 +37,20 @@ const TEST_DB_PATH = import.meta.dir + "/test-local.sqlite";
 process.env.LOCAL_DB_PATH = TEST_DB_PATH;
 
 // Check service availability before running tests that require them
-let mlxAvailable = false;
+let ollamaAvailable = false;
 let qdrantAvailable = false;
 
 try {
-  const mlxUrl = process.env.MLX_URL ?? "http://localhost:8800";
-  const res = await fetch(`${mlxUrl}/v1/embeddings`, {
+  const embedUrl = process.env.EMBED_URL ?? "http://localhost:11434";
+  const res = await fetch(`${embedUrl}/api/embed`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ model: "bge-m3", input: "test" }),
     signal: AbortSignal.timeout(10000),
   });
   if (res.ok) {
-    const data = await res.json() as { data?: Array<{ embedding: number[] }> };
-    mlxAvailable = (data.data?.[0]?.embedding?.length ?? 0) > 0;
+    const data = await res.json() as { embeddings?: number[][] };
+    ollamaAvailable = (data.embeddings?.[0]?.length ?? 0) > 0;
   }
 } catch {}
 
@@ -61,10 +61,10 @@ try {
   qdrantAvailable = Array.isArray(result.collections);
 } catch {}
 
-const describeMlx = mlxAvailable ? describe : describe.skip;
-const describeQdrant = qdrantAvailable && mlxAvailable ? describe : describe.skip;
+const describeOllama = ollamaAvailable ? describe : describe.skip;
+const describeQdrant = qdrantAvailable && ollamaAvailable ? describe : describe.skip;
 
-describeMlx("MLX BGE-M3 Embeddings", () => {
+describeOllama("Ollama BGE-M3 Embeddings", () => {
   it("should generate a 1024-dim vector", async () => {
     const vec = await localEmbed("hello world");
     expect(vec).toBeInstanceOf(Array);

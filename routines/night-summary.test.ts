@@ -227,9 +227,9 @@ describe("formatSummary()", () => {
     expect(summary).toContain("Claude Haiku");
   });
 
-  it("contains the model name in footer when provider is mlx", () => {
-    const summary = formatSummary("Monday, February 21", 5, 2, "Analysis.", "mlx");
-    // Footer should contain the last segment of the MLX model path (e.g. "Qwen3.5-9B-MLX-4bit")
+  it("contains the model name in footer when provider is local", () => {
+    const summary = formatSummary("Monday, February 21", 5, 2, "Analysis.", "local");
+    // Footer should contain the last segment of the model path (e.g. "Qwen3.5-4B-MLX-4bit")
     expect(summary.toLowerCase()).toContain("powered by");
     expect(summary).not.toContain("Claude Haiku");
   });
@@ -246,62 +246,62 @@ describe("formatSummary()", () => {
 // analyzeWithProviders() — provider abstraction
 // ============================================================
 
-describe("analyzeWithProviders() — MLX-first, Claude fallback", () => {
-  it("returns MLX's response when MLX succeeds", async () => {
+describe("analyzeWithProviders() — local LLM-first, Claude fallback", () => {
+  it("returns local LLM's response when it succeeds", async () => {
     const claudeFn = async () => "Claude's detailed reflection";
-    const mlxFn = async () => "MLX's reflection";
+    const localFn = async () => "Local LLM's reflection";
 
     const result = await analyzeWithProviders("test prompt", {
       claude: claudeFn,
-      mlx: mlxFn,
+      local: localFn,
     });
 
-    expect(result.text).toBe("MLX's reflection");
+    expect(result.text).toBe("Local LLM's reflection");
   });
 
-  it("identifies 'mlx' as provider on success", async () => {
+  it("identifies 'local' as provider on success", async () => {
     const claudeFn = async () => "Claude response";
-    const mlxFn = async () => "MLX response";
+    const localFn = async () => "Local response";
 
     const result = await analyzeWithProviders("test prompt", {
       claude: claudeFn,
-      mlx: mlxFn,
+      local: localFn,
     });
 
-    expect(result.provider).toBe("mlx");
+    expect(result.provider).toBe("local");
   });
 
-  it("falls back to Claude when MLX throws", async () => {
-    const mlxFn = async (): Promise<string> => {
-      throw new Error("MLX unavailable");
+  it("falls back to Claude when local LLM throws", async () => {
+    const localFn = async (): Promise<string> => {
+      throw new Error("Local LLM unavailable");
     };
     const claudeFn = async () => "Claude's reflection instead";
 
     const result = await analyzeWithProviders("test prompt", {
       claude: claudeFn,
-      mlx: mlxFn,
+      local: localFn,
     });
 
     expect(result.text).toBe("Claude's reflection instead");
   });
 
   it("identifies 'claude' as provider when falling back", async () => {
-    const mlxFn = async (): Promise<string> => {
-      throw new Error("MLX unavailable");
+    const localFn = async (): Promise<string> => {
+      throw new Error("Local LLM unavailable");
     };
     const claudeFn = async () => "Claude fallback";
 
     const result = await analyzeWithProviders("test prompt", {
       claude: claudeFn,
-      mlx: mlxFn,
+      local: localFn,
     });
 
     expect(result.provider).toBe("claude");
   });
 
-  it("returns provider=null when both MLX and Claude fail", async () => {
-    const mlxFn = async (): Promise<string> => {
-      throw new Error("MLX unavailable");
+  it("returns provider=null when both local LLM and Claude fail", async () => {
+    const localFn = async (): Promise<string> => {
+      throw new Error("Local LLM unavailable");
     };
     const claudeFn = async (): Promise<string> => {
       throw new Error("Claude unavailable");
@@ -309,15 +309,15 @@ describe("analyzeWithProviders() — MLX-first, Claude fallback", () => {
 
     const result = await analyzeWithProviders("test prompt", {
       claude: claudeFn,
-      mlx: mlxFn,
+      local: localFn,
     });
 
     expect(result.provider).toBeNull();
   });
 
   it("returns a non-empty error text when both providers fail", async () => {
-    const mlxFn = async (): Promise<string> => {
-      throw new Error("MLX unavailable");
+    const localFn = async (): Promise<string> => {
+      throw new Error("Local LLM unavailable");
     };
     const claudeFn = async (): Promise<string> => {
       throw new Error("Claude unavailable");
@@ -325,29 +325,29 @@ describe("analyzeWithProviders() — MLX-first, Claude fallback", () => {
 
     const result = await analyzeWithProviders("test prompt", {
       claude: claudeFn,
-      mlx: mlxFn,
+      local: localFn,
     });
 
     expect(typeof result.text).toBe("string");
     expect(result.text.length).toBeGreaterThan(0);
   });
 
-  it("does not call Claude when MLX succeeds", async () => {
+  it("does not call Claude when local LLM succeeds", async () => {
     let claudeCalled = false;
-    const mlxFn = async () => "MLX OK";
+    const localFn = async () => "Local OK";
     const claudeFn = async () => {
       claudeCalled = true;
       return "Claude";
     };
 
-    await analyzeWithProviders("test prompt", { claude: claudeFn, mlx: mlxFn });
+    await analyzeWithProviders("test prompt", { claude: claudeFn, local: localFn });
 
     expect(claudeCalled).toBe(false);
   });
 
   it("passes the prompt unchanged to the provider", async () => {
     let capturedPrompt = "";
-    const mlxFn = async (p: string) => {
+    const localFn = async (p: string) => {
       capturedPrompt = p;
       return "response";
     };
@@ -355,7 +355,7 @@ describe("analyzeWithProviders() — MLX-first, Claude fallback", () => {
 
     await analyzeWithProviders("my exact prompt text", {
       claude: claudeFn,
-      mlx: mlxFn,
+      local: localFn,
     });
 
     expect(capturedPrompt).toBe("my exact prompt text");
