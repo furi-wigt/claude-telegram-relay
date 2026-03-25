@@ -51,7 +51,7 @@ All user data lives outside the project directory in `~/.claude-relay/`:
 **Storage stack:**
 - **SQLite** (`~/.claude-relay/data/local.sqlite`) — messages, memory entries, goals, conversation summaries, logs
 - **Qdrant** (local vector DB) — semantic search over messages and memory
-- **MLX** (`mlx serve`) — text generation (Qwen3.5-9B) + embeddings (bge-m3) via OpenAI-compatible HTTP API on port 8800
+- **MLX** — two separate processes: `mlx serve` for text generation (Qwen3.5-9B, port 8800) and `mlx serve-embed` for embeddings (bge-m3, port 8801). Split prevents GPU lock contention.
 
 ## Prerequisites
 
@@ -113,42 +113,48 @@ MLX provides native Apple Silicon inference at ~2x Ollama speed. Used as the pri
 
 **What to tell them (macOS only):**
 1. Ensure Python 3.12+ is installed: `brew install python@3.12`
-2. Install the `mlx-qwen` CLI tool:
+2. Install the `mlx` CLI tool:
    ```bash
    uv tool install --editable tools/mlx-local --python python3.12
    ```
 3. Download model weights (~5.6 GB):
    ```bash
-   mlx-qwen pull
+   mlx pull
    ```
-4. Verify: `mlx-qwen generate "Say hello" -t 50`
+4. Verify: `mlx generate "Say hello" -t 50`
 
 > **Cloudflare/corporate proxy:** The tool auto-injects `/etc/ssl/Cloudflare_CA.pem` if present. No manual cert config needed.
 
 **Commands:**
 | Command | What it does |
 |---------|-------------|
-| `mlx-qwen generate "prompt"` | One-shot generation (thinking auto-disabled) |
-| `mlx-qwen serve` | OpenAI-compatible API on `localhost:8800` |
-| `mlx-qwen pull` | Download/update model weights |
-| `mlx-qwen info` | Show cached models and sizes |
+| `mlx generate "prompt"` | One-shot generation (thinking auto-disabled) |
+| `mlx serve` | Generation API on `localhost:8800` |
+| `mlx serve-embed` | Embedding-only API on `localhost:8801` |
+| `mlx pull` | Download/update model weights |
+| `mlx info` | Show cached models and sizes |
 
-### Step 2: Start MLX server (embeddings + text generation)
+### Step 2: Start MLX servers (generation + embeddings — two separate processes)
 
-The MLX server (`mlx serve`) handles both text generation (Qwen3.5-9B) and embeddings (bge-m3) on port 8800. No separate embedding service needed.
+Two processes eliminate GPU lock contention: generation (Qwen3.5-9B, port 8800) and embeddings (bge-m3, port 8801) each get their own Metal command queue.
 
 **What to tell them:**
-1. Start the server (model weights load on first request — allow ~30s):
+1. Start both servers (model weights load on first request — allow ~30s each):
    ```bash
-   mlx serve
+   mlx serve        # generation — port 8800
+   mlx serve-embed  # embeddings — port 8801 (separate terminal)
    ```
-2. Verify it's running: `curl http://localhost:8800/health`
+2. Verify both are running:
+   ```bash
+   curl http://localhost:8800/health   # → {"status":"ok","models":{...}}
+   curl http://localhost:8801/health   # → {"status":"ok","model":"...bge-m3..."}
+   ```
 
 **What you do:**
 1. The env vars are pre-configured. Optionally override in `~/.claude-relay/.env`:
    - `MLX_URL=http://localhost:8800`
    - `MLX_MODEL=mlx-community/Qwen3.5-9B-MLX-4bit`
-   - `EMBED_MODEL=bge-m3`
+   - `EMBED_URL=http://localhost:8801`
 
 > **Apple Silicon only.** MLX requires Apple Silicon (M1/M2/M3/M4). The relay uses MLX exclusively for all local inference.
 
@@ -174,11 +180,12 @@ docker run -d --name qdrant -p 6333:6333 -v ~/.qdrant/storage:/qdrant/storage qd
 
 ### Step 4: Verify
 
-1. Confirm MLX server is running: `curl http://localhost:8800/health` → `{"status":"ok"}`
-2. Confirm Qdrant is reachable: `curl http://localhost:6333/healthz`
+1. Confirm MLX generation server: `curl http://localhost:8800/health` → `{"status":"ok",...}`
+2. Confirm MLX embed server: `curl http://localhost:8801/health` → `{"status":"ok",...}`
+3. Confirm Qdrant is reachable: `curl http://localhost:6333/healthz`
 3. Confirm SQLite database path exists: `ls ~/.claude-relay/data/`
 
-**Done when:** MLX server responds on port 8800, Qdrant responds on port 6333, and `~/.claude-relay/data/` exists.
+**Done when:** MLX generation server responds on port 8800, embed server responds on port 8801, Qdrant responds on port 6333, and `~/.claude-relay/data/` exists.
 
 ---
 
@@ -383,10 +390,11 @@ When Claude is unavailable, the bot auto-switches to the local MLX model (Qwen3.
 
 **Steps:**
 
-1. Ensure `mlx serve` is running (Phase 2)
+1. Ensure both MLX servers are running (Phase 2): `mlx serve` (8800) and `mlx serve-embed` (8801)
 2. Save in `.env` (if not already done):
    - `MLX_URL=http://localhost:8800`
    - `MLX_MODEL=mlx-community/Qwen3.5-9B-MLX-4bit`
+   - `EMBED_URL=http://localhost:8801`
 3. Restart the relay and send a message
 
 **Done when:** Relay startup log shows `Fallback model available: MLX (Qwen3.5-9B)`.

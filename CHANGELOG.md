@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased] / 2026-03-26 — Split MLX into separate generation + embedding servers
+
+### Added
+- **tools/mlx-local**: `mlx serve-embed` command — standalone embedding-only server on port 8801. Runs as a separate process with its own Metal command queue, eliminating GPU lock contention with text generation.
+- **ecosystem.config.cjs**: `mlx-embed` PM2 service — always-on, auto-restart, dedicated logs.
+
+### Changed
+- **src/local/embed.ts**: Uses `EMBED_URL` env var (default `http://localhost:8801`) instead of `MLX_URL`. Embedding requests now route to the dedicated server, never blocked by generation.
+- **tools/mlx-local/server.py**: Extracted shared `_handle_embeddings()` and `_send_json()` helpers used by both unified and standalone servers.
+
 ## [Unreleased] / 2026-03-26 — Switch embed model to mlx-community/bge-m3-mlx-fp16
 
 ### Changed

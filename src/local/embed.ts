@@ -1,12 +1,18 @@
 /**
- * Local embedding via MLX server (bge-m3).
+ * Local embedding via MLX embedding server (bge-m3).
  * Returns 1024-dim dense vectors.
  *
- * Resilience: retries once with 2x timeout on AbortError, since MLX is
- * single-threaded and embedding requests queue behind text generation.
+ * Uses EMBED_URL (default localhost:8801) — a dedicated embedding-only server
+ * that runs in a separate process from text generation, eliminating GPU lock
+ * contention that caused embedding timeouts during long generation requests.
+ *
+ * Resilience: retries once with 2x timeout on AbortError.
  */
 
-import { getMlxBaseUrl } from "../mlx/index.ts";
+/** Embedding server URL — separate from generation server to avoid GPU lock contention. */
+function getEmbedBaseUrl(): string {
+  return process.env.EMBED_URL ?? "http://localhost:8801";
+}
 
 const EMBED_MODEL = process.env.EMBED_MODEL || "bge-m3";
 
@@ -27,7 +33,7 @@ export interface EmbedResult {
 async function fetchEmbed(input: string | string[], timeoutMs: number): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
-  return fetch(`${getMlxBaseUrl()}/v1/embeddings`, {
+  return fetch(`${getEmbedBaseUrl()}/v1/embeddings`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ model: EMBED_MODEL, input }),

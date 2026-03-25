@@ -112,6 +112,16 @@ def serve(model: str, embed_model: str, host: str, port: int):
     run_server(model=model, embed_model=embed_model, host=host, port=port)
 
 
+@main.command("serve-embed")
+@click.option("--model", "-m", default=DEFAULT_EMBED_MODEL, help="Embedding model ID")
+@click.option("--host", default="127.0.0.1")
+@click.option("--port", "-p", default=8801, type=int)
+def serve_embed(model: str, host: str, port: int):
+    """Start embedding-only HTTP server — separate process, no GPU lock contention."""
+    from mlx_local.server import run_embed_server
+    run_embed_server(embed_model=model, host=host, port=port)
+
+
 @main.command()
 @click.option("--model", "-m", default=DEFAULT_GEN_MODEL, help="Generation model ID")
 @click.option("--embed", is_flag=True, help="Also pull embedding model")
