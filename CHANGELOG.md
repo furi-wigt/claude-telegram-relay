@@ -1,5 +1,14 @@
 # Changelog
 
+## [Unreleased] / 2026-03-26 — Routine robustness: think-block stripping, local-only LLM
+
+### Fixed
+- **src/mlx/client.ts**: Strip `</think>` blocks from Qwen3.5 responses. The model always emits thinking content regardless of `enable_thinking:false`, which consumed max_tokens budget and caused truncated output in routines (recap narratives, task breakdowns, night reflections).
+- **src/mlx/client.ts**: Increased `DEFAULT_MAX_TOKENS` from 2048 to 4096. With thinking blocks consuming 500-1500 tokens, 2048 left insufficient headroom for actual content, causing truncated task decomposition JSON and incomplete night reflections.
+
+### Changed
+- **routines/night-summary.ts**: Removed Claude Haiku fallback — now uses local LLM (Osaurus/Qwen3.5-4B) exclusively. Simplified `analyzeWithProviders` → `analyzeWithLocalLLM` (single provider, no fallback chain). Night summary now passes `maxTokens: 4096` explicitly to accommodate the 500-700 word reflection prompt.
+
 ## [Unreleased] / 2026-03-26 — Split MLX into separate generation + embedding servers
 
 ### Added

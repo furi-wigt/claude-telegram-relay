@@ -9,7 +9,7 @@
  */
 
 const DEFAULT_TIMEOUT_MS = 120_000;
-const DEFAULT_MAX_TOKENS = 2048;
+const DEFAULT_MAX_TOKENS = 4096;
 const DEFAULT_LOCAL_MODEL = "mlx-community/Qwen3.5-4B-MLX-4bit";
 
 export function getMlxBaseUrl(): string {
@@ -76,9 +76,16 @@ export async function callMlxGenerate(
       choices?: Array<{ message?: { content?: string } }>;
     };
 
-    const content = data.choices?.[0]?.message?.content?.trim();
-    if (!content) {
+    const raw = data.choices?.[0]?.message?.content?.trim();
+    if (!raw) {
       throw new Error("Local LLM returned empty response");
+    }
+    // Qwen3.5 always emits a thinking block ("Thinking Process:...\n</think>\n\nActual answer")
+    // even when enable_thinking:false is set. Strip it to get only the actual content.
+    const thinkEnd = raw.indexOf("</think>");
+    const content = thinkEnd >= 0 ? raw.substring(thinkEnd + "</think>".length).trim() : raw;
+    if (!content) {
+      throw new Error("Local LLM response was empty after stripping think block");
     }
     return content;
   } finally {

@@ -1,10 +1,10 @@
 /**
  * Unit tests for routines/night-summary.ts
  *
- * Tests the three exported pure/provider-abstracted functions:
+ * Tests the exported pure/provider-abstracted functions:
  *   - buildReflectionPrompt()  — pure, no I/O
  *   - formatSummary()          — pure, no I/O
- *   - analyzeWithProviders()   — async, provider-injected
+ *   - analyzeWithLocalLLM()    — async, generator-injected
  *
  * Run: bun test routines/night-summary.test.ts
  */
@@ -15,7 +15,7 @@ import {
   buildDayTimeline,
   buildQaPairs,
   formatSummary,
-  analyzeWithProviders,
+  analyzeWithLocalLLM,
   type DayMessage,
   type DayFact,
   type DayGoal,
@@ -222,16 +222,10 @@ describe("formatSummary()", () => {
     expect(summary.toLowerCase()).toContain("night");
   });
 
-  it("contains 'Claude Haiku' in footer when provider is claude", () => {
-    const summary = formatSummary("Monday, February 21", 5, 2, "Analysis.", "claude");
-    expect(summary).toContain("Claude Haiku");
-  });
-
   it("contains the model name in footer when provider is local", () => {
     const summary = formatSummary("Monday, February 21", 5, 2, "Analysis.", "local");
     // Footer should contain the last segment of the model path (e.g. "Qwen3.5-4B-MLX-4bit")
     expect(summary.toLowerCase()).toContain("powered by");
-    expect(summary).not.toContain("Claude Haiku");
   });
 
   it("returns a non-empty string for zero counts", () => {
@@ -243,121 +237,46 @@ describe("formatSummary()", () => {
 });
 
 // ============================================================
-// analyzeWithProviders() — provider abstraction
+// analyzeWithLocalLLM() — local LLM only
 // ============================================================
 
-describe("analyzeWithProviders() — local LLM-first, Claude fallback", () => {
+describe("analyzeWithLocalLLM() — local LLM only", () => {
   it("returns local LLM's response when it succeeds", async () => {
-    const claudeFn = async () => "Claude's detailed reflection";
-    const localFn = async () => "Local LLM's reflection";
-
-    const result = await analyzeWithProviders("test prompt", {
-      claude: claudeFn,
-      local: localFn,
-    });
-
+    const generate = async () => "Local LLM's reflection";
+    const result = await analyzeWithLocalLLM("test prompt", generate);
     expect(result.text).toBe("Local LLM's reflection");
   });
 
   it("identifies 'local' as provider on success", async () => {
-    const claudeFn = async () => "Claude response";
-    const localFn = async () => "Local response";
-
-    const result = await analyzeWithProviders("test prompt", {
-      claude: claudeFn,
-      local: localFn,
-    });
-
+    const generate = async () => "Local response";
+    const result = await analyzeWithLocalLLM("test prompt", generate);
     expect(result.provider).toBe("local");
   });
 
-  it("falls back to Claude when local LLM throws", async () => {
-    const localFn = async (): Promise<string> => {
+  it("returns provider=null when local LLM fails", async () => {
+    const generate = async (): Promise<string> => {
       throw new Error("Local LLM unavailable");
     };
-    const claudeFn = async () => "Claude's reflection instead";
-
-    const result = await analyzeWithProviders("test prompt", {
-      claude: claudeFn,
-      local: localFn,
-    });
-
-    expect(result.text).toBe("Claude's reflection instead");
-  });
-
-  it("identifies 'claude' as provider when falling back", async () => {
-    const localFn = async (): Promise<string> => {
-      throw new Error("Local LLM unavailable");
-    };
-    const claudeFn = async () => "Claude fallback";
-
-    const result = await analyzeWithProviders("test prompt", {
-      claude: claudeFn,
-      local: localFn,
-    });
-
-    expect(result.provider).toBe("claude");
-  });
-
-  it("returns provider=null when both local LLM and Claude fail", async () => {
-    const localFn = async (): Promise<string> => {
-      throw new Error("Local LLM unavailable");
-    };
-    const claudeFn = async (): Promise<string> => {
-      throw new Error("Claude unavailable");
-    };
-
-    const result = await analyzeWithProviders("test prompt", {
-      claude: claudeFn,
-      local: localFn,
-    });
-
+    const result = await analyzeWithLocalLLM("test prompt", generate);
     expect(result.provider).toBeNull();
   });
 
-  it("returns a non-empty error text when both providers fail", async () => {
-    const localFn = async (): Promise<string> => {
+  it("returns a non-empty error text when local LLM fails", async () => {
+    const generate = async (): Promise<string> => {
       throw new Error("Local LLM unavailable");
     };
-    const claudeFn = async (): Promise<string> => {
-      throw new Error("Claude unavailable");
-    };
-
-    const result = await analyzeWithProviders("test prompt", {
-      claude: claudeFn,
-      local: localFn,
-    });
-
+    const result = await analyzeWithLocalLLM("test prompt", generate);
     expect(typeof result.text).toBe("string");
     expect(result.text.length).toBeGreaterThan(0);
   });
 
-  it("does not call Claude when local LLM succeeds", async () => {
-    let claudeCalled = false;
-    const localFn = async () => "Local OK";
-    const claudeFn = async () => {
-      claudeCalled = true;
-      return "Claude";
-    };
-
-    await analyzeWithProviders("test prompt", { claude: claudeFn, local: localFn });
-
-    expect(claudeCalled).toBe(false);
-  });
-
-  it("passes the prompt unchanged to the provider", async () => {
+  it("passes the prompt unchanged to the generator", async () => {
     let capturedPrompt = "";
-    const localFn = async (p: string) => {
+    const generate = async (p: string) => {
       capturedPrompt = p;
       return "response";
     };
-    const claudeFn = async () => "Claude";
-
-    await analyzeWithProviders("my exact prompt text", {
-      claude: claudeFn,
-      local: localFn,
-    });
-
+    await analyzeWithLocalLLM("my exact prompt text", generate);
     expect(capturedPrompt).toBe("my exact prompt text");
   });
 });
