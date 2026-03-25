@@ -53,15 +53,15 @@ beforeAll(() => {
     },
   });
 
-  // Point embed module at our test server
-  process.env.MLX_URL = `http://localhost:${server.port}`;
+  // Point embed module at our test server (dedicated embed server port)
+  process.env.EMBED_URL = `http://localhost:${server.port}`;
   // Use short timeouts for faster tests
   process.env.EMBED_TIMEOUT_MS = "500";
 });
 
 afterAll(() => {
   server.stop(true);
-  delete process.env.MLX_URL;
+  delete process.env.EMBED_URL;
   delete process.env.EMBED_TIMEOUT_MS;
 });
 
