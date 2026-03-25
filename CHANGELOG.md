@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased] / 2026-03-26 — Switch routines back to Qwen3.5-9B
+
+### Changed
+- **ecosystem.config.cjs**: `mlx` service now starts `mlx serve -m mlx-community/Qwen3.5-9B-MLX-4bit` (reverts 4B model selection).
+- **src/mlx/client.ts**: `DEFAULT_LOCAL_MODEL` updated to 9B. Applies when `LOCAL_LLM_MODEL` env var is not set.
+
 ## [Unreleased] / 2026-03-26 — Routine robustness: think-block stripping, local-only LLM
 
 ### Fixed
