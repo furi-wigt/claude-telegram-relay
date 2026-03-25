@@ -54,6 +54,25 @@ module.exports = {
       log_date_format: "YYYY-MM-DD HH:mm:ss Z",
     },
 
+    // Dedicated embedding server — port 8801, independent from generation.
+    // Eliminates embedding starvation caused by _gpu_lock contention on port 8800.
+    {
+      name: "mlx-embed",
+      script: MLX_BIN,
+      args: "serve-embed",
+      interpreter: "none",
+      exec_mode: "fork",
+      cwd: CWD,
+      instances: 1,
+      autorestart: true,
+      watch: false,
+      kill_timeout: 10000,
+      env: ENV,
+      error_file: LOGS_DIR + "/mlx-embed-error.log",
+      out_file: LOGS_DIR + "/mlx-embed-out.log",
+      log_date_format: "YYYY-MM-DD HH:mm:ss Z",
+    },
+
     // ── Core: always-on ────────────────────────────────────────────────────
     {
       name: "telegram-relay",

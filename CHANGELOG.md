@@ -1,5 +1,18 @@
 # Changelog
 
+## [Unreleased] / 2026-03-25 — MLX embed server — dedicated embedding process
+
+### Added
+- **tools/mlx-local**: `mlx serve-embed` command — starts an embedding-only HTTP server on port 8801 (default). Uses its own `threading.Lock` independent from the generation server's `_gpu_lock`, so bge-m3 embedding requests never queue behind long-running Qwen text generation calls.
+- **ecosystem.config.cjs**: `mlx-embed` PM2 service — runs `mlx serve-embed` alongside the existing `mlx` generation service.
+
+### Changed
+- **src/local/embed.ts**: `fetchEmbed` now targets `EMBED_URL` (default `http://localhost:8801`) instead of `MLX_URL`. Exports new `getEmbedBaseUrl()` for testability. Set `EMBED_URL` in `.env` to override.
+- **src/local/embed.test.ts**: Test mock server pointed via `EMBED_URL` instead of `MLX_URL`.
+
+### Fixed
+- Embedding starvation: previously a 60-90s Qwen generation held `_gpu_lock`, causing all embed requests to time out and cascade into vector search failures. Separate server eliminates contention entirely.
+
 ## [Unreleased] / 2026-03-25 — Streaming progress for /report generate
 
 ### Changed
