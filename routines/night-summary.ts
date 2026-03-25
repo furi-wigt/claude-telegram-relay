@@ -8,21 +8,19 @@
  */
 
 /**
- * Night Summary Routine (Local LLM-first, Haiku fallback)
+ * Night Summary Routine (Local LLM only — Osaurus / Qwen3.5-4B)
  *
  * Schedule: 11:00 PM daily (SGT)
  * Target: General AI Assistant group
  *
  * Pulls the day's messages, facts, and goals from local SQLite, then uses
  * local Osaurus (Qwen3.5-4B) to generate a detailed, motivational day-end
- * reflection formatted in Markdown. Falls back to Claude Haiku when Osaurus
- * is unavailable. Notifies the user if both providers fail.
+ * reflection formatted in Markdown. Notifies the user if the local LLM fails.
  *
  * Run manually: bun run routines/night-summary.ts
  */
 
 import { join } from "path";
-import { runPrompt } from "../integrations/claude/index.ts";
 import { callRoutineModel } from "../src/routines/routineModel.ts";
 import { sendAndRecord } from "../src/utils/routineMessage.ts";
 import { sendToGroup } from "../src/utils/sendToGroup.ts";
@@ -33,9 +31,6 @@ import { getPm2LogsDir } from "../config/observability.ts";
 import { getMlxModel } from "../src/mlx/client.ts";
 
 const LAST_RUN_FILE = join(getPm2LogsDir(), "night-summary.lastrun");
-
-const CLAUDE_MODEL = "claude-haiku-4-5-20251001";
-const CLAUDE_TIMEOUT_MS = 90_000;
 
 // ============================================================
 // TYPES (exported for tests)
@@ -77,7 +72,7 @@ export interface QaPair {
 
 export interface AnalysisResult {
   text: string;
-  provider: "claude" | "local" | null;
+  provider: "local" | null;
 }
 
 // ============================================================
@@ -298,7 +293,7 @@ export function formatSummary(
   messageCount: number,
   factCount: number,
   analysis: string,
-  provider: "claude" | "local" | null = null
+  provider: "local" | null = null
 ): string {
   const lines: string[] = [];
 
@@ -309,47 +304,32 @@ export function formatSummary(
   lines.push("");
   lines.push("---");
 
-  const providerLabel =
-    provider === "local"
-      ? getMlxModel().split("/").pop() ?? "Osaurus"
-      : provider === "claude"
-        ? "Claude Haiku"
-        : "Unknown";
+  const providerLabel = provider === "local"
+    ? getMlxModel().split("/").pop() ?? "Osaurus"
+    : "Unknown";
   lines.push(`*Powered by ${providerLabel}. Reply to reflect further.*`);
 
   return lines.join("\n");
 }
 
 /**
- * Attempt to generate a reflection using local LLM, falling back to Claude Haiku.
- * Returns the analysis text and which provider succeeded (or null if both failed).
+ * Generate a reflection using the local LLM (Osaurus).
+ * Returns the analysis text and provider ("local" or null on failure).
  */
-export async function analyzeWithProviders(
+export async function analyzeWithLocalLLM(
   prompt: string,
-  providers: {
-    claude: (p: string) => Promise<string>;
-    local: (p: string) => Promise<string>;
-  }
+  generate: (p: string) => Promise<string>
 ): Promise<AnalysisResult> {
   try {
-    const text = await providers.local(prompt);
+    const text = await generate(prompt);
     console.log("[night-summary] Local LLM succeeded");
     return { text, provider: "local" };
-  } catch (localError) {
-    console.warn("[night-summary] Local LLM failed, falling back to Haiku:", localError instanceof Error ? localError.message : localError);
-    try {
-      const text = await providers.claude(prompt);
-      console.log("[night-summary] Haiku fallback succeeded");
-      return { text, provider: "claude" };
-    } catch (claudeError) {
-      console.error("[night-summary] Both local LLM and Haiku failed:");
-      console.error("  Local:", localError);
-      console.error("  Claude:", claudeError);
-      return {
-        text: "Day review unavailable — both Osaurus and Claude are offline.",
-        provider: null,
-      };
-    }
+  } catch (error) {
+    console.error("[night-summary] Local LLM failed:", error instanceof Error ? error.message : error);
+    return {
+      text: "Day review unavailable — Osaurus is offline. Check that `osaurus serve` is running.",
+      provider: null,
+    };
   }
 }
 
@@ -445,17 +425,16 @@ async function analyzeDay(
 ): Promise<AnalysisResult> {
   const prompt = buildReflectionPrompt(messages, facts, goals, USER_NAME, summaries);
 
-  return analyzeWithProviders(prompt, {
-    claude: (p) => runPrompt(p, { model: CLAUDE_MODEL, timeoutMs: CLAUDE_TIMEOUT_MS }),
-    local: (p: string) => callRoutineModel(p, { label: "night-summary" }),
-  });
+  return analyzeWithLocalLLM(prompt, (p) =>
+    callRoutineModel(p, { label: "night-summary", maxTokens: 4096 })
+  );
 }
 
 // ============================================================
 // BUILD SUMMARY
 // ============================================================
 
-async function buildSummary(): Promise<{ summary: string; provider: "claude" | "local" | null }> {
+async function buildSummary(): Promise<{ summary: string; provider: "local" | null }> {
   const now = new Date();
   const dateStr = now.toLocaleDateString("en-US", {
     weekday: "long",
@@ -482,7 +461,7 @@ async function buildSummary(): Promise<{ summary: string; provider: "claude" | "
 // ============================================================
 
 async function main() {
-  console.log("Running Night Summary (Osaurus-first, Haiku fallback)...");
+  console.log("Running Night Summary (Local LLM — Osaurus)...");
 
   if (shouldSkipRecently(LAST_RUN_FILE, 2)) {
     console.log("[night-summary] Already ran within the last 2 hours, skipping.");
@@ -500,9 +479,8 @@ async function main() {
   if (provider === null) {
     const failureMessage =
       "⚠️ **Night summary unavailable**\n\n" +
-      "Both Osaurus and Claude are offline right now.\n" +
-      "- Osaurus: check that `osaurus serve` is running\n" +
-      "- Claude: check that the Claude CLI is installed and authenticated\n\n" +
+      "Local LLM (Osaurus) is offline.\n" +
+      "Check that `osaurus serve` is running.\n\n" +
       "Your day was still great — pick this up tomorrow! 🌟";
 
     await sendAndRecord(GROUPS.GENERAL.chatId, failureMessage, {
@@ -510,8 +488,8 @@ async function main() {
       agentId: "general-assistant",
       topicId: GROUPS.GENERAL.topicId,
     });
-    markRanToday(LAST_RUN_FILE); // failure message sent — mark ran to prevent duplicate sends
-    console.error("Night summary failed — both providers unavailable");
+    markRanToday(LAST_RUN_FILE);
+    console.error("Night summary failed — local LLM unavailable");
     process.exit(0); // failure message already sent to Telegram; exit 0 prevents PM2 restart loop
   }
 
