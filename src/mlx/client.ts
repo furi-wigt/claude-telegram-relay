@@ -2,15 +2,15 @@
  * Local LLM client — HTTP client for mlx serve (OpenAI-compatible).
  *
  * Calls /v1/chat/completions on the mlx PM2 service (default localhost:8800).
- * Model: Qwen3.5 4B (mlx-community/Qwen3.5-4B-MLX-4bit) on Apple Silicon.
+ * Model: Qwen3.5 9B (mlx-community/Qwen3.5-9B-MLX-4bit) on Apple Silicon.
  *
- * The `mlx` PM2 service runs `mlx serve -m mlx-community/Qwen3.5-4B-MLX-4bit`.
+ * The `mlx` PM2 service runs `mlx serve -m mlx-community/Qwen3.5-9B-MLX-4bit`.
  * Override with LOCAL_LLM_URL env var if running on a different port.
  */
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 const DEFAULT_MAX_TOKENS = 4096;
-const DEFAULT_LOCAL_MODEL = "mlx-community/Qwen3.5-4B-MLX-4bit";
+const DEFAULT_LOCAL_MODEL = "mlx-community/Qwen3.5-9B-MLX-4bit";
 
 export function getMlxBaseUrl(): string {
   return process.env.LOCAL_LLM_URL ?? "http://localhost:8800";

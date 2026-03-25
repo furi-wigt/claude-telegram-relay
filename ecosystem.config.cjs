@@ -38,13 +38,13 @@ module.exports = {
     },
 
     // ── Local LLM servers (mlx-local tool) ────────────────────────────────────
-    // mlx: text generation via Qwen3.5-4B-MLX-4bit (40 tok/s), port 8800
+    // mlx: text generation via Qwen3.5-9B-MLX-4bit (16 tok/s), port 8800
     // mlx-embed: embeddings via bge-m3-mlx-fp16, port 8801
     // Both run as always-on PM2 services — no manual start required.
     {
       name: "mlx",
       script: MLX_BIN,
-      args: "serve -m mlx-community/Qwen3.5-4B-MLX-4bit",
+      args: "serve -m mlx-community/Qwen3.5-9B-MLX-4bit",
       interpreter: "none",
       exec_mode: "fork",
       cwd: CWD,
