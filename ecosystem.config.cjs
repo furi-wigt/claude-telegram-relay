@@ -37,10 +37,26 @@ module.exports = {
       log_date_format: "YYYY-MM-DD HH:mm:ss Z",
     },
 
-    // NOTE: Osaurus (text gen) and Ollama (embeddings) run as standalone apps.
-    // Start them separately:
-    //   osaurus serve          → port 1337 (text generation)
-    //   ollama serve           → port 11434 (embeddings via bge-m3)
+    // ── Local LLM servers (mlx-local tool) ────────────────────────────────────
+    // mlx: text generation via Qwen3.5-4B-MLX-4bit (40 tok/s), port 8800
+    // mlx-embed: embeddings via bge-m3-mlx-fp16, port 8801
+    // Both run as always-on PM2 services — no manual start required.
+    {
+      name: "mlx",
+      script: MLX_BIN,
+      args: "serve -m mlx-community/Qwen3.5-4B-MLX-4bit",
+      interpreter: "none",
+      exec_mode: "fork",
+      cwd: CWD,
+      instances: 1,
+      autorestart: true,
+      watch: false,
+      kill_timeout: 5000,
+      env: ENV,
+      error_file: LOGS_DIR + "/mlx-error.log",
+      out_file: LOGS_DIR + "/mlx-out.log",
+      log_date_format: "YYYY-MM-DD HH:mm:ss Z",
+    },
 
     {
       name: "mlx-embed",

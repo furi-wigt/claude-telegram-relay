@@ -1,11 +1,11 @@
 /**
- * Local LLM client — HTTP client for Osaurus (or any OpenAI-compatible server).
+ * Local LLM client — HTTP client for mlx serve (OpenAI-compatible).
  *
- * Calls /v1/chat/completions on Osaurus (default localhost:1337).
- * Model: Qwen3.5 4B via Osaurus on Apple Silicon.
+ * Calls /v1/chat/completions on the mlx PM2 service (default localhost:8800).
+ * Model: Qwen3.5 4B (mlx-community/Qwen3.5-4B-MLX-4bit) on Apple Silicon.
  *
- * Install: `brew install --cask osaurus`
- * Serve:   `osaurus serve` (or launch Osaurus.app)
+ * The `mlx` PM2 service runs `mlx serve -m mlx-community/Qwen3.5-4B-MLX-4bit`.
+ * Override with LOCAL_LLM_URL env var if running on a different port.
  */
 
 const DEFAULT_TIMEOUT_MS = 120_000;
@@ -13,7 +13,7 @@ const DEFAULT_MAX_TOKENS = 4096;
 const DEFAULT_LOCAL_MODEL = "mlx-community/Qwen3.5-4B-MLX-4bit";
 
 export function getMlxBaseUrl(): string {
-  return process.env.LOCAL_LLM_URL ?? "http://localhost:1337";
+  return process.env.LOCAL_LLM_URL ?? "http://localhost:8800";
 }
 
 export function getMlxModel(): string {
