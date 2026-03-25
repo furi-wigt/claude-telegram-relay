@@ -14,6 +14,7 @@ const ENV = {
 };
 
 const QDRANT_BIN = process.env.QDRANT_BIN || HOME + "/.qdrant/bin/qdrant";
+const MLX_BIN    = process.env.MLX_BIN    || HOME + "/.local/share/uv/tools/mlx-local/bin/mlx";
 
 module.exports = {
   apps: [
