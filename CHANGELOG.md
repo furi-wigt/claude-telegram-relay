@@ -1,5 +1,22 @@
 # Changelog
 
+## [Unreleased] / 2026-03-26 — Morning calendar gap-fill & meeting tasks
+
+### Added
+- **src/utils/atomicBreakdown.ts**: `computeFreeBlocks()` — computes available time windows between calendar events with 15-min buffers.
+- **src/utils/atomicBreakdown.ts**: `injectMeetingTasks()` — generates structural pre-meeting ("Prep block reserved") and post-meeting ("Process notes") tasks for meetings >30min.
+- **src/utils/atomicBreakdown.ts**: `formatDevTodosMessage()` — formats dev todos as a standalone reference message.
+- **src/utils/atomicBreakdown.ts**: `getMaxAtomicTasks()` — reads `MAX_ATOMIC_TASKS` env var (default 20, replaces hardcoded 12).
+- **src/utils/atomicBreakdown.ts**: Visual tiering — Priority section + "If time allows" section in task rendering.
+- **src/utils/atomicBreakdown.ts**: Meeting-task markers: `🔜` pre-meeting, `📝` post-meeting.
+- **src/utils/atomicBreakdown.test.ts**: 24 unit tests covering all new functions.
+
+### Changed
+- **src/utils/atomicBreakdown.ts**: `AtomicTask` interface extended with optional `taskType` and `tier` fields (backward compatible).
+- **src/utils/atomicBreakdown.ts**: `formatCalendarForPrompt()` now includes event notes (truncated to 200 chars).
+- **src/utils/atomicBreakdown.ts**: `breakdownTasks()` prompt rewritten — LLM now fills free time blocks between meetings with deadline-first priority.
+- **routines/morning-summary.ts**: Dev todos sent as separate Telegram message after main briefing. Dev todos no longer passed to LLM for time-slotting.
+
 ## [Unreleased] / 2026-03-26 — Fix MLX Metal OOM via KV cache and allocator limits
 
 ### Fixed
