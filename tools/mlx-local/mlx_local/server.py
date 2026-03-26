@@ -18,6 +18,15 @@ import mlx.core as mx
 # to prevent concurrent command buffer access crashes.
 _gpu_lock = threading.Lock()
 
+# Memory caps — prevent Metal OOM after long-running sessions.
+# Qwen3.5-9B-4bit: ~5.6 GB. bge-m3-fp16: ~0.5 GB. Total model weights: ~6.1 GB.
+# M3 Pro Metal max recommended: 13.3 GB → ~7.2 GB headroom.
+_GB = 1 << 30
+_PROMPT_CACHE_MAX_SEQUENCES = 4       # down from default 10; single-user workload needs ≤4
+_PROMPT_CACHE_MAX_BYTES = 3 * _GB     # hard eviction ceiling for KV caches
+_MLX_CACHE_LIMIT_GEN = 1 * _GB       # MLX allocator free-tensor cap (generation server)
+_MLX_CACHE_LIMIT_EMBED = _GB // 2    # smaller cap for embed server (no KV caches)
+
 
 class EmbeddingModel:
     """Lazy-loaded embedding model with thread-safe inference."""
@@ -77,8 +86,8 @@ def _build_args(model: str) -> argparse.Namespace:
         prompt_concurrency=8,
         decode_concurrency=32,
         prefill_step_size=2048,
-        prompt_cache_size=10,
-        prompt_cache_bytes=None,
+        prompt_cache_size=_PROMPT_CACHE_MAX_SEQUENCES,
+        prompt_cache_bytes=_PROMPT_CACHE_MAX_BYTES,
         pipeline=False,
         log_level="INFO",
         max_tokens=4096,
@@ -181,6 +190,9 @@ def run_server(model: str, embed_model: str, host: str, port: int):
     if mx.metal.is_available():
         wired_limit = mx.device_info()["max_recommended_working_set_size"]
         mx.set_wired_limit(wired_limit)
+        # Cap the MLX allocator's free-tensor cache to prevent slow creep of
+        # unreferenced Metal buffers accumulating across long-running sessions.
+        mx.set_cache_limit(_MLX_CACHE_LIMIT_GEN)
 
     logging.basicConfig(
         level=logging.INFO,
@@ -233,6 +245,8 @@ def run_embed_server(embed_model: str, host: str, port: int):
     if mx.metal.is_available():
         wired_limit = mx.device_info()["max_recommended_working_set_size"]
         mx.set_wired_limit(wired_limit)
+        # Smaller allocator cap — embed server has no KV caches, only inference tensors.
+        mx.set_cache_limit(_MLX_CACHE_LIMIT_EMBED)
 
     server = HTTPServer((host, port), EmbedHandler)
     try:
