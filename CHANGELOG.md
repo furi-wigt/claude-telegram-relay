@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased] / 2026-03-26 — Fix MLX Metal OOM via KV cache and allocator limits
+
+### Fixed
+- **mlx-local/server**: Metal GPU OOM crashes after long-running sessions caused by unbounded KV cache growth. Root cause: `prompt_cache_bytes=None` → `LRUPromptCache` held unlimited memory across 10 cached sequences. Fix: reduced `prompt_cache_size` to 4 sequences, capped `prompt_cache_bytes` at 3 GB, and called `mx.set_cache_limit()` on both generation (1 GB) and embed (512 MB) servers to prevent allocator free-tensor accumulation. Total Metal budget: 10.1 GB < 13.3 GB recommended ceiling on M3 Pro 18 GB.
+
 ## [Unreleased] / 2026-03-26 — Switch routines back to Qwen3.5-9B
 
 ### Changed
