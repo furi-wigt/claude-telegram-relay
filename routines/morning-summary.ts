@@ -39,7 +39,7 @@ import { scanPendingE2ETests, formatPendingE2ESection } from "../src/routines/pe
 import { shouldSkipToday, markRanToday } from "../src/routines/runOnceGuard.ts";
 import { getPm2LogsDir } from "../config/observability.ts";
 import { fetchThingsTasks } from "../src/utils/t3Helper.ts";
-import { breakdownTasks, scanPendingTodos, formatAtomicTaskBlock, type AtomicTask } from "../src/utils/atomicBreakdown.ts";
+import { breakdownTasks, scanPendingTodos, formatAtomicTaskBlock, formatDevTodosMessage, type AtomicTask } from "../src/utils/atomicBreakdown.ts";
 import { storeTaskSession, buildTaskKeyboardJSON } from "../src/callbacks/taskSuggestionHandler.ts";
 
 const LAST_RUN_FILE = join(getPm2LogsDir(), "morning-summary.lastrun");
@@ -323,6 +323,7 @@ async function buildEnhancedBriefing(): Promise<{
   message: string;
   tasks: AtomicTask[];
   replyMarkup?: unknown;
+  devTodosMessage: string | null;
 }> {
   const now = new Date();
   const dateStr = now.toLocaleDateString("en-US", {
@@ -349,7 +350,9 @@ async function buildEnhancedBriefing(): Promise<{
   // Sequential: both hit local LLM (serialized via mutex), so run one after the other
   const goalsForBreakdown = goals.map(g => ({ content: g.content, deadline: g.deadline }));
   const recapNarrative = await generateRecapNarrative(activity);
-  const atomicTasks = await breakdownTasks(thingsTasks, pendingTodos, calendarEvents, goalsForBreakdown);
+  // Dev todos kept separate — not passed to LLM for time-slotting
+  const atomicTasks = await breakdownTasks(thingsTasks, [], calendarEvents, goalsForBreakdown);
+  const devTodosMessage = formatDevTodosMessage(pendingTodos);
 
   const lines: string[] = [];
 
@@ -433,7 +436,7 @@ async function buildEnhancedBriefing(): Promise<{
     replyMarkup = block.replyMarkup;
   }
 
-  return { message: lines.join("\n"), tasks: atomicTasks, replyMarkup };
+  return { message: lines.join("\n"), tasks: atomicTasks, replyMarkup, devTodosMessage };
 }
 
 // ============================================================
@@ -472,7 +475,7 @@ async function main() {
     process.exit(0); // graceful skip — PM2 will retry on next cron cycle
   }
 
-  const { message, tasks, replyMarkup } = await buildEnhancedBriefing();
+  const { message, tasks, replyMarkup, devTodosMessage } = await buildEnhancedBriefing();
   await sendAndRecord(GROUPS.GENERAL.chatId, message, {
     routineName: "morning-summary",
     agentId: "general-assistant",
@@ -481,6 +484,20 @@ async function main() {
   });
   markRanToday(LAST_RUN_FILE);
   console.log("Enhanced morning summary sent to General group");
+
+  // Send dev todos as a separate reference message
+  if (devTodosMessage) {
+    try {
+      await sendAndRecord(GROUPS.GENERAL.chatId, devTodosMessage, {
+        routineName: "morning-summary",
+        agentId: "general-assistant",
+        topicId: GROUPS.GENERAL.topicId,
+      });
+      console.log("Dev todos message sent");
+    } catch (err) {
+      console.warn("[morning-summary] Failed to send dev todos:", err instanceof Error ? err.message : err);
+    }
+  }
 
   if (tasks.length > 0) {
     console.log(`${tasks.length} tasks suggested, awaiting user confirmation`);

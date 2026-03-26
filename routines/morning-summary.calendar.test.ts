@@ -84,6 +84,7 @@ mock.module("../src/utils/atomicBreakdown.ts", () => ({
   breakdownTasks: async () => [],
   scanPendingTodos: async () => [],
   formatAtomicTaskBlock: () => ({ text: "", replyMarkup: undefined }),
+  formatDevTodosMessage: () => null,
 }));
 
 // -- Task suggestion handler mock --
