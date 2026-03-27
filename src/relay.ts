@@ -2754,7 +2754,17 @@ const docAlbumAccumulators = new Map<string, DocAlbumAccumulator>();
 // ── Document album processor (Phase 2 of two-phase approach) ─────────────────
 
 async function processDocumentAlbum(acc: DocAlbumAccumulator): Promise<void> {
-  console.log(`[doc-album] Window closed — downloading ${acc.entries.length} file(s) in parallel`);
+  // Determine ingest intent before any download.
+  // A document arriving with media_group_id (e.g. sent alongside an image) must NOT
+  // auto-ingest — only ingest when explicitly requested via caption or pending state.
+  const docKey = streamKey(acc.chatId, acc.threadId);
+  const isExplicitIngest = /^\/doc\s+ingest/i.test(acc.caption ?? "");
+  const pendingState = pendingIngestStates.get(docKey);
+  const hasPendingIngest = pendingState?.stage === "await-content";
+  const isIngestIntent = isExplicitIngest || hasPendingIngest;
+  if (hasPendingIngest) pendingIngestStates.delete(docKey); // consume
+
+  console.log(`[doc-album] Window closed — downloading ${acc.entries.length} file(s) in parallel (ingest=${isIngestIntent})`);
   const indicator = new ProgressIndicator();
   indicator.setModelLabel("📄 Doc");
   indicator.start(acc.chatId, bot, acc.threadId, {}).catch(() => {});
@@ -2784,15 +2794,47 @@ async function processDocumentAlbum(acc: DocAlbumAccumulator): Promise<void> {
       return;
     }
 
-    // Phase 2: sequential ingestion with progress updates
+    // ── Non-ingest path: extract text and send to Claude as context ───────────
+    if (!isIngestIntent) {
+      await indicator.finish();
+      const caption = acc.caption || "";
+      const contextParts: string[] = [];
+      const tempPaths: string[] = [];
+      try {
+        for (const { buffer, entry } of downloaded) {
+          const ext = extname(entry.fileName).toLowerCase();
+          if (!SUPPORTED_DOC_EXTS.has(ext)) continue;
+          const tempPath = join(UPLOADS_DIR, `${Date.now()}_${Math.random()}_${entry.fileName}`);
+          tempPaths.push(tempPath);
+          await writeFile(tempPath, buffer);
+          const extracted = await extractFileText(tempPath, ext);
+          if (extracted.text.trim()) {
+            contextParts.push(`[Attached: ${entry.fileName}]\n${extracted.text}`);
+          }
+        }
+      } finally {
+        for (const p of tempPaths) await unlink(p).catch(() => {});
+      }
+      if (contextParts.length === 0) {
+        await acc.ctx.reply("❌ Could not extract text from the attached file(s).").catch(() => {});
+        return;
+      }
+      const userPrompt = caption || "Summarise the attached file(s).";
+      const fullPrompt = contextParts.join("\n\n") + "\n\n" + userPrompt;
+      await processTextMessage(acc.chatId, acc.threadId, fullPrompt, acc.ctx);
+      return;
+    }
+
+    // ── Ingest path ───────────────────────────────────────────────────────────
     void indicator.update(`Downloaded ${downloaded.length} file(s), indexing…`, { immediate: true });
+    const ingestTitleBase = hasPendingIngest ? (pendingState?.title ?? "") : "";
     const ingestResults = await Promise.allSettled(
       downloaded.map(async ({ buffer, entry }, idx) => {
         const timestamp = Date.now() + Math.random();
         const tempPath = join(UPLOADS_DIR, `${timestamp}_${entry.fileName}`);
         try {
           await writeFile(tempPath, buffer);
-          const title = acc.caption || basename(entry.fileName, extname(entry.fileName));
+          const title = ingestTitleBase || acc.caption || basename(entry.fileName, extname(entry.fileName));
           void indicator.update(`[${idx + 1}/${downloaded.length}] Processing ${entry.fileName}…`, { immediate: true });
           const result = await ingestDocument(tempPath, title, {
             mimeType: entry.mimeType,
