@@ -1,6 +1,6 @@
 # Claude Telegram Relay — User Guide
 
-**Version**: 1.1 | **Date**: 2026-03-23
+**Version**: 1.2 | **Date**: 2026-03-28
 
 ---
 
@@ -17,6 +17,7 @@
 9. [Voice Messages](#voice-messages)
 10. [Starting Fresh](#starting-fresh)
 11. [Troubleshooting](#troubleshooting)
+12. [Self-Learning System](#self-learning-system)
 
 ---
 
@@ -123,6 +124,7 @@ By default the bot uses **Claude Sonnet**. You can override per-message with a p
 | `/memory` | Browse memory: facts, goals, dates, preferences | `/memory` |
 | `/remember [text]` | Manually save a fact to memory | `/remember I prefer dark mode` |
 | `/forget [text]` | Remove a fact from memory | `/forget old fact about X` |
+| `/reflect [feedback]` | Save an explicit learning for Jarvis | `/reflect Don't use ecosystem-wide PM2 restart` |
 | `/history` | View recent conversation messages | `/history` |
 
 ### Goal Commands
@@ -255,6 +257,29 @@ Tap any category to browse entries. Each entry shows a snippet and options to de
 |------|-------|---------|
 | **Chat-scoped** | Visible only to the agent in that specific group | Architecture decisions for AWS group |
 | **Global** (`[REMEMBER_GLOBAL:]`) | Visible to all agents across all groups | Your name, timezone, preferences |
+
+### Self-Learning System
+
+The bot captures **learnings** automatically from correction signals in your conversations. Learnings are stored in memory with `type="learning"` and promoted to `~/.claude/CLAUDE.md` after human review.
+
+**How learnings are captured:**
+- **Inline corrections** (confidence 0.70) — when you correct the assistant during a coding session, the pattern is stored automatically at 11pm
+- **Explicit feedback** (confidence 0.85) — use `/reflect` to save any rule immediately:
+  ```
+  /reflect Always use TDD for small utility functions
+  /reflect Don't restart PM2 ecosystem-wide — use named service restart
+  ```
+- **LLM synthesis** (confidence 0.40) — the night summary synthesizes generalizable rules from multiple corrections in the same session
+
+**Weekly Retro (Sundays 9am SGT):**
+Every Sunday morning, Jarvis sends a "Learning Retro" with promotion candidates:
+- Tap **Promote** → rule is appended to `~/.claude/CLAUDE.md`
+- Tap **Reject** → confidence -0.2 (lowers priority)
+- Tap **Later** → deferred to next Sunday
+
+Only learnings with confidence ≥0.70 and age ≥3 days are surfaced.
+
+For the full technical picture, see [memory-system.md](memory-system.md#learning-memory--self-learning-pipeline).
 
 ---
 

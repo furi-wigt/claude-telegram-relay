@@ -1,6 +1,6 @@
 # Claude Telegram Relay — Routines System
 
-**Version**: 1.0 | **Date**: 2026-03-21
+**Version**: 1.1 | **Date**: 2026-03-28
 
 ---
 
@@ -67,6 +67,10 @@ graph TB
             WE[weekly-etf\n0 7 * * *\nautorestart: false]
             ES[etf-52week-screener\n0 7 * * *\nautorestart: false]
         end
+
+        subgraph Learning["Learning Routines"]
+            WR[weekly-retro\n0 9 * * 0\nautorestart: false]
+        end
     end
 ```
 
@@ -86,6 +90,7 @@ graph TB
 | `memory-dedup-review` | `routines/memory-dedup-review.ts` | `0 16 * * 5` | false | General | Friday 4pm: semantic dedup with user review |
 | `weekly-etf` | `routines/weekly-etf.ts` | `0 7 * * *` | false | General | Daily 7am: ETF performance screening |
 | `etf-52week-screener` | `routines/etf-52week-screener.ts` | `0 7 * * *` | false | General | Daily 7am: 52-week high/low screener |
+| `weekly-retro` | `routines/weekly-retro.ts` | `0 9 * * 0` | false | General | Sunday 9am: learning retro with Promote/Reject/Later |
 
 ---
 
@@ -122,6 +127,9 @@ gantt
     watchdog (every 2hr)      :02:00, 3m
     log-cleanup (Mon 6am)     :06:00, 5m
     memory-dedup-review (Fri 4pm) :16:00, 10m
+
+    section Learning (weekly)
+    weekly-retro (Sun 9am)    :09:00, 5m
 ```
 
 ---
@@ -188,6 +196,7 @@ Sends an evening review:
 - Messages and decisions from today
 - Unreviewed or new facts extracted today
 - Upcoming deadlines in the next 7 days
+- **Learnings Captured Today** — runs correction detection on today's sessions and appends any captured learning patterns
 
 ---
 
@@ -260,6 +269,22 @@ Maintenance task:
 - Groups near-duplicate facts (cosine ≥ 0.85)
 - Sends Telegram message listing clusters with inline "Delete" buttons
 - User reviews and confirms deletions interactively
+
+---
+
+### `weekly-retro` — Weekly Learning Retrospective
+
+**Schedule**: `0 9 * * 0` (Sunday 9am SGT)
+**Target**: General AI Assistant group
+
+Surfaces high-confidence learnings for human-gated promotion to `~/.claude/CLAUDE.md`:
+- Queries learning candidates: `type='learning'`, confidence ≥ 0.70, age ≥ 3 days
+- Sends one Telegram message per candidate with **Promote / Reject / Later** inline keyboard
+- **Promote** → appends rule to the "Learned Preferences" section in `~/.claude/CLAUDE.md`
+- **Reject** → confidence -0.2 (deprioritises for future retros)
+- **Later** → deferred to next Sunday
+
+Also sends a weekly stats header: total learnings this week, correction-derived count, total promoted rules.
 
 ---
 
