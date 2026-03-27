@@ -1638,6 +1638,42 @@ function startTypingIndicator(ctx: Context): ReturnType<typeof setInterval> {
 }
 
 /**
+ * Returns an onToolUse callback that tracks git worktree lifecycle events and
+ * keeps session.activeCwd in sync so the footer shows the correct branch.
+ *
+ * Events handled:
+ *   git worktree add <path>   → set activeCwd to worktree dir (branch enters)
+ *   git worktree remove <…>   → reset activeCwd to project root (branch exits)
+ *   git checkout master|main  → reset activeCwd to project root (branch exits)
+ */
+function makeWorktreeTracker(session: { activeCwd?: string; cwd?: string }): (toolName: string, input: Record<string, unknown>) => void {
+  return (toolName, input) => {
+    if (toolName !== "Bash" && toolName !== "bash") return;
+    const cmd = (input.command as string) ?? "";
+
+    // Worktree creation: move activeCwd into the new worktree
+    const addMatch = cmd.match(/git\s+worktree\s+add\s+(\S+)/);
+    if (addMatch) {
+      const relPath = addMatch[1];
+      const base = session.activeCwd || PROJECT_DIR || process.cwd();
+      const newCwd = relPath.startsWith("/") ? relPath : join(base, relPath);
+      console.log(`[worktree-tracker] worktree add — activeCwd: ${session.activeCwd} → ${newCwd}`);
+      session.activeCwd = newCwd;
+      return;
+    }
+
+    // Worktree removal or checkout to main → reset activeCwd to project root
+    const isWorktreeRemove = /git\s+worktree\s+remove/.test(cmd);
+    const isCheckoutMain   = /git\s+checkout\s+(master|main)\b/.test(cmd);
+    if (isWorktreeRemove || isCheckoutMain) {
+      const root = session.cwd || PROJECT_DIR || process.cwd();
+      console.log(`[worktree-tracker] ${isWorktreeRemove ? "worktree remove" : "checkout master/main"} — activeCwd reset to: ${root}`);
+      session.activeCwd = root;
+    }
+  };
+}
+
+/**
  * Core Claude processing for a single text message.
  * Extracted so it can be reused by /new <prompt> and the normal message handler.
  */
@@ -1913,20 +1949,7 @@ async function processTextMessage(
         model: resolvedModel,
         cwd: session.activeCwd,
         onQuestion,
-        onToolUse: (toolName, input) => {
-          // Detect worktree creation: git worktree add <path> -b <branch>
-          if (toolName === "Bash" || toolName === "bash") {
-            const cmd = (input.command as string) ?? "";
-            const wtMatch = cmd.match(/git\s+worktree\s+add\s+(\S+)/);
-            if (wtMatch) {
-              const relPath = wtMatch[1];
-              const base = session.activeCwd || PROJECT_DIR || process.cwd();
-              const newCwd = relPath.startsWith("/") ? relPath : join(base, relPath);
-              console.log(`[onToolUse] Detected worktree creation — updating activeCwd: ${session.activeCwd} → ${newCwd}`);
-              session.activeCwd = newCwd;
-            }
-          }
-        },
+        onToolUse: makeWorktreeTracker(session),
       });
       await indicator.finish(true);
     } catch (claudeErr) {
@@ -1971,17 +1994,7 @@ async function processTextMessage(
             model: resolvedModel,
             cwd: session.cwd ?? PROJECT_DIR ?? undefined,
             onQuestion,
-            onToolUse: (toolName, input) => {
-              if (toolName === "Bash" || toolName === "bash") {
-                const cmd = (input.command as string) ?? "";
-                const wtMatch = cmd.match(/git\s+worktree\s+add\s+(\S+)/);
-                if (wtMatch) {
-                  const relPath = wtMatch[1];
-                  const base = session.activeCwd || PROJECT_DIR || process.cwd();
-                  session.activeCwd = relPath.startsWith("/") ? relPath : join(base, relPath);
-                }
-              }
-            },
+            onToolUse: makeWorktreeTracker(session),
           });
           await indicator.finish(true);
           staleCorrected = true;  // retry succeeded — suppress false resumeFailed detection below
