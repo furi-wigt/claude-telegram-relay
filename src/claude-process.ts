@@ -316,6 +316,11 @@ export interface ClaudeStreamOptions {
    * When not set, AskUserQuestion events are logged but otherwise ignored (stream continues).
    */
   onQuestion?: (event: AskUserQuestionEvent) => Promise<Record<string, string>>;
+  /**
+   * Called on every tool_use event with the raw tool name and input.
+   * Use to detect cwd changes (e.g. git worktree add) without parsing display strings.
+   */
+  onToolUse?: (toolName: string, input: Record<string, unknown>) => void;
 }
 
 /**
@@ -649,6 +654,7 @@ export async function claudeStream(
               if (block.type === "tool_use") {
                 resetIdleTimer();
                 turnCount++;
+                options?.onToolUse?.(block.name ?? "unknown", block.input ?? {});
                 if (block.name === "AskUserQuestion") {
                   await handleAskUserQuestion(block.id ?? "", block.input ?? {});
                 } else {
@@ -671,6 +677,7 @@ export async function claudeStream(
             // Top-level tool_use events.
             resetIdleTimer();
             turnCount++;
+            options?.onToolUse?.(event.name as string ?? "unknown", (event.input as Record<string, unknown>) ?? {});
             if (event.name === "AskUserQuestion") {
               await handleAskUserQuestion(
                 event.id as string ?? "",

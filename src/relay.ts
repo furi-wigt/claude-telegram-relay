@@ -722,6 +722,8 @@ async function callClaude(
      * Set by processTextMessage; unset for routines and fallback callers.
      */
     onQuestion?: (event: AskUserQuestionEvent) => Promise<Record<string, string>>;
+    /** Raw tool_use event callback — used to detect worktree/branch changes. */
+    onToolUse?: (toolName: string, input: Record<string, unknown>) => void;
   }
 ): Promise<string> {
   console.log(`Calling Claude: ${prompt.substring(0, 50)}...`);
@@ -741,6 +743,7 @@ async function callClaude(
       claudePath: CLAUDE_PATH,
       onProgress: options?.onProgress,
       onSessionId: options?.onSessionId,
+      onToolUse: options?.onToolUse,
       signal: controller.signal,
       model: options?.model,
       onQuestion: options?.onQuestion,
@@ -1910,6 +1913,20 @@ async function processTextMessage(
         model: resolvedModel,
         cwd: session.activeCwd,
         onQuestion,
+        onToolUse: (toolName, input) => {
+          // Detect worktree creation: git worktree add <path> -b <branch>
+          if (toolName === "Bash" || toolName === "bash") {
+            const cmd = (input.command as string) ?? "";
+            const wtMatch = cmd.match(/git\s+worktree\s+add\s+(\S+)/);
+            if (wtMatch) {
+              const relPath = wtMatch[1];
+              const base = session.activeCwd || PROJECT_DIR || process.cwd();
+              const newCwd = relPath.startsWith("/") ? relPath : join(base, relPath);
+              console.log(`[onToolUse] Detected worktree creation — updating activeCwd: ${session.activeCwd} → ${newCwd}`);
+              session.activeCwd = newCwd;
+            }
+          }
+        },
       });
       await indicator.finish(true);
     } catch (claudeErr) {
@@ -1954,6 +1971,17 @@ async function processTextMessage(
             model: resolvedModel,
             cwd: session.cwd ?? PROJECT_DIR ?? undefined,
             onQuestion,
+            onToolUse: (toolName, input) => {
+              if (toolName === "Bash" || toolName === "bash") {
+                const cmd = (input.command as string) ?? "";
+                const wtMatch = cmd.match(/git\s+worktree\s+add\s+(\S+)/);
+                if (wtMatch) {
+                  const relPath = wtMatch[1];
+                  const base = session.activeCwd || PROJECT_DIR || process.cwd();
+                  session.activeCwd = relPath.startsWith("/") ? relPath : join(base, relPath);
+                }
+              }
+            },
           });
           await indicator.finish(true);
           staleCorrected = true;  // retry succeeded — suppress false resumeFailed detection below

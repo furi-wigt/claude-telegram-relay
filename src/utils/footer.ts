@@ -61,7 +61,11 @@ export function getGitBranch(cwd?: string): string | null {
  * Falls back to process.cwd() when no path is provided.
  */
 export function getCwdName(cwd?: string): string {
-  return basename(cwd || process.cwd());
+  const dir = cwd || process.cwd();
+  // When working in a worktree, show the project root name, not the worktree leaf dir
+  const wtIdx = dir.indexOf("/.claude/worktrees/");
+  if (wtIdx !== -1) return basename(dir.slice(0, wtIdx));
+  return basename(dir);
 }
 
 // ── [NEXT: …] extraction ─────────────────────────────────────────────────────
