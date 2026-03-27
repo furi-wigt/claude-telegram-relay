@@ -55,6 +55,8 @@ import { getTROQAState, appendQAAnswer } from "./tro/troQAState.ts";
 import { registerDedupReviewCallbackHandler } from "./memory/dedupReviewCallbackHandler.ts";
 import { registerConflictCallbackHandler } from "./memory/conflictCallbackHandler.ts";
 import { registerTaskSuggestionHandler } from "./callbacks/taskSuggestionHandler.ts";
+import { registerLearningRetroHandler } from "./callbacks/learningRetroCallbackHandler.ts";
+import { registerReflectCommand } from "./callbacks/reflectCommandHandler.ts";
 import { InteractiveStateMachine } from "./interactive/index.ts";
 import { registerReportCommands, hasActiveReportQA, RPQ_PREFIX } from "./report/index.ts";
 import { claudeText, claudeStream, enrichProgressText, type AskUserQuestionItem, type AskUserQuestionEvent } from "./claude-process.ts";
@@ -662,6 +664,12 @@ registerConflictCallbackHandler(bot);
 
 // Register task suggestion callback handler (ts:all / ts:skip from morning-summary / smart-checkin)
 registerTaskSuggestionHandler(bot);
+
+// Register learning retro callback handler (lr:promote / lr:reject / lr:later from weekly-retro)
+registerLearningRetroHandler(bot);
+
+// Register /reflect command for explicit learning feedback
+registerReflectCommand(bot, (chatId) => getAgentForChat(chatId).id);
 
 // Kept for backward compat: handles "New topic / Continue" button clicks from any
 // context-switch prompts that were sent before topic detection was removed. Safe to
