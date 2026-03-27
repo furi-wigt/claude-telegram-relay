@@ -105,6 +105,17 @@ function initSchema(db: Database) {
   addColumnIfMissing(db, "memory", "metadata", "TEXT DEFAULT '{}'");
   addColumnIfMissing(db, "memory", "last_used_at", "TEXT");
 
+  // memory — learning system (Phase 1)
+  addColumnIfMissing(db, "memory", "evidence", "TEXT DEFAULT '{}'");
+  addColumnIfMissing(db, "memory", "hit_count", "INTEGER DEFAULT 0");
+
+  // Index for weekly retro queries (type='learning' filtered by confidence + date)
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_memory_learning
+      ON memory(type, confidence, created_at)
+      WHERE type = 'learning';
+  `);
+
   // messages
   addColumnIfMissing(db, "messages", "metadata", "TEXT");
   addColumnIfMissing(db, "messages", "channel", "TEXT DEFAULT 'telegram'");
