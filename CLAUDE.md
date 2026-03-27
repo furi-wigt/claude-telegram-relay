@@ -427,6 +427,7 @@ Summarise what was set up and what is running. Remind the user:
 | `/memory` | Browse your memory (goals, facts, prefs, dates) |
 | `/remember [text]` | Save something to memory |
 | `/forget [text]` | Remove something from memory |
+| `/reflect [feedback]` | Save an explicit learning (confidence 0.85) |
 | `/goals` | View and manage goals |
 | `/goals +goal text` | Add a new goal |
 | `/goals -old goal` | Remove a goal |

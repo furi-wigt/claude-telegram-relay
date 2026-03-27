@@ -1,6 +1,6 @@
 # Claude Telegram Relay — Memory System
 
-**Version**: 1.0 | **Date**: 2026-03-21
+**Version**: 1.1 | **Date**: 2026-03-28
 
 ---
 
@@ -19,6 +19,7 @@
 11. [Memory Scoping: Chat vs Global](#memory-scoping-chat-vs-global)
 12. [Memory Lifecycle](#memory-lifecycle)
 13. [Interacting with Memory via Bot Commands](#interacting-with-memory-via-bot-commands)
+14. [Learning Memory — Self-Learning Pipeline](#learning-memory--self-learning-pipeline)
 
 ---
 
@@ -282,7 +283,7 @@ stateDiagram-v2
 | `id` | TEXT PK | UUID |
 | `chat_id` | TEXT | Scoped to Telegram chat (`null` = global) |
 | `thread_id` | TEXT | Forum topic ID (nullable) |
-| `type` | TEXT | `"fact"`, `"goal"`, `"completed_goal"` |
+| `type` | TEXT | `"fact"`, `"goal"`, `"completed_goal"`, `"learning"` |
 | `content` | TEXT | The actual memory text |
 | `status` | TEXT | `"active"` or `"deleted"` |
 | `source` | TEXT | `"user"` (manual) or `"llm"` (auto-extracted) |
@@ -293,6 +294,8 @@ stateDiagram-v2
 | `confidence` | REAL | Dedup confidence score (0–1) |
 | `importance` | REAL | Relevance weight (0–1) |
 | `stability` | REAL | How stable over time (0–1) |
+| `evidence` | TEXT | JSON: correction pair, source trigger, agent context (learnings only, default `'{}'`) |
+| `hit_count` | INTEGER | Times this learning was reinforced by repeat corrections (default 0) |
 | `access_count` | INTEGER | Times this fact was retrieved |
 | `last_used_at` | TEXT | When last retrieved via search |
 | `created_at` | TEXT | Insertion timestamp |
@@ -359,11 +362,12 @@ stateDiagram-v2
 
 ### Types
 
-| Type | Created By | Description |
-|------|-----------|-------------|
-| `fact` | `[REMEMBER:]` tag or `/remember` | General knowledge about the user |
-| `goal` | `[GOAL:]` tag or `/goals +` | Action item, optionally with deadline |
-| `completed_goal` | `[DONE:]` tag or `/goals *N` | Archived completed goal |
+| Type | Created By | Description | Confidence Range | Review |
+|------|-----------|-------------|-----------------|--------|
+| `fact` | `[REMEMBER:]` tag or `/remember` | General knowledge about the user | — | — |
+| `goal` | `[GOAL:]` tag or `/goals +` | Action item, optionally with deadline | — | — |
+| `completed_goal` | `[DONE:]` tag or `/goals *N` | Archived completed goal | — | — |
+| `learning` | Jarvis self-learning | Correction pairs and explicit `/reflect` feedback | 0.40–0.85 | Weekly retro |
 
 ### Categories (auto-detected)
 
@@ -458,3 +462,64 @@ flowchart TD
 /goals -outdated goal text      → Permanently remove a goal
 /goals *                        → Show completed goals archive
 ```
+
+---
+
+## Learning Memory — Self-Learning Pipeline
+
+The self-learning system adds a new memory type (`learning`) that captures patterns from user corrections and explicit feedback.
+
+### Confidence Model
+
+| Signal Source | Confidence | Description |
+|--------------|-----------|-------------|
+| Explicit `/reflect` | 0.85 | Highest — direct user feedback |
+| Inline correction | 0.70 | User corrects assistant mid-session |
+| LLM synthesis | 0.40 | Night summary synthesizes patterns from 2+ corrections |
+
+**Promotion threshold**: ≥0.70 (human-originated signals only)
+**Self-assessed cap**: LLM-generated learnings are capped at 0.40 — never auto-promoted
+
+### Evidence Schema
+
+Each learning record includes an `evidence` JSON field:
+```json
+{
+  "source_trigger": "inline_correction",
+  "correction_pair": {
+    "assistant_msg_id": "abc123",
+    "user_correction_id": "def456"
+  },
+  "pattern": "negation",
+  "agent_id": "code-quality-coach",
+  "chat_id": "-100123",
+  "session_id": "uuid-...",
+  "cwd": "/path/to/project"
+}
+```
+
+### Correction Detection Patterns
+
+The `correctionDetector` scans session message pairs for four correction patterns:
+
+| Pattern | Example | Regex trigger |
+|---------|---------|---------------|
+| `negation` | "No, don't do that" | Starts with: no, don't, wrong, stop |
+| `frustration` | "I already told you not to..." | "I already told you", "how many times" |
+| `restatement` | "I said TDD — write the test first" | "I said", "I asked", "I meant" |
+| `override` | "Use this pattern instead: ..." | "use this instead", "do it this way" |
+
+### Promotion to CLAUDE.md
+
+When you tap **Promote** in the weekly retro, the rule is appended to `~/.claude/CLAUDE.md` under a managed section:
+
+```markdown
+## Learned Preferences (auto-managed by Jarvis — do not edit manually)
+
+### Critical (pinned — never auto-rotated)
+
+### Standard (rotated by importance * recency)
+- Always use named PM2 restart [2026-03-28, hits: 0]
+```
+
+See [routines-system.md](routines-system.md#weekly-retro--weekly-learning-retrospective) for how the weekly retro surfaces and promotes learnings.
