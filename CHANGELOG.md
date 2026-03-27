@@ -1,5 +1,19 @@
 # Changelog
 
+## [Unreleased] / 2026-03-28 — Jarvis Self-Learning System Phase 1
+
+### Added
+- **learning/correctionDetector**: Inline correction pattern matcher — detects negation, re-statement, override, and frustration patterns in user messages following assistant responses.
+- **learning/sessionGrouper**: Reads session state files from `~/.claude-relay/sessions/`, queries messages within session boundaries for precise session-aware analysis.
+- **learning/learningExtractor**: Core extraction engine — converts correction pairs into learning entries (type="learning") with confidence scoring and evidence citation.
+- **routines/weekly-retro**: PM2 cron job (Sundays 9am SGT) that surfaces high-confidence learnings for human-gated promotion to CLAUDE.md via Telegram inline keyboard.
+- **callbacks/learningRetroCallbackHandler**: Handles Promote/Reject/Later button presses from weekly retro. Promote appends rule to `~/.claude/CLAUDE.md`; Reject lowers confidence by 0.2.
+- **callbacks/reflectCommandHandler**: `/reflect` command for explicit user feedback stored with confidence 0.85. Usage: `/reflect Always use TDD for utilities`.
+- **db.ts**: Added `evidence` (TEXT) and `hit_count` (INTEGER) columns to memory table, plus `idx_memory_learning` index for retro queries.
+
+### Changed
+- **routines/night-summary**: Now runs learning extraction after day analysis — scans today's sessions for correction pairs, stores learnings, and appends a "Learnings Captured Today" section to the night summary message.
+
 ## [Unreleased] / 2026-03-26 — Morning calendar gap-fill & meeting tasks
 
 ### Added
