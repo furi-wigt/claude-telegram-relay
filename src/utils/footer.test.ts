@@ -122,8 +122,17 @@ describe("getCwdName", () => {
   });
 
   test("falls back to process.cwd() basename when no arg given", () => {
-    const { basename } = require("path");
-    expect(getCwdName()).toBe(basename(process.cwd()));
+    const name = getCwdName();
+    expect(name.length).toBeGreaterThan(0);
+    expect(name).not.toContain("/");
+  });
+
+  test("resolves project root name when inside a worktree", () => {
+    expect(getCwdName("/home/user/my-project/.claude/worktrees/bugfix/foo")).toBe("my-project");
+  });
+
+  test("returns leaf basename when not inside a worktree", () => {
+    expect(getCwdName("/home/user/projects/my-project")).toBe("my-project");
   });
 });
 
