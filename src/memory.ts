@@ -112,6 +112,22 @@ export function stripMemoryTags(text: string): string {
     .trim();
 }
 
+/**
+ * Guards against regex cross-tag span artifacts.
+ *
+ * The greedy/lazy regexes for [REMEMBER:] etc. can match across tag boundaries when
+ * the LLM writes tag syntax in explanations (e.g. "`[GOAL:]`, `[DONE: x]`"). The
+ * captured content then starts with `]` or contains another tag keyword — both are
+ * invalid for real memory content. Reject those before storage.
+ */
+function isValidTagContent(content: string): boolean {
+  const trimmed = content.trim();
+  if (trimmed.startsWith("]")) return false;
+  if (/\[(REMEMBER|REMEMBER_GLOBAL|GOAL|DONE|NEXT):/i.test(trimmed)) return false;
+  if (trimmed.length < 3) return false;
+  return true;
+}
+
 export async function processMemoryIntents(
   response: string,
   chatId?: number,
@@ -158,11 +174,13 @@ export async function processMemoryIntents(
 
   // [REMEMBER: fact to store]
   for (const match of response.matchAll(/\[REMEMBER:\s*(.+)\]/gi)) {
+    if (!isValidTagContent(match[1])) continue;
     await processRememberTag(match as RegExpExecArray, "REMEMBER:", chatId ?? null);
   }
 
   // [REMEMBER_GLOBAL: fact to share across all groups]
   for (const match of response.matchAll(/\[REMEMBER_GLOBAL:\s*(.+)\]/gi)) {
+    if (!isValidTagContent(match[1])) continue;
     await processRememberTag(match as RegExpExecArray, "REMEMBER_GLOBAL:", null);
   }
 
@@ -170,6 +188,7 @@ export async function processMemoryIntents(
   for (const match of response.matchAll(
     /\[GOAL:\s*(.+?)(?:\s*\|\s*DEADLINE:\s*(.+))?\]/gi
   )) {
+    if (!isValidTagContent(match[1])) continue;
     // Text pre-check: query existing goals and run synchronous duplicate detection.
     const existingGoals = await getExistingMemories("goal", { limit: 100 });
     if (isTextDuplicateGoal(match[1], existingGoals)) {
@@ -199,6 +218,7 @@ export async function processMemoryIntents(
 
   // [DONE: search text for completed goal]
   for (const match of response.matchAll(/\[DONE:\s*(.+)\]/gi)) {
+    if (!isValidTagContent(match[1])) continue;
     const goal = await findGoalByContent(match[1]);
     if (goal) {
       await updateMemoryRecord(goal.id, {

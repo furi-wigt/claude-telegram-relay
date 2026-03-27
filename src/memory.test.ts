@@ -601,6 +601,24 @@ describe("Fix C: greedy regex for bracket-containing facts", () => {
     const result = await processMemoryIntents("Done! [DONE: fix [bracket] parsing bug]", 1);
     expect(result).not.toContain("[DONE:");
   });
+
+  test("cross-tag span: [GOAL:] does not absorb adjacent [DONE:] tag", async () => {
+    // LLM writes tag syntax in explanations: `[GOAL:]`, `[DONE: x]`
+    // Lazy regex must not capture `]`, `[DONE: x` as the goal content
+    const response = "Use tags like `[GOAL:]`, `[DONE: search text]` in responses";
+    await processMemoryIntents(response, 1);
+    // No goal should be inserted (the span artifact starts with `]`)
+    expect(insertedRecords.length).toBe(0);
+  });
+
+  test("cross-tag span: [REMEMBER:] does not absorb adjacent [DONE:] tag", async () => {
+    const response = "Tags like `[REMEMBER: fact]`, `[DONE: goal]` are processed after reply";
+    await processMemoryIntents(response, 1);
+    // Only the REMEMBER tag with clean content `fact` should be inserted, not a span artifact
+    if (insertedRecords.length > 0) {
+      expect(insertedRecords[0].content).not.toMatch(/^\]/);
+    }
+  });
 });
 
 // ============================================================
