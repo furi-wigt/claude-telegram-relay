@@ -29,6 +29,17 @@ import { USER_NAME, USER_TIMEZONE } from "../src/config/userConfig.ts";
 import { shouldSkipRecently, markRanToday } from "../src/routines/runOnceGuard.ts";
 import { getPm2LogsDir } from "../config/observability.ts";
 import { getMlxModel } from "../src/mlx/client.ts";
+import { getTodaySessionsWithMessages } from "../src/memory/sessionGrouper.ts";
+import { detectCorrections } from "../src/memory/correctionDetector.ts";
+import {
+  buildLearningFromCorrection,
+  buildExtractionPrompt,
+  parseLLMExtractions,
+  llmExtractionsToLearnings,
+  type LearningCandidate,
+} from "../src/memory/learningExtractor.ts";
+import { insertMemoryRecord } from "../src/local/storageBackend.ts";
+import { checkSemanticDuplicate } from "../src/utils/semanticDuplicateChecker.ts";
 
 const LAST_RUN_FILE = join(getPm2LogsDir(), "night-summary.lastrun");
 
@@ -333,6 +344,30 @@ export async function analyzeWithLocalLLM(
   }
 }
 
+/**
+ * Format captured learnings into a summary section for the night summary message.
+ * Pure function — no side effects.
+ */
+export function buildLearningsSummarySection(
+  learnings: Array<{ content: string; category: string; confidence: number }>
+): string {
+  if (learnings.length === 0) return "";
+
+  const lines = [
+    "",
+    "---",
+    "",
+    "**Learnings Captured Today**",
+    "",
+  ];
+
+  for (const l of learnings) {
+    lines.push(`- [${l.category}] ${l.content} *(confidence: ${l.confidence.toFixed(2)})*`);
+  }
+
+  return lines.join("\n");
+}
+
 // ============================================================
 // DATA FETCHERS
 // ============================================================
@@ -431,6 +466,105 @@ async function analyzeDay(
 }
 
 // ============================================================
+// LEARNING EXTRACTION
+// ============================================================
+
+/**
+ * Run learning extraction on today's sessions.
+ * Detects corrections, stores learning entries, returns summary for night message.
+ */
+async function extractTodaysLearnings(): Promise<
+  Array<{ content: string; category: string; confidence: number }>
+> {
+  try {
+    const sessionsWithMessages = await getTodaySessionsWithMessages();
+    const stored: Array<{ content: string; category: string; confidence: number }> = [];
+
+    for (const { session, messages } of sessionsWithMessages) {
+      // 1. Detect correction pairs
+      const corrections = detectCorrections(messages);
+      if (corrections.length === 0) continue;
+
+      // 2. Build direct learnings from each correction pair
+      for (const pair of corrections) {
+        const learning = buildLearningFromCorrection(pair, session);
+
+        // Dedup check
+        const dup = await checkSemanticDuplicate(learning.content, "learning", session.chatId);
+        if (dup.isDuplicate) {
+          console.log(`[night-summary] Skipping duplicate learning: "${learning.content.substring(0, 60)}"`);
+          continue;
+        }
+
+        await insertMemoryRecord({
+          type: learning.type,
+          content: learning.content,
+          chat_id: session.chatId,
+          thread_id: session.threadId,
+          category: learning.category,
+          confidence: learning.confidence,
+          importance: learning.importance,
+          stability: learning.stability,
+        });
+
+        stored.push({
+          content: learning.content,
+          category: learning.category,
+          confidence: learning.confidence,
+        });
+      }
+
+      // 3. Optional: LLM synthesis for generalized rules (if 2+ corrections in session)
+      if (corrections.length >= 2) {
+        try {
+          const prompt = buildExtractionPrompt(corrections, session.agentId);
+          const raw = await callRoutineModel(prompt, {
+            label: "night-summary-learning",
+            maxTokens: 1024,
+          });
+          const extractions = parseLLMExtractions(raw);
+          const correctionIds = corrections.flatMap((c) => [
+            c.assistant_message_id,
+            c.user_correction_id,
+          ]);
+          const llmLearnings = llmExtractionsToLearnings(extractions, session, correctionIds);
+
+          for (const learning of llmLearnings) {
+            const dup = await checkSemanticDuplicate(learning.content, "learning", session.chatId);
+            if (dup.isDuplicate) continue;
+
+            await insertMemoryRecord({
+              type: learning.type,
+              content: learning.content,
+              chat_id: session.chatId,
+              thread_id: session.threadId,
+              category: learning.category,
+              confidence: learning.confidence,
+              importance: learning.importance,
+              stability: learning.stability,
+            });
+
+            stored.push({
+              content: learning.content,
+              category: learning.category,
+              confidence: learning.confidence,
+            });
+          }
+        } catch (err) {
+          console.error("[night-summary] LLM extraction failed:", err instanceof Error ? err.message : err);
+        }
+      }
+    }
+
+    console.log(`[night-summary] Captured ${stored.length} learnings from ${sessionsWithMessages.length} sessions`);
+    return stored;
+  } catch (err) {
+    console.error("[night-summary] Learning extraction failed:", err);
+    return [];
+  }
+}
+
+// ============================================================
 // BUILD SUMMARY
 // ============================================================
 
@@ -451,7 +585,12 @@ async function buildSummary(): Promise<{ summary: string; provider: "local" | nu
   ]);
 
   const result = await analyzeDay(messages, facts, goals, summaries);
-  const summary = formatSummary(dateStr, messages.length, facts.length, result.text, result.provider);
+
+  // Extract learnings from today's sessions (correction pairs → memory)
+  const learnings = await extractTodaysLearnings();
+  const learningSection = buildLearningsSummarySection(learnings);
+
+  const summary = formatSummary(dateStr, messages.length, facts.length, result.text, result.provider) + learningSection;
 
   return { summary, provider: result.provider };
 }
