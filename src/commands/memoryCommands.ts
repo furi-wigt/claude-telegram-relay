@@ -187,7 +187,7 @@ export function registerMemoryCommands(
     if (/^\d+$/.test(topic)) {
       try {
         const idx = parseInt(topic, 10) - 1;
-        const item = await getMemoryByIndex(idx);
+        const item = await getMemoryByIndex(idx, chatId);
 
         if (!item) {
           await ctx.reply(`No memory item #${topic}. Use /memory to view items.`);
@@ -216,7 +216,7 @@ export function registerMemoryCommands(
       let matches: Array<{ id: string; type: string; content: string }> = [];
 
       // 1. Fast path: substring match
-      matches = await searchMemoryBySubstring(topic, 5);
+      matches = await searchMemoryBySubstring(topic, 5, chatId);
 
       // 2. Semantic fallback when substring match finds nothing
       let usedSemanticFallback = false;
@@ -224,6 +224,7 @@ export function registerMemoryCommands(
         const semResults = await semanticSearchMemory(topic, {
           matchCount: 5,
           threshold: 0.75,
+          chatId: chatId.toString(),
         });
         if (semResults.length > 0) {
           matches = semResults.map((r) => ({

@@ -272,14 +272,21 @@ export async function deleteAllMemoriesForChat(
 // ── Fetch memory by index (for /forget N) ─────────────────────────────────────
 
 export async function getMemoryByIndex(
-  index: number
+  index: number,
+  chatId?: number
 ): Promise<{ id: string; type: string; content: string } | null> {
   const db = getDb();
+  const chatFilter = chatId
+    ? " AND (chat_id = ? OR chat_id IS NULL)"
+    : "";
+  const params: Array<string | number> = [];
+  if (chatId) params.push(chatId.toString());
+  params.push(1, index);
   const rows = db
     .query(
-      "SELECT id, type, content FROM memory WHERE status = 'active' AND type != 'completed_goal' ORDER BY created_at ASC LIMIT ? OFFSET ?"
+      `SELECT id, type, content FROM memory WHERE status = 'active' AND type != 'completed_goal'${chatFilter} ORDER BY created_at ASC LIMIT ? OFFSET ?`
     )
-    .all(1, index) as Array<{ id: string; type: string; content: string }>;
+    .all(...params) as Array<{ id: string; type: string; content: string }>;
   return rows[0] ?? null;
 }
 
@@ -287,19 +294,26 @@ export async function getMemoryByIndex(
 
 export async function searchMemoryBySubstring(
   topic: string,
-  limit = 5
+  limit = 5,
+  chatId?: number
 ): Promise<Array<{ id: string; type: string; content: string }>> {
   const db = getDb();
+  const chatFilter = chatId
+    ? " AND (chat_id = ? OR chat_id IS NULL)"
+    : "";
+  const params: Array<string | number> = [`%${topic}%`];
+  if (chatId) params.push(chatId.toString());
+  params.push(limit);
   return db
     .query(
-      "SELECT id, type, content FROM memory WHERE status = 'active' AND content LIKE ? LIMIT ?"
+      `SELECT id, type, content FROM memory WHERE status = 'active' AND content LIKE ?${chatFilter} LIMIT ?`
     )
-    .all(`%${topic}%`, limit) as Array<{ id: string; type: string; content: string }>;
+    .all(...params) as Array<{ id: string; type: string; content: string }>;
 }
 
 // ── Get all memory for /memory display ────────────────────────────────────────
 
-export async function getAllMemoryForDisplay(): Promise<{
+export async function getAllMemoryForDisplay(chatId?: number): Promise<{
   goals: any[];
   completedGoals: any[];
   facts: any[];
@@ -311,11 +325,16 @@ export async function getAllMemoryForDisplay(): Promise<{
     content.trim().length < 4 ||
     /^[\[\]`\/|,\s\-\.]+$/.test(content.trim());
 
-  const goals = (db.query("SELECT * FROM memory WHERE type = 'goal' AND status = 'active' ORDER BY created_at DESC").all() as any[])
+  const chatFilter = chatId
+    ? " AND (chat_id = ? OR chat_id IS NULL)"
+    : "";
+  const chatParam = chatId ? [chatId.toString()] : [];
+
+  const goals = (db.query(`SELECT * FROM memory WHERE type = 'goal' AND status = 'active'${chatFilter} ORDER BY created_at DESC`).all(...chatParam) as any[])
     .filter((r) => !isJunk(r.content));
-  const completedGoals = (db.query("SELECT * FROM memory WHERE type = 'completed_goal' ORDER BY created_at DESC").all() as any[])
+  const completedGoals = (db.query(`SELECT * FROM memory WHERE type = 'completed_goal'${chatFilter} ORDER BY created_at DESC`).all(...chatParam) as any[])
     .filter((r) => !isJunk(r.content));
-  const allFacts = (db.query("SELECT * FROM memory WHERE type = 'fact' AND status = 'active' ORDER BY created_at DESC").all() as any[])
+  const allFacts = (db.query(`SELECT * FROM memory WHERE type = 'fact' AND status = 'active'${chatFilter} ORDER BY created_at DESC`).all(...chatParam) as any[])
     .filter((r) => !isJunk(r.content));
 
   // Note: SQLite schema doesn't have category column yet — treat all as non-date facts

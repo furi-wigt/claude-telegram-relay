@@ -375,7 +375,7 @@ export async function getMemoryFull(
   const empty: FullMemory = { goals: [], completedGoals: [], facts: [], dates: [] };
 
   try {
-    const local = await getAllMemoryForDisplay();
+    const local = await getAllMemoryForDisplay(chatId);
     const clean = (rows: any[]): MemoryItemFull[] =>
       (rows ?? [])
         .filter((r: any) => !isJunkMemoryContent(r.content))
