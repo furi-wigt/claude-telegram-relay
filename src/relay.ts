@@ -44,7 +44,7 @@ import { learnTopicName, learnChatName, getTopicName } from "./utils/chatNames.t
 import { isMlxAvailable } from "./mlx/index.ts";
 import { callRoutineModel } from "./routines/routineModel.ts";
 import { getAgentForChat, autoDiscoverGroup, loadGroupMappings } from "./routing/groupRouter.ts";
-import { isCommandCenter, orchestrateMessage, registerOrchestrationCallbacks } from "./orchestration/index.ts";
+import { isCommandCenter, orchestrateMessage, registerOrchestrationCallbacks, registerAgentResponseBus } from "./orchestration/index.ts";
 // Router removed: always use Sonnet for simplicity and predictable latency
 import { loadSession as loadGroupSession, updateSessionIdGuarded, initSessions, loadAllSessions, saveSession, isResumeReliable, didResumeFail, lockActiveCwd, resetSession, getSessionSince } from "./session/groupSessions.ts";
 import { buildAgentPrompt } from "./agents/promptBuilder.ts";
@@ -641,6 +641,8 @@ bot.command("doc", async (ctx, next) => {
 
 // Register orchestration callback handlers (Pause/Edit/Cancel + agent picker)
 registerOrchestrationCallbacks(bot);
+// Register the single persistent handler that feeds waitForAgentResponse
+registerAgentResponseBus(bot);
 
 registerCommands(bot, {
   userId: allowedUserId,
@@ -653,10 +655,17 @@ registerCommands(bot, {
       await ctx.reply("Queue is full. Please try again shortly.");
       return;
     }
-    queueManager.getOrCreate(chatId, threadId).enqueue({
-      label: `[chat:${chatId}] /new: ${text.substring(0, 30)}`,
-      run: () => processTextMessage(chatId, threadId, text, ctx),
-    });
+    if (isCommandCenter(chatId)) {
+      queueManager.getOrCreate(chatId, threadId).enqueue({
+        label: `[chat:${chatId}] CC orchestrate: ${text.substring(0, 30)}`,
+        run: () => orchestrateMessage(bot, ctx, text, chatId, threadId),
+      });
+    } else {
+      queueManager.getOrCreate(chatId, threadId).enqueue({
+        label: `[chat:${chatId}] /new: ${text.substring(0, 30)}`,
+        run: () => processTextMessage(chatId, threadId, text, ctx),
+      });
+    }
   },
   getLastPaste: (chatId: number) => lastLargePastes.get(chatId),
 });
