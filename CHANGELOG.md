@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased] / 2026-03-28 — Fix 101 test failures (mock isolation + bug fixes)
+
+### Fixed
+- **src/local/embed.test.ts**: Updated test server from deprecated Ollama-style `/api/embed` to OpenAI-compatible `/v1/embeddings` endpoint with correct response shape `{data: [{object, index, embedding}]}`. Fixes 5 test failures.
+- **src/memory.ts**: Fixed greedy regex in REMEMBER/REMEMBER_GLOBAL tag parsing — `.+` spanned across multiple tags. New balanced bracket pattern `(?:[^\[\]]*|\[[^\]]*\])*` handles inner brackets (e.g. `[kebab-case]`) without over-matching.
+- **src/claude/integration.test.ts**: Updated stale assertion — `longTermExtractor.ts` now imports from `routineModel.ts` (refactored from `claude-process.ts`).
+
+### Added
+- **scripts/test-isolated.ts**: Process-isolated test runner — runs each test file in its own `bun test` subprocess (6 concurrent). Eliminates Bun v1.3.9 `mock.module()` cross-file contamination that caused ~94 false failures. Usage: `bun run test:isolated`.
+- **package.json**: Added `test:isolated` script.
+
 ## [Unreleased] / 2026-03-28 — Memory read-side isolation by chatId
 
 ### Fixed

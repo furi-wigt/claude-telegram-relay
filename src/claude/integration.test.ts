@@ -27,11 +27,12 @@ describe("All callers import from claude-process.ts", () => {
     expect(content).toMatch(/from\s+["']\.\.\/claude-process(\.ts)?["']/);
   });
 
-  test("src/memory/longTermExtractor.ts imports from claude-process", () => {
+  test("src/memory/longTermExtractor.ts imports from routineModel (refactored from claude-process)", () => {
     const content = readFileSync(
       join(ROOT, "src", "memory", "longTermExtractor.ts"),
       "utf8"
     );
-    expect(content).toMatch(/from\s+["']\.\.\/claude-process(\.ts)?["']/);
+    // After ltm_overhaul refactor, longTermExtractor uses routineModel instead of claude-process
+    expect(content).toMatch(/from\s+["']\.\.\/routines\/routineModel(\.ts)?["']/);
   });
 });
