@@ -1,19 +1,29 @@
 /**
  * Agent Configuration
  *
- * Agents are defined entirely in config/agents.json (metadata) and
- * config/prompts/<agent-id>.md (system prompts). Both files are loaded
- * once at startup — no file I/O on each message.
+ * Agents are defined in agents.json (metadata) and prompts/<id>.md (system prompts).
+ * Both are loaded once at startup — no file I/O on each message.
+ *
+ * agents.json load order (first found wins):
+ *   1. ~/.claude-relay/agents.json  — user runtime config (chatIds, topicIds)
+ *   2. config/agents.json           — repo gitignored copy (legacy / local dev)
+ *   3. config/agents.example.json   — committed template (fresh clone fallback)
  *
  * To add, remove, or rename a specialist:
- *   1. Edit config/agents.json
+ *   1. Edit ~/.claude-relay/agents.json (or config/agents.json for dev)
  *   2. Add/remove the matching config/prompts/<id>.md
  *   3. Restart the service
  */
 
 import { readFileSync, existsSync } from "fs";
 import { join, dirname } from "path";
-import { getUserPromptsDir, getRepoPromptsDir } from "../config/paths.ts";
+import {
+  getUserPromptsDir,
+  getRepoPromptsDir,
+  getUserAgentsPath,
+  getRepoAgentsPath,
+  getRepoAgentsExamplePath,
+} from "../config/paths.ts";
 
 const PROJECT_ROOT = join(dirname(dirname(dirname(import.meta.path))));
 
@@ -77,9 +87,22 @@ function loadPrompt(agentId: string): string {
   return `You are a helpful AI assistant (${agentId}).`;
 }
 
-// ─── Build AGENTS from config/agents.json ────────────────────────────────────
+// ─── Resolve agents.json path (3-tier: user → repo → example) ────────────────
 
-const agentsPath = join(PROJECT_ROOT, "config", "agents.json");
+function resolveAgentsPath(): string {
+  const user = getUserAgentsPath();
+  if (existsSync(user)) return user;
+
+  const repo = getRepoAgentsPath();
+  if (existsSync(repo)) return repo;
+
+  return getRepoAgentsExamplePath(); // fresh clone fallback
+}
+
+// ─── Build AGENTS ─────────────────────────────────────────────────────────────
+
+const agentsPath = resolveAgentsPath();
+console.log(`[agents/config] loading from ${agentsPath.replace(process.env.HOME || "", "~")}`);
 const agentDefs: AgentDefinition[] = JSON.parse(readFileSync(agentsPath, "utf-8"));
 
 export const AGENTS: Record<string, AgentConfig> = {};

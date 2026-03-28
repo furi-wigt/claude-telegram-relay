@@ -35,3 +35,18 @@ export function getRepoPromptsDir(): string {
   // Walk up from src/config/ to project root, then into config/prompts
   return join(import.meta.dir, "..", "..", "config", "prompts");
 }
+
+/** User-level agents config — ~/.claude-relay/agents.json */
+export function getUserAgentsPath(): string {
+  return join(getUserDir(), "agents.json");
+}
+
+/** Repo-level agents config (gitignored user copy) — config/agents.json */
+export function getRepoAgentsPath(): string {
+  return join(import.meta.dir, "..", "..", "config", "agents.json");
+}
+
+/** Repo-level agents example (committed template) — config/agents.example.json */
+export function getRepoAgentsExamplePath(): string {
+  return join(import.meta.dir, "..", "..", "config", "agents.example.json");
+}
