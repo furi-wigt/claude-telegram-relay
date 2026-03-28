@@ -382,6 +382,8 @@ export function registerCommands(bot: Bot, options: CommandOptions): void {
       "/doc delete <title> - Remove a document from the index",
       "/doc forget <title> - Remove a document (alias for delete)",
       "/monthly_update - Trigger TRO monthly update pipeline (ad-hoc)",
+      "/agents - List all agents with capabilities",
+      "/search <query> - Search across all agent groups",
       "/reboot - Restart Jarvis (with confirmation)",
       "/help - Show this help",
       "",
@@ -663,6 +665,61 @@ export function registerCommands(bot: Bot, options: CommandOptions): void {
       } catch (err) {
         console.error("[/cwd] setTopicCwd error:", err instanceof Error ? err.message : err);
       }
+    }
+  });
+
+  // /agents - list all agents with capabilities
+  bot.command("agents", async (ctx) => {
+    const { AGENTS } = await import("../agents/config.ts");
+    const lines: string[] = ["\u{1F916} Available Agents:\n"];
+    for (const agent of Object.values(AGENTS)) {
+      const caps = agent.capabilities.slice(0, 5).join(", ");
+      const more = agent.capabilities.length > 5 ? ` (+${agent.capabilities.length - 5} more)` : "";
+      const status = agent.chatId ? "\u2705" : "\u26AA";
+      lines.push(`${status} **${agent.name}** (${agent.id})`);
+      lines.push(`   ${caps}${more}\n`);
+    }
+    await sendLongMessage(ctx, lines.join("\n"));
+  });
+
+  // /search <query> - cross-topic semantic search via Qdrant
+  bot.command("search", async (ctx) => {
+    const query = ((ctx.match as string) ?? "").trim();
+    if (!query) {
+      await ctx.reply("Usage: /search <query>\n\nSearches across all agent groups and topics.");
+      return;
+    }
+
+    try {
+      const { getDb } = await import("../local/db.ts");
+      const db = getDb();
+      // Full-text search across messages from all agents
+      const results = db.query(
+        `SELECT agent_id, thread_name, content, created_at
+         FROM messages
+         WHERE content LIKE ? AND role = 'assistant'
+         ORDER BY created_at DESC
+         LIMIT 10`
+      ).all(`%${query}%`) as Array<{ agent_id: string | null; thread_name: string | null; content: string; created_at: string }>;
+
+      if (results.length === 0) {
+        await ctx.reply(`No results found for "${query}".`);
+        return;
+      }
+
+      const lines: string[] = [`\u{1F50D} Search results for "${query}":\n`];
+      for (const row of results) {
+        const source = row.agent_id ?? "unknown";
+        const topic = row.thread_name ? ` / ${row.thread_name}` : "";
+        const snippet = row.content.length > 150 ? row.content.slice(0, 150) + "..." : row.content;
+        const date = row.created_at?.split("T")[0] ?? "";
+        lines.push(`\u{1F4CC} [${source}${topic}] ${date}`);
+        lines.push(`   ${snippet}\n`);
+      }
+      await sendLongMessage(ctx, lines.join("\n"));
+    } catch (err) {
+      console.error("[/search] error:", err);
+      await ctx.reply("Search failed. Please try again.");
     }
   });
 

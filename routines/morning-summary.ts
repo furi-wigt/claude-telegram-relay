@@ -385,6 +385,25 @@ async function buildEnhancedBriefing(): Promise<{
     lines.push("");
   }
 
+  // ── Cross-Agent Activity Digest (Orchestration) ───────────────────────────
+  try {
+    const { getYesterdayActivity } = await import("../src/orchestration/dispatchEngine");
+    const agentActivity = getYesterdayActivity();
+    if (agentActivity.length > 0) {
+      const { AGENTS } = await import("../src/agents/config");
+      lines.push(`🤖 **Yesterday Across Agents:**`);
+      for (const row of agentActivity) {
+        const agent = AGENTS[row.agent_id];
+        const name = agent?.shortName ?? agent?.name ?? row.agent_id;
+        const intents = row.intents ? ` (${row.intents})` : "";
+        lines.push(`• ${name}: ${row.count} dispatch${row.count > 1 ? "es" : ""}${intents}`);
+      }
+      lines.push("");
+    }
+  } catch {
+    // Orchestration tables may not exist yet — graceful skip
+  }
+
   // ── Active Goals ────────────────────────────────────────────────────────────
   if (goals.length > 0) {
     lines.push(`🎯 **Active Goals**`);

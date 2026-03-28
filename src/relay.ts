@@ -44,6 +44,7 @@ import { learnTopicName, learnChatName, getTopicName } from "./utils/chatNames.t
 import { isMlxAvailable } from "./mlx/index.ts";
 import { callRoutineModel } from "./routines/routineModel.ts";
 import { getAgentForChat, autoDiscoverGroup, loadGroupMappings } from "./routing/groupRouter.ts";
+import { isCommandCenter, orchestrateMessage, registerOrchestrationCallbacks } from "./orchestration/index.ts";
 // Router removed: always use Sonnet for simplicity and predictable latency
 import { loadSession as loadGroupSession, updateSessionIdGuarded, initSessions, loadAllSessions, saveSession, isResumeReliable, didResumeFail, lockActiveCwd, resetSession, getSessionSince } from "./session/groupSessions.ts";
 import { buildAgentPrompt } from "./agents/promptBuilder.ts";
@@ -278,6 +279,15 @@ function flushTextBurst(burstKey: string): void {
     queueManager.getOrCreate(chatId, threadId).enqueue({
       label: `[chat:${chatId}] doc-ingest-flush`,
       run: () => handleIngestFlush(chatId, threadId, burstKey, assembled, ctx),
+    });
+    return;
+  }
+
+  // Command Center intercept — route through orchestration layer instead of normal Claude flow
+  if (isCommandCenter(chatId)) {
+    queueManager.getOrCreate(chatId, threadId).enqueue({
+      label: `[chat:${chatId}] CC orchestrate: ${assembled.substring(0, 30)}`,
+      run: () => orchestrateMessage(bot, ctx, assembled, chatId, threadId),
     });
     return;
   }
@@ -628,6 +638,9 @@ bot.command("doc", async (ctx, next) => {
   // Expiry is enforced by the 60s sweep (M2); no proactive setTimeout needed.
   await ctx.reply("📋 Ready. Paste your content now. (/cancel to abort)");
 });
+
+// Register orchestration callback handlers (Pause/Edit/Cancel + agent picker)
+registerOrchestrationCallbacks(bot);
 
 registerCommands(bot, {
   userId: allowedUserId,
