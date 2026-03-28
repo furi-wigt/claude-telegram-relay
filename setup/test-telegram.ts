@@ -6,9 +6,9 @@
  * Usage: bun run setup/test-telegram.ts
  */
 
-import { join, dirname } from "path";
+import { loadEnv } from "../src/config/envLoader.ts";
 
-const PROJECT_ROOT = dirname(import.meta.dir);
+loadEnv();
 
 // Colors
 const green = (s: string) => `\x1b[32m${s}\x1b[0m`;
@@ -19,33 +19,13 @@ const bold = (s: string) => `\x1b[1m${s}\x1b[0m`;
 const PASS = green("✓");
 const FAIL = red("✗");
 
-// Load .env manually (no dotenv dependency)
-async function loadEnv(): Promise<Record<string, string>> {
-  const envPath = join(PROJECT_ROOT, ".env");
-  try {
-    const content = await Bun.file(envPath).text();
-    const vars: Record<string, string> = {};
-    for (const line of content.split("\n")) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith("#")) continue;
-      const eq = trimmed.indexOf("=");
-      if (eq === -1) continue;
-      vars[trimmed.slice(0, eq).trim()] = trimmed.slice(eq + 1).trim();
-    }
-    return vars;
-  } catch {
-    return {};
-  }
-}
-
 async function main() {
   console.log("");
   console.log(bold("  Telegram Connection Test"));
   console.log("");
 
-  const env = await loadEnv();
-  const token = env.TELEGRAM_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN || "";
-  const userId = env.TELEGRAM_USER_ID || process.env.TELEGRAM_USER_ID || "";
+  const token = process.env.TELEGRAM_BOT_TOKEN || "";
+  const userId = process.env.TELEGRAM_USER_ID || "";
 
   // Check token exists
   if (!token || token === "your_bot_token_from_botfather") {

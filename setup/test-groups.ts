@@ -14,6 +14,9 @@ import { Bot } from "grammy";
 import { join, dirname } from "path";
 import { existsSync, readFileSync } from "fs";
 import { homedir } from "os";
+import { loadEnv } from "../src/config/envLoader.ts";
+
+loadEnv();
 
 // ─── Paths ────────────────────────────────────────────────────────────────────
 
@@ -140,32 +143,12 @@ async function writeChatId(agentId: string, chatId: number): Promise<void> {
   }
 }
 
-// ─── .env / token loading ─────────────────────────────────────────────────────
+// ─── Token helper ─────────────────────────────────────────────────────────────
+// loadEnv() (called at top) has already populated process.env with the correct
+// layered values — just read directly.
 
-async function loadToken(): Promise<string> {
-  if (process.env.TELEGRAM_BOT_TOKEN) return process.env.TELEGRAM_BOT_TOKEN;
-
-  const envPaths = [
-    join(PROJECT_ROOT, ".env"),
-    join(homedir(), ".claude-relay", ".env"),
-  ];
-  for (const envPath of envPaths) {
-    try {
-      const content = await Bun.file(envPath).text();
-      for (const line of content.split("\n")) {
-        const t = line.trim();
-        if (!t || t.startsWith("#")) continue;
-        const eq = t.indexOf("=");
-        if (eq === -1) continue;
-        if (t.slice(0, eq).trim() === "TELEGRAM_BOT_TOKEN") {
-          return t.slice(eq + 1).trim();
-        }
-      }
-    } catch {
-      // file not found — try next
-    }
-  }
-  return "";
+function loadToken(): string {
+  return process.env.TELEGRAM_BOT_TOKEN || "";
 }
 
 // ─── Verify mode ─────────────────────────────────────────────────────────────
@@ -225,7 +208,7 @@ async function main() {
   console.log(bold("  Claude Telegram Relay — Group Discovery"));
   console.log("");
 
-  const token = await loadToken();
+  const token = loadToken();
   if (!token || token === "your_bot_token_from_botfather") {
     console.log(`  ${FAIL} TELEGRAM_BOT_TOKEN not set. Run ${cyan("bun run setup")} first.`);
     process.exit(1);

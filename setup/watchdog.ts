@@ -18,6 +18,9 @@
 
 import { existsSync, statSync, readFileSync } from "fs";
 import { join } from "path";
+import { loadEnv } from "../src/config/envLoader.ts";
+
+loadEnv();
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
 const CHAT_ID = process.env.TELEGRAM_USER_ID || "";

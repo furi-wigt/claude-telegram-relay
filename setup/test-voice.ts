@@ -5,7 +5,9 @@
  * Run: bun run test:voice
  */
 
-import "dotenv/config";
+import { loadEnv } from "../src/config/envLoader.ts";
+
+loadEnv();
 
 const VOICE_PROVIDER = process.env.VOICE_PROVIDER || "";
 
