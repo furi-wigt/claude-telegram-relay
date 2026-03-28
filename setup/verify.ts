@@ -9,7 +9,9 @@
 
 import { existsSync } from "fs";
 import { join, dirname } from "path";
-import { homedir } from "os";
+import { loadEnv, getUserDir } from "../src/config/envLoader.ts";
+
+loadEnv();
 
 const PROJECT_ROOT = dirname(import.meta.dir);
 
@@ -32,40 +34,10 @@ function pass(msg: string) { console.log(`  ${PASS} ${msg}`); passed++; }
 function fail(msg: string) { console.log(`  ${FAIL} ${msg}`); failed++; }
 function warn(msg: string) { console.log(`  ${WARN} ${msg}`); warned++; }
 
-// Load .env with two-pass layering — same order as src/relay.ts:
-//   Pass 1: project .env  — defaults (do not override process.env)
-//   Pass 2: ~/.claude-relay/.env — user secrets (always wins)
-async function loadEnv(): Promise<Record<string, string>> {
-  const vars: Record<string, string> = {};
-
-  async function readEnvFile(filePath: string, override: boolean): Promise<void> {
-    try {
-      const content = await Bun.file(filePath).text();
-      for (const line of content.split("\n")) {
-        const trimmed = line.trim();
-        if (!trimmed || trimmed.startsWith("#")) continue;
-        const eq = trimmed.indexOf("=");
-        if (eq === -1) continue;
-        const key = trimmed.slice(0, eq).trim();
-        const value = trimmed.slice(eq + 1).trim();
-        if (override || !(key in vars)) vars[key] = value;
-      }
-    } catch {
-      // file not found — continue
-    }
-  }
-
-  await readEnvFile(join(PROJECT_ROOT, ".env"), false);
-  await readEnvFile(join(homedir(), ".claude-relay", ".env"), true);
-  return vars;
-}
-
 async function main() {
   console.log("");
   console.log(bold("  Claude Telegram Relay — Health Check"));
   console.log("");
-
-  const env = await loadEnv();
 
   // 1. Files
   console.log(bold("  Files"));
@@ -75,8 +47,8 @@ async function main() {
 
   // 2. Telegram
   console.log(`\n${bold("  Telegram")}`);
-  const token = env.TELEGRAM_BOT_TOKEN || "";
-  const userId = env.TELEGRAM_USER_ID || "";
+  const token = process.env.TELEGRAM_BOT_TOKEN || "";
+  const userId = process.env.TELEGRAM_USER_ID || "";
 
   if (!token || token.includes("your_")) {
     fail("TELEGRAM_BOT_TOKEN not set");
@@ -98,14 +70,8 @@ async function main() {
 
   // 3. Local Storage (SQLite + Qdrant)
   console.log(`\n${bold("  Local Storage")}`);
-  try {
-    const { existsSync } = await import("fs");
-    const { join } = await import("path");
-    const dbPath = join(process.cwd(), "data", "local.db");
-    existsSync(dbPath) ? pass(`SQLite DB: ${dbPath}`) : warn("SQLite DB not yet created (will be auto-created on first run)");
-  } catch (e: any) {
-    warn(`Could not check local DB: ${e.message}`);
-  }
+  const dbPath = join(getUserDir(), "data", "local.sqlite");
+  existsSync(dbPath) ? pass(`SQLite DB exists (${Math.round(require("fs").statSync(dbPath).size / 1024 / 1024)}MB)`) : warn("SQLite DB not yet created (will be auto-created on first run)");
 
   // 4. Services (macOS only)
   if (process.platform === "darwin") {
@@ -119,16 +85,16 @@ async function main() {
 
   // 5. Optional
   console.log(`\n${bold("  Optional")}`);
-  env.GEMINI_API_KEY && !env.GEMINI_API_KEY.includes("your_")
+  process.env.GEMINI_API_KEY && !process.env.GEMINI_API_KEY.includes("your_")
     ? pass("Voice transcription (Gemini) configured")
     : warn("No GEMINI_API_KEY — voice messages won't be transcribed");
 
-  env.USER_NAME && !env.USER_NAME.includes("Your ")
-    ? pass(`Name: ${env.USER_NAME}`)
+  process.env.USER_NAME && !process.env.USER_NAME.includes("Your ")
+    ? pass(`Name: ${process.env.USER_NAME}`)
     : warn("USER_NAME not set in .env");
 
-  env.USER_TIMEZONE && env.USER_TIMEZONE !== "UTC"
-    ? pass(`Timezone: ${env.USER_TIMEZONE}`)
+  process.env.USER_TIMEZONE && process.env.USER_TIMEZONE !== "UTC"
+    ? pass(`Timezone: ${process.env.USER_TIMEZONE}`)
     : warn("USER_TIMEZONE is UTC — update to your local timezone");
 
   // Summary
