@@ -258,7 +258,7 @@ export async function getMemoryContext(
 
     const [factsData, goalsData] = await Promise.all([
       getMemoryFacts({ limit: MAX_FACTS_IN_CONTEXT, chatId }),
-      getMemoryGoals({ limit: 20 }),
+      getMemoryGoals({ limit: 20, chatId }),
     ]);
 
     const parts: string[] = [];
@@ -327,7 +327,7 @@ export async function getMemoryContextRaw(
     // Use storageBackend (local-first) for reads
     const [factsData, goalsData] = await Promise.all([
       getMemoryFacts({ limit: 50, chatId }),
-      getMemoryGoals({ limit: 20 }),
+      getMemoryGoals({ limit: 20, chatId }),
     ]);
 
     const facts: MemoryItem[] = factsData
@@ -375,7 +375,7 @@ export async function getMemoryFull(
   const empty: FullMemory = { goals: [], completedGoals: [], facts: [], dates: [] };
 
   try {
-    const local = await getAllMemoryForDisplay();
+    const local = await getAllMemoryForDisplay(chatId);
     const clean = (rows: any[]): MemoryItemFull[] =>
       (rows ?? [])
         .filter((r: any) => !isJunkMemoryContent(r.content))
@@ -438,6 +438,7 @@ export async function getRelevantContext(
       semanticSearchMemory(query, {
         matchCount: 3,
         threshold: 0.7,
+        chatId: chatId?.toString(),
       }),
     ]);
 

@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased] / 2026-03-28 — Memory read-side isolation by chatId
+
+### Fixed
+- **src/local/db.ts**: `getActiveMemories()` now returns scoped + global (NULL chat_id) items when chatId is provided, instead of only exact matches. When chatId is omitted, returns all items (backward compat for routines/DMs).
+- **src/local/storageBackend.ts**: `getMemoryFacts()`, `getMemoryGoals()`, `getExistingMemories()` now pass chatId through to `getActiveMemories()`. `semanticSearchMemory()` accepts and forwards chatId.
+- **src/local/searchService.ts**: `buildFilter()` adds Qdrant `should` clause for chatId — matches scoped OR null (global) items.
+- **src/memory.ts**: `getMemoryContext()` and `getRelevantContext()` now pass chatId to goals and semantic search calls.
+
+### Added
+- **src/local/memoryIsolation.test.ts**: 5 tests validating chatId isolation (scoped + global, cross-group exclusion, unknown chatId fallback, goals filtering).
+
 ## [Unreleased] / 2026-03-28 — Model prefix [Q] and per-agent defaultModel
 
 ### Added

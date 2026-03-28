@@ -355,6 +355,10 @@ async function listItems(
     sql += " AND (category = 'personal' OR category IS NULL)";
   }
 
+  // Scope to this chat + global items
+  sql += " AND (chat_id = ? OR chat_id IS NULL)";
+  params.push(chatId);
+
   sql += " ORDER BY created_at ASC LIMIT 50";
   items = db.query(sql).all(...params) as any[];
 
@@ -385,8 +389,8 @@ async function findGoalsByIndexOrQuery(
   const fetchGoals = async (): Promise<MemoryItem[]> => {
     const db = getDb();
     return db.query(
-      "SELECT id, content FROM memory WHERE type = 'goal' AND status = 'active' ORDER BY created_at ASC LIMIT 50"
-    ).all() as MemoryItem[];
+      "SELECT id, content FROM memory WHERE type = 'goal' AND status = 'active' AND (chat_id = ? OR chat_id IS NULL) ORDER BY created_at ASC LIMIT 50"
+    ).all(chatId) as MemoryItem[];
   };
 
   if (/^\d+$/.test(query)) {
@@ -471,8 +475,8 @@ async function listCompletedGoals(
 ): Promise<string> {
   const db = getDb();
   const data = db.query(
-    "SELECT id, content, completed_at, chat_id, thread_id FROM memory WHERE type = 'completed_goal' ORDER BY completed_at DESC LIMIT 50"
-  ).all() as any[];
+    "SELECT id, content, completed_at, chat_id, thread_id FROM memory WHERE type = 'completed_goal' AND (chat_id = ? OR chat_id IS NULL) ORDER BY completed_at DESC LIMIT 50"
+  ).all(chatId) as any[];
 
   if (data.length === 0) {
     return "No completed goals yet.\n\nMark a goal as done with /goals *N or /goals *text";
