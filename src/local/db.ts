@@ -192,7 +192,7 @@ export function getActiveMemories(opts?: {
     params.push(opts.type);
   }
   if (opts?.chatId) {
-    sql += " AND chat_id = ?";
+    sql += " AND (chat_id = ? OR chat_id IS NULL)";
     params.push(opts.chatId);
   }
   sql += " ORDER BY importance DESC, created_at DESC";

@@ -153,13 +153,14 @@ export interface SemanticSearchResult {
  */
 export async function semanticSearchMemory(
   query: string,
-  opts?: { matchCount?: number; threshold?: number; type?: string }
+  opts?: { matchCount?: number; threshold?: number; type?: string; chatId?: string }
 ): Promise<SemanticSearchResult[]> {
   const results = await searchMemory(query, {
     limit: opts?.matchCount ?? 5,
     threshold: opts?.threshold ?? 0.5,
     type: opts?.type,
     status: "active",
+    chatId: opts?.chatId,
   });
   return results.map((r) => ({
     id: r.id,
@@ -195,7 +196,7 @@ export async function semanticSearchMessages(
 export async function getMemoryFacts(
   opts?: { limit?: number; chatId?: number }
 ): Promise<Array<{ id: string; content: string; importance: number; stability: number; category?: string }>> {
-  const rows = getActiveMemories({ type: "fact", limit: opts?.limit ?? 25 });
+  const rows = getActiveMemories({ type: "fact", limit: opts?.limit ?? 25, chatId: opts?.chatId?.toString() });
   return rows.map((r) => ({
     id: r.id,
     content: r.content,
@@ -205,9 +206,9 @@ export async function getMemoryFacts(
 }
 
 export async function getMemoryGoals(
-  opts?: { limit?: number }
+  opts?: { limit?: number; chatId?: number }
 ): Promise<Array<{ id: string; content: string; deadline?: string; priority?: number }>> {
-  const rows = getActiveMemories({ type: "goal", limit: opts?.limit ?? 20 });
+  const rows = getActiveMemories({ type: "goal", limit: opts?.limit ?? 20, chatId: opts?.chatId?.toString() });
   return rows.map((r) => ({
     id: r.id,
     content: r.content,
@@ -235,6 +236,7 @@ export async function getExistingMemories(
   const rows = getActiveMemories({
     type,
     limit: opts?.limit ?? 200,
+    chatId: opts?.chatId?.toString(),
   });
   return rows.map((r) => ({ id: r.id, content: r.content }));
 }

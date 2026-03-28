@@ -66,7 +66,7 @@ export async function hybridSearch<T = Record<string, unknown>>(
  */
 export async function searchMemory(
   query: string,
-  opts?: { limit?: number; threshold?: number; type?: string; status?: string }
+  opts?: { limit?: number; threshold?: number; type?: string; status?: string; chatId?: string }
 ): Promise<HybridSearchResult<MemoryRow>[]> {
   const filter = buildFilter(opts);
   return hybridSearch<MemoryRow>("memory", query, {
@@ -186,9 +186,19 @@ function collectionToTable(collection: CollectionName): string {
 function buildFilter(opts?: {
   type?: string;
   status?: string;
+  chatId?: string;
 }): Record<string, unknown> | null {
   const must: Array<Record<string, unknown>> = [];
   if (opts?.type) must.push({ key: "type", match: { value: opts.type } });
   if (opts?.status) must.push({ key: "status", match: { value: opts.status } });
+  if (opts?.chatId) {
+    // Return items scoped to this chat OR global (chat_id is null/missing)
+    must.push({
+      should: [
+        { key: "chat_id", match: { value: opts.chatId } },
+        { is_null: { key: "chat_id" } },
+      ],
+    });
+  }
   return must.length > 0 ? { must } : null;
 }
