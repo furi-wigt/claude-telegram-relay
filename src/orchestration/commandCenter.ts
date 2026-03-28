@@ -197,10 +197,10 @@ async function executeAndReport(
  * Called once at bot startup.
  */
 export function registerOrchestrationCallbacks(bot: Bot): void {
-  bot.on("callback_query:data", async (ctx) => {
+  bot.on("callback_query:data", async (ctx, next) => {
     const data = ctx.callbackQuery.data;
     const parsed = parseOrchCallback(data);
-    if (!parsed) return; // not an orchestration callback
+    if (!parsed) return next(); // not an orchestration callback — pass to next handler
 
     const { action, dispatchId } = parsed;
     const result = handleInterrupt(dispatchId, action);
