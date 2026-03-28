@@ -42,6 +42,8 @@ interface AgentDefinition {
   capabilities: string[];
   isDefault?: boolean;          // exactly one agent should be marked as the DM/fallback default
   diagnostics?: { enabled: boolean }; // opt-in: use structured extraction prompts for images
+  /** Default Claude model for this agent: "opus" | "sonnet" | "haiku" | "local". Overridden by user prefix. */
+  defaultModel?: string;
 }
 
 /** Runtime agent config (prompt resolved, ready to use) */
@@ -57,6 +59,8 @@ export interface AgentConfig {
   chatId?: number;
   topicId?: number | null;
   diagnostics?: { enabled: boolean };
+  /** Default Claude model for this agent: "opus" | "sonnet" | "haiku" | "local". Overridden by user prefix. */
+  defaultModel?: string;
 }
 
 // ─── Loaders ─────────────────────────────────────────────────────────────────
@@ -120,6 +124,7 @@ for (const def of agentDefs) {
     topicId: def.topicId,
     systemPrompt: loadPrompt(def.id),
     diagnostics: def.diagnostics,
+    defaultModel: def.defaultModel,
   };
 }
 

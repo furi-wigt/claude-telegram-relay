@@ -7,6 +7,7 @@
     "groupKey": "COMMAND_CENTER",
     "chatId": null,
     "topicId": null,
+    "defaultModel": "sonnet",
     "capabilities": ["orchestration", "task-decomposition", "dispatch", "meeting-prep", "status-tracking"]
   },
   {
@@ -17,6 +18,7 @@
     "groupKey": "CLOUD",
     "chatId": null,
     "topicId": null,
+    "defaultModel": "sonnet",
     "capabilities": ["aws", "infrastructure-design", "cost-optimization", "well-architected", "cdk", "cloudformation", "architecture-diagrams", "gcc", "cloud-migration"],
     "diagnostics": { "enabled": true }
   },
@@ -28,6 +30,7 @@
     "groupKey": "SECURITY",
     "chatId": null,
     "topicId": null,
+    "defaultModel": "sonnet",
     "capabilities": ["im8-compliance", "pdpa", "security-audit", "threat-modeling", "vulnerability-assessment", "iam-review", "security-runbook", "incident-response"],
     "diagnostics": { "enabled": true }
   },
@@ -39,6 +42,7 @@
     "groupKey": "ENGINEERING",
     "chatId": null,
     "topicId": null,
+    "defaultModel": "sonnet",
     "capabilities": ["code-review", "tdd", "refactoring", "implementation", "debugging", "testing", "git-workflow", "typescript", "bun"],
     "diagnostics": { "enabled": true }
   },
@@ -50,6 +54,7 @@
     "groupKey": "STRATEGY",
     "chatId": null,
     "topicId": null,
+    "defaultModel": "sonnet",
     "capabilities": ["technical-proposal", "slide-deck", "adr", "system-design-doc", "executive-summary", "stakeholder-comms", "report-generation", "pricing-model", "rfp-response", "technology-evaluation", "market-research", "competitive-analysis", "vendor-assessment", "strategic-planning"]
   },
   {
@@ -61,6 +66,7 @@
     "chatId": null,
     "topicId": null,
     "isDefault": true,
+    "defaultModel": "haiku",
     "capabilities": ["general", "meeting-prep", "task-management", "team-coordination", "planning", "analysis", "scheduling"]
   }
 ]

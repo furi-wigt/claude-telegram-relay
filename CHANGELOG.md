@@ -1,5 +1,17 @@
 # Changelog
 
+## [Unreleased] / 2026-03-28 — Model prefix [Q] and per-agent defaultModel
+
+### Added
+- **src/utils/modelPrefix.ts**: Extracted `resolveModelPrefix()` into a standalone utility module. Adds `[Q]` prefix for explicit local Qwen routing and accepts an `agentDefault` parameter for per-agent model defaults. Priority chain: `[O/H/Q]` user prefix → `agent.defaultModel` → Sonnet.
+- **src/utils/modelPrefix.test.ts**: 17 unit tests covering all prefix tags, agent defaults, priority override, and edge cases.
+- **src/agents/config.ts**: `AgentDefinition` and `AgentConfig` extended with optional `defaultModel` field, passed through at startup.
+
+### Changed
+- **config/agents.example.json**: `defaultModel` field added per agent — specialist groups default to `sonnet`, general-assistant defaults to `haiku`.
+- **src/relay.ts**: `resolveModelPrefix()` call sites now pass `agent.defaultModel` as the fallback. `[Q]` messages bypass `callClaude()` entirely and call `callRoutineModel()` directly. Photo handler silently degrades `[Q]` → Sonnet (local Qwen has no vision capability).
+- **src/relay.handler-consistency.test.ts**: Updated to reflect constants moving to `modelPrefix.ts`; tests now verify import rather than inline declaration.
+
 ## [Unreleased] / 2026-03-28 — Agent Lineup Redesign (Option C: 5+1)
 
 ### Changed
