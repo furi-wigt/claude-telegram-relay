@@ -7,7 +7,7 @@
  * Phase 2 (future): Multi-agent fan-out with parallel/sequential execution.
  */
 
-import type { Bot, Context } from "grammy";
+import type { Bot } from "grammy";
 import { getDb } from "../local/db.ts";
 import { AGENTS } from "../agents/config.ts";
 import type { DispatchPlan, DispatchEvent, DispatchRow, DispatchTaskRow, TaskStatus } from "./types.ts";
@@ -83,12 +83,18 @@ export async function executeSingleDispatch(
     message_thread_id: ccThreadId ?? undefined,
   }).catch(() => {});
 
-  // Wait for agent response — the bot will process the dispatched message in the agent group
-  // and respond there. We listen for the bot's own messages in the agent group.
+  // Directly invoke the agent's processing pipeline — bypasses Telegram API roundtrip.
+  // The runner (registered at startup by relay.ts) calls processTextMessage and returns
+  // the agent's response text. The agent's reply is still visible in the agent group.
   updateTaskStatus(plan.dispatchId, task.agentId, "in_progress");
   updateDispatchStatus(plan.dispatchId, "in_progress");
 
-  const response = await waitForAgentResponse(bot, agent.chatId, agent.topicId ?? null);
+  let response: string | null = null;
+  if (_dispatchRunner) {
+    response = await _dispatchRunner(agent.chatId, agent.topicId ?? null, plan.userMessage);
+  } else {
+    console.error("[dispatchEngine] No dispatch runner registered — falling back to timeout");
+  }
 
   const durationMs = Date.now() - startTime;
 
@@ -108,52 +114,18 @@ export async function executeSingleDispatch(
   }
 }
 
-// ── Agent Response Listener ─────────────────────────────────────────────────
+// ── Dispatch Runner (dependency injection) ───────────────────────────────────
 
 /**
- * Wait for the bot's own response message in a target chat.
- *
- * Polls the chat for new messages from the bot at decreasing intervals.
- * Returns the response text or null on timeout.
+ * Registered at startup by relay.ts.
+ * Directly invokes the agent's processing pipeline without a Telegram API roundtrip.
+ * Returns the agent's response text, or null on failure/timeout.
  */
-function waitForAgentResponse(
-  bot: Bot,
-  targetChatId: number,
-  targetTopicId: number | null,
-): Promise<string | null> {
-  return new Promise((resolve) => {
-    const deadline = Date.now() + AGENT_RESPONSE_TIMEOUT_MS;
-    let resolved = false;
+type DispatchRunner = (chatId: number, topicId: number | null, text: string) => Promise<string | null>;
+let _dispatchRunner: DispatchRunner | null = null;
 
-    // Listen for bot's own messages in the target group
-    const listener = (ctx: Context) => {
-      if (resolved) return;
-      if (!ctx.message?.text) return;
-      if (ctx.chat?.id !== targetChatId) return;
-
-      // Match topic if specified
-      if (targetTopicId !== null && ctx.message.message_thread_id !== targetTopicId) return;
-
-      // Only capture the bot's own messages (bot responds to the dispatched message)
-      const botId = bot.botInfo?.id;
-      if (ctx.from?.id !== botId) return;
-
-      resolved = true;
-      bot.off("message:text", listener);
-      resolve(ctx.message.text);
-    };
-
-    bot.on("message:text", listener);
-
-    // Timeout cleanup
-    setTimeout(() => {
-      if (!resolved) {
-        resolved = true;
-        bot.off("message:text", listener);
-        resolve(null);
-      }
-    }, AGENT_RESPONSE_TIMEOUT_MS);
-  });
+export function setDispatchRunner(fn: DispatchRunner): void {
+  _dispatchRunner = fn;
 }
 
 // ── DB Persistence ──────────────────────────────────────────────────────────

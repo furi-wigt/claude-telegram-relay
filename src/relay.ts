@@ -44,7 +44,7 @@ import { learnTopicName, learnChatName, getTopicName } from "./utils/chatNames.t
 import { isMlxAvailable } from "./mlx/index.ts";
 import { callRoutineModel } from "./routines/routineModel.ts";
 import { getAgentForChat, autoDiscoverGroup, loadGroupMappings } from "./routing/groupRouter.ts";
-import { isCommandCenter, orchestrateMessage, registerOrchestrationCallbacks, registerAgentResponseBus } from "./orchestration/index.ts";
+import { isCommandCenter, orchestrateMessage, registerOrchestrationCallbacks, setDispatchRunner } from "./orchestration/index.ts";
 // Router removed: always use Sonnet for simplicity and predictable latency
 import { loadSession as loadGroupSession, updateSessionIdGuarded, initSessions, loadAllSessions, saveSession, isResumeReliable, didResumeFail, lockActiveCwd, resetSession, getSessionSince } from "./session/groupSessions.ts";
 import { buildAgentPrompt } from "./agents/promptBuilder.ts";
@@ -641,8 +641,21 @@ bot.command("doc", async (ctx, next) => {
 
 // Register orchestration callback handlers (Pause/Edit/Cancel + agent picker)
 registerOrchestrationCallbacks(bot);
-// Register the single persistent handler that feeds waitForAgentResponse
-registerAgentResponseBus(bot);
+
+// Register dispatch runner — dispatch engine calls processTextMessage directly
+// instead of going through Telegram API (outgoing bot messages don't trigger handlers).
+setDispatchRunner(async (chatId: number, topicId: number | null, text: string) => {
+  const syntheticCtx = {
+    replyWithChatAction: (action: string) =>
+      bot.api.sendChatAction(chatId, action as Parameters<typeof bot.api.sendChatAction>[1], {
+        message_thread_id: topicId ?? undefined,
+      }).catch(() => {}),
+    from: { id: allowedUserId },
+  } as unknown as Context;
+
+  await processTextMessage(chatId, topicId, text, syntheticCtx);
+  return lastAssistantResponses.get(streamKey(chatId, topicId))?.join("") ?? null;
+});
 
 registerCommands(bot, {
   userId: allowedUserId,

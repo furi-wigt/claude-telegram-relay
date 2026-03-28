@@ -4,7 +4,7 @@
 
 export { classifyIntent, classifyWithKeywords, AUTO_DISPATCH_THRESHOLD } from "./intentClassifier.ts";
 export { isCommandCenter, orchestrateMessage, registerOrchestrationCallbacks } from "./commandCenter.ts";
-export { executeSingleDispatch, getRecentDispatches, getYesterdayActivity } from "./dispatchEngine.ts";
+export { executeSingleDispatch, getRecentDispatches, getYesterdayActivity, setDispatchRunner } from "./dispatchEngine.ts";
 export { initOrchestrationSchema } from "./schema.ts";
 export {
   startCountdown,
