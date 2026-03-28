@@ -1,5 +1,24 @@
 # Changelog
 
+## [Unreleased] / 2026-03-29 — Command Center Orchestration Layer (Phase 0 + Phase 1)
+
+### Added
+- **src/orchestration/**: New orchestration module with 7 files:
+  - `intentClassifier.ts` — MLX-based intent classification with keyword fallback. Routes CC messages to the best-fit agent.
+  - `commandCenter.ts` — CC message handler: classify → show routing plan → 5s countdown → dispatch to agent group.
+  - `dispatchEngine.ts` — Single-agent dispatch via `bot.api.sendMessage()`, DB persistence, response monitoring.
+  - `interruptProtocol.ts` — 5s countdown timer with Pause/Edit/Cancel inline keyboard. Immediate promise settlement on interrupt.
+  - `schema.ts` — `dispatches` + `dispatch_tasks` SQLite tables with indexes.
+  - `types.ts` — Shared interfaces (ClassificationResult, DispatchPlan, SubTask, etc.).
+  - `index.ts` — Barrel export.
+- **src/commands/botCommands.ts**: `/agents` command — lists all 6 agents with capabilities and connection status. `/search <query>` — cross-group message search with agent/topic attribution.
+- **routines/morning-summary.ts**: Cross-agent activity digest section using `getYesterdayActivity()` from dispatch data.
+- **tests/orchestration/**: 31 new tests (intentClassifier: 13, interruptProtocol: 12, schema: 6).
+
+### Changed
+- **src/relay.ts**: CC group messages now route through `orchestrateMessage()` instead of `processTextMessage()`. Orchestration callback handlers registered at startup.
+- **src/local/db.ts**: `initSchema()` now calls `initOrchestrationSchema()` to create dispatch tables.
+
 ## [Unreleased] / 2026-03-28 — Fix 101 test failures (mock isolation + bug fixes)
 
 ### Fixed
