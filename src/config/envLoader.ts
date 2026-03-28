@@ -114,16 +114,18 @@ export function loadEnv(projectRoot?: string): void {
   for (const [key, value] of Object.entries(fileEnv)) {
     const current = process.env[key];
 
-    // Apply if:
-    //   1. Not set in process.env at all, OR
-    //   2. Current value matches the project .env value — meaning Bun
-    //      auto-loaded it and the user .env should override it.
-    // Never overwrite a value that differs from the project default,
-    // as that indicates a real runtime override (shell export, PM2 env, etc.).
-    const isUnset = current === undefined || current === "";
-    const isBunAutoLoaded = current === projectEnv[key];
-
-    if (isUnset || isBunAutoLoaded) {
+    // Apply only if the key is absent or empty in process.env.
+    //
+    // Bun auto-loads the project `.env` before any module code runs, which
+    // pre-populates process.env with project defaults. To prevent those
+    // defaults from blocking user ~/.claude-relay/.env overrides, project
+    // `.env` intentionally uses *empty* values for user-configurable
+    // settings (e.g. TELEGRAM_BOT_TOKEN=). An empty value signals "not yet
+    // set" — user env and runtime shell exports fill it in.
+    //
+    // A non-empty process.env value means a real runtime override (shell
+    // export, PM2 env injection) and must never be overwritten.
+    if (current === undefined || current === "") {
       process.env[key] = value;
     }
   }
