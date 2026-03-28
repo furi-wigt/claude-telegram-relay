@@ -61,7 +61,7 @@ export async function orchestrateMessage(
 
   // 2. Show routing plan
   const dispatchId = crypto.randomUUID();
-  const planText = formatPlanMessage(classification, agent);
+  const planText = formatPlanMessage(classification, agent, text);
 
   if (classification.confidence < AUTO_DISPATCH_THRESHOLD) {
     // Low confidence → show inline keyboard agent picker instead of auto-dispatching
@@ -293,11 +293,12 @@ export function registerOrchestrationCallbacks(bot: Bot): void {
 
 // ── Formatting ──────────────────────────────────────────────────────────────
 
-function formatPlanMessage(classification: ClassificationResult, agent: AgentConfig): string {
+function formatPlanMessage(classification: ClassificationResult, agent: AgentConfig, userMessage: string): string {
   const confidence = (classification.confidence * 100).toFixed(0);
   return [
     `\u{1F3AF} DISPATCH PLAN`,
     ``,
+    `Query: "${truncate(userMessage, 100)}"`,
     `Intent: ${classification.intent}`,
     `Target: ${agent.name} (${confidence}% confidence)`,
     `Reasoning: ${classification.reasoning}`,
@@ -322,11 +323,10 @@ function buildAgentPickerKeyboard(dispatchId: string, userMessage: string): Inli
 }
 
 function extractUserMessageFromPlan(planText: string): string {
-  // The user message is embedded in the plan; extract from the task description line
-  // Fallback: return the full plan text stripped of formatting
+  // Extract original user query from the "Query: ..." line embedded in the plan
   const lines = planText.split("\n");
   for (const line of lines) {
-    const match = line.match(/\u2192 "(.+)"/);
+    const match = line.match(/^Query: "(.+)"$/);
     if (match) return match[1].replace(/\.\.\.$/g, "");
   }
   return planText.split("\n")[0] || "dispatched message";
