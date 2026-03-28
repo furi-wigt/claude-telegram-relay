@@ -92,7 +92,12 @@ function readEnvFile(filePath: string): Record<string, string> {
  * Load environment variables with layered precedence.
  *
  * Call this once at the entry point of each service/routine.
- * Safe to call multiple times (idempotent — won't overwrite existing values).
+ * Safe to call multiple times (idempotent — won't overwrite runtime values).
+ *
+ * Bun automatically loads the project `.env` into process.env before any
+ * module code runs. To ensure user ~/.claude-relay/.env overrides project
+ * defaults (not just unset keys), we track project .env values and allow
+ * user .env to replace them.
  *
  * @param projectRoot - Override project root (useful for testing). Defaults to auto-detected root.
  */
@@ -100,23 +105,25 @@ export function loadEnv(projectRoot?: string): void {
   const root = projectRoot ?? getProjectRoot();
   const userDir = getUserDir();
 
-  // Load in reverse priority order: project first, then user.
-  // Each layer only sets keys that aren't already in process.env,
-  // so user .env values take precedence over project .env values,
-  // and process.env (runtime) takes precedence over both.
   const projectEnv = readEnvFile(join(root, ".env"));
   const userEnv = readEnvFile(join(userDir, ".env"));
 
-  // Apply user overrides first (they should win over project defaults)
-  for (const [key, value] of Object.entries(userEnv)) {
-    if (!(key in process.env) || process.env[key] === undefined) {
-      process.env[key] = value;
-    }
-  }
+  // Merge file-level env: user wins over project
+  const fileEnv: Record<string, string> = { ...projectEnv, ...userEnv };
 
-  // Apply project defaults last (lowest file priority)
-  for (const [key, value] of Object.entries(projectEnv)) {
-    if (!(key in process.env) || process.env[key] === undefined) {
+  for (const [key, value] of Object.entries(fileEnv)) {
+    const current = process.env[key];
+
+    // Apply if:
+    //   1. Not set in process.env at all, OR
+    //   2. Current value matches the project .env value — meaning Bun
+    //      auto-loaded it and the user .env should override it.
+    // Never overwrite a value that differs from the project default,
+    // as that indicates a real runtime override (shell export, PM2 env, etc.).
+    const isUnset = current === undefined || current === "";
+    const isBunAutoLoaded = current === projectEnv[key];
+
+    if (isUnset || isBunAutoLoaded) {
       process.env[key] = value;
     }
   }
