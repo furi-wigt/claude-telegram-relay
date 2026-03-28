@@ -229,9 +229,9 @@ export function registerOrchestrationCallbacks(bot: Bot): void {
   // Handle agent picker callbacks (low-confidence fallback)
   bot.on("callback_query:data", async (ctx) => {
     const data = ctx.callbackQuery.data;
-    if (!data.startsWith("orch_pick:")) return;
+    if (!data.startsWith("op:")) return;
 
-    const parts = data.slice("orch_pick:".length).split(":");
+    const parts = data.slice("op:".length).split(":");
     if (parts.length < 2) return;
 
     const [dispatchId, agentId] = parts;
@@ -313,7 +313,7 @@ function buildAgentPickerKeyboard(dispatchId: string, userMessage: string): Inli
   // 2 agents per row
   for (let i = 0; i < agents.length; i++) {
     const agent = agents[i];
-    keyboard.text(agent.shortName ?? agent.name, `orch_pick:${dispatchId}:${agent.id}`);
+    keyboard.text(agent.shortName ?? agent.name, `op:${dispatchId}:${agent.id}`);
     if (i % 2 === 1 || i === agents.length - 1) keyboard.row();
   }
 
