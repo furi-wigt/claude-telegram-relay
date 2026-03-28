@@ -33,6 +33,7 @@ All user data lives outside the project directory in `~/.claude-relay/`:
 ```
 ~/.claude-relay/
   .env              # User-level environment overrides
+  agents.json       # Agent chat IDs and topic IDs (copied from agents.example.json by setup)
   data/
     local.sqlite    # Messages, memory, goals, logs (SQLite via Drizzle)
   logs/             # PM2 service logs
@@ -276,12 +277,12 @@ GROUP_OPERATIONS_CHAT_ID=-100xxxxxxxxxx
 ```
 
 **Option B — agents.json (persistent, recommended for long-term use):**
-1. `config/agents.json` already exists with all `chatId` values set to `null`
+1. `~/.claude-relay/agents.json` was created by `bun run setup` with all `chatId` values set to `null`
 2. Fill in the `chatId` field for each agent with the real group chat ID
 3. Restart the bot
 
-> **Note:** `config/agents.json` is gitignored — your real chat IDs stay local.
-> `config/agents.example.json` is the committed clean template — never modify it directly.
+> **Note:** `~/.claude-relay/agents.json` is your personal config — it lives outside the repo and survives `git clean`.
+> `config/agents.example.json` is the committed clean template. Never edit it directly.
 
 ### Forum Topic Setup (Optional)
 
@@ -414,7 +415,8 @@ Summarise what was set up and what is running. Remind the user:
 - Test by sending a message on Telegram
 - Their bot runs in the background (if Phase 6 was done)
 - Come back to this project folder and type `claude` anytime to make changes
-- `config/profile.md` and `config/agents.json` are gitignored — safe to customise freely
+- `config/profile.md` is gitignored — safe to customise freely
+- `~/.claude-relay/agents.json` holds your chatIds — safe to edit, survives `git clean`
 - Agent prompts can be customized at `~/.claude-relay/prompts/`
 
 ---

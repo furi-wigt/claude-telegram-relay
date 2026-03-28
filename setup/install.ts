@@ -120,6 +120,28 @@ function createDirs(): void {
 }
 
 /**
+ * Copy agents.example.json to ~/.claude-relay/agents.json on first run.
+ * No-clobber — existing user file is never overwritten.
+ */
+function seedDefaultAgents(): void {
+  const src = join(PROJECT_ROOT, "config", "agents.example.json");
+  const dest = join(RELAY_USER_DIR, "agents.json");
+
+  if (!existsSync(src)) {
+    console.log(`  ${WARN} config/agents.example.json not found — skipping`);
+    return;
+  }
+
+  if (existsSync(dest)) {
+    console.log(`  ${PASS} ~/.claude-relay/agents.json ${dim("(user copy exists, skipped)")}`);
+  } else {
+    copyFileSync(src, dest);
+    console.log(`  ${PASS} Copied agents.json → ~/.claude-relay/agents.json`);
+    console.log(`      ${dim("Edit ~/.claude-relay/agents.json to add your chatId values")}`);
+  }
+}
+
+/**
  * Copy default prompts from config/prompts/ to ~/.claude-relay/prompts/
  * using no-clobber semantics — existing user files are never overwritten.
  */
@@ -208,8 +230,9 @@ async function main() {
   console.log(`\n${cyan("  [3/5] Directories")}`);
   createDirs();
 
-  // 4. Default prompts
-  console.log(`\n${cyan("  [4/5] Default Prompts")}`);
+  // 4. Default config files (agents + prompts)
+  console.log(`\n${cyan("  [4/5] Default Config")}`);
+  seedDefaultAgents();
   seedDefaultPrompts();
 
   // 5. Environment
