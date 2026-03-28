@@ -650,6 +650,13 @@ setDispatchRunner(async (chatId: number, topicId: number | null, text: string) =
       bot.api.sendChatAction(chatId, action as Parameters<typeof bot.api.sendChatAction>[1], {
         message_thread_id: topicId ?? undefined,
       }).catch(() => {}),
+    reply: (replyText: string, other?: Record<string, unknown>) =>
+      bot.api.sendMessage(chatId, replyText, {
+        message_thread_id: topicId ?? undefined,
+        ...(other ?? {}),
+      }),
+    chat: { id: chatId },
+    message: { message_thread_id: topicId ?? undefined },
     from: { id: allowedUserId },
   } as unknown as Context;
 
