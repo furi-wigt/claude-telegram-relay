@@ -8,13 +8,13 @@
  */
 
 /**
- * Night Summary Routine (Local LLM only — Osaurus / Qwen3.5-4B)
+ * Night Summary Routine (Local LLM only — MLX / Qwen3.5-9B)
  *
  * Schedule: 11:00 PM daily (SGT)
  * Target: General AI Assistant group
  *
  * Pulls the day's messages, facts, and goals from local SQLite, then uses
- * local Osaurus (Qwen3.5-4B) to generate a detailed, motivational day-end
+ * local MLX (Qwen3.5-9B) to generate a detailed, motivational day-end
  * reflection formatted in Markdown. Notifies the user if the local LLM fails.
  *
  * Run manually: bun run routines/night-summary.ts
@@ -316,7 +316,7 @@ export function formatSummary(
   lines.push("---");
 
   const providerLabel = provider === "local"
-    ? getMlxModel().split("/").pop() ?? "Osaurus"
+    ? getMlxModel().split("/").pop() ?? "MLX"
     : "Unknown";
   lines.push(`*Powered by ${providerLabel}. Reply to reflect further.*`);
 
@@ -324,7 +324,7 @@ export function formatSummary(
 }
 
 /**
- * Generate a reflection using the local LLM (Osaurus).
+ * Generate a reflection using the local MLX server.
  * Returns the analysis text and provider ("local" or null on failure).
  */
 export async function analyzeWithLocalLLM(
@@ -338,7 +338,7 @@ export async function analyzeWithLocalLLM(
   } catch (error) {
     console.error("[night-summary] Local LLM failed:", error instanceof Error ? error.message : error);
     return {
-      text: "Day review unavailable — Osaurus is offline. Check that `osaurus serve` is running.",
+      text: "Day review unavailable — MLX server is offline. Check that `mlx serve` is running.",
       provider: null,
     };
   }
@@ -600,7 +600,7 @@ async function buildSummary(): Promise<{ summary: string; provider: "local" | nu
 // ============================================================
 
 async function main() {
-  console.log("Running Night Summary (Local LLM — Osaurus)...");
+  console.log("Running Night Summary (Local LLM — MLX)...");
 
   if (shouldSkipRecently(LAST_RUN_FILE, 2)) {
     console.log("[night-summary] Already ran within the last 2 hours, skipping.");
@@ -618,8 +618,8 @@ async function main() {
   if (provider === null) {
     const failureMessage =
       "⚠️ **Night summary unavailable**\n\n" +
-      "Local LLM (Osaurus) is offline.\n" +
-      "Check that `osaurus serve` is running.\n\n" +
+      "Local LLM (MLX) is offline.\n" +
+      "Check that `mlx serve` is running.\n\n" +
       "Your day was still great — pick this up tomorrow! 🌟";
 
     await sendAndRecord(GROUPS.GENERAL.chatId, failureMessage, {

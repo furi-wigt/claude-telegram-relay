@@ -1,4 +1,4 @@
 /**
- * Local LLM module — Osaurus (OpenAI-compatible) text generation.
+ * Local LLM module — MLX serve (OpenAI-compatible) text generation.
  */
 export { callMlxGenerate, isMlxAvailable, getMlxBaseUrl } from "./client.ts";

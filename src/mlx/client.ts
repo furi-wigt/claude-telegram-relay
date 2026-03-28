@@ -5,7 +5,7 @@
  * Model: Qwen3.5 9B (mlx-community/Qwen3.5-9B-MLX-4bit) on Apple Silicon.
  *
  * The `mlx` PM2 service runs `mlx serve -m mlx-community/Qwen3.5-9B-MLX-4bit`.
- * Override with LOCAL_LLM_URL env var if running on a different port.
+ * Override with MLX_URL env var if running on a different port.
  */
 
 const DEFAULT_TIMEOUT_MS = 120_000;
@@ -13,14 +13,14 @@ const DEFAULT_MAX_TOKENS = 4096;
 const DEFAULT_LOCAL_MODEL = "mlx-community/Qwen3.5-9B-MLX-4bit";
 
 export function getMlxBaseUrl(): string {
-  return process.env.LOCAL_LLM_URL ?? "http://localhost:8800";
+  return process.env.MLX_URL ?? "http://localhost:8800";
 }
 
 export function getMlxModel(): string {
-  return process.env.LOCAL_LLM_MODEL ?? DEFAULT_LOCAL_MODEL;
+  return process.env.MLX_MODEL ?? DEFAULT_LOCAL_MODEL;
 }
 
-/** Check if the local LLM server (Osaurus) is reachable. */
+/** Check if the local MLX server is reachable. */
 export async function isMlxAvailable(): Promise<boolean> {
   try {
     const response = await fetch(`${getMlxBaseUrl()}/v1/models`, {
@@ -33,7 +33,7 @@ export async function isMlxAvailable(): Promise<boolean> {
 }
 
 /**
- * Generate text using local LLM server (Osaurus on Apple Silicon).
+ * Generate text using local MLX server (Apple Silicon).
  *
  * Calls /v1/chat/completions — OpenAI-compatible endpoint.
  *

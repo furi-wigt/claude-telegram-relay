@@ -1,11 +1,11 @@
 /**
- * Unified routine model caller — Osaurus (local LLM).
+ * Unified routine model caller — MLX serve (local LLM).
  *
  * All routine code should call `callRoutineModel()` instead of
  * `callMlxGenerate()` directly. This provides a single place to
  * control generation for scheduled routines.
  *
- * Provider: Osaurus (Qwen3.5 4B, Apple Silicon native, port 1337)
+ * Provider: MLX serve (Qwen3.5 9B, Apple Silicon native, port 8800)
  *
  * Concurrency: calls are serialized via a mutex — only one
  * generation can run at a time (GPU memory is shared).
@@ -36,7 +36,7 @@ let _lastProvider: RoutineModelProvider = "local";
 export function getLastProvider(): RoutineModelProvider { return _lastProvider; }
 
 /**
- * Call the local LLM (Osaurus) for routine tasks.
+ * Call the local MLX server for routine tasks.
  *
  * Calls are serialized — concurrent callers wait in queue.
  */
