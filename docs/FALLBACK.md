@@ -1,6 +1,6 @@
-# Fallback AI — Osaurus Local Inference
+# Fallback AI — MLX Local Inference
 
-When Claude CLI is unavailable, the relay automatically falls back to a local Osaurus model running on Apple Silicon. No cloud dependency, no API keys.
+When Claude CLI is unavailable, the relay automatically falls back to a local MLX model running on Apple Silicon. No cloud dependency, no API keys.
 
 ## How It Works
 
@@ -15,54 +15,57 @@ Claude CLI (claudeStream / claudeText)
     └─ Failure (network error, auth failure, timeout)
           │
           ▼
-      Osaurus local inference (Qwen3.5-4B-MLX-4bit)
+      MLX local inference (Qwen3.5-9B-MLX-4bit)
           │
           ├─ Success → respond with [via local] prefix
           │
           └─ Failure → error message to user
 ```
 
-The relay checks Osaurus availability at startup via `isMlxAvailable()`, which calls `GET /v1/models` on the Osaurus server. If reachable, the startup log shows:
+The relay checks MLX availability at startup via `isMlxAvailable()`, which calls `GET /v1/models` on the MLX server. If reachable, the startup log shows:
 
 ```
-Fallback model available: Osaurus (Qwen3.5-4B)
+Fallback model available: MLX (Qwen3.5-9B)
 ```
 
-## Osaurus Roles
+## MLX Roles
 
-Osaurus serves two distinct purposes in the relay:
+MLX serves two distinct purposes in the relay:
 
 | Role | Description | Always active? |
 |------|-------------|----------------|
 | **Fallback model** | Text generation when Claude CLI is down | Only when Claude fails |
-| **Routine model** | All scheduled routines (morning-summary, night-summary, smart-checkin) use Osaurus exclusively via `callRoutineModel()` | Always |
+| **Routine model** | All scheduled routines (morning-summary, night-summary, smart-checkin) use MLX exclusively via `callRoutineModel()` | Always |
 
-Embeddings are handled separately by **Ollama bge-m3** (port 11434) — always active, no cloud dependency.
+Embeddings are handled separately by **MLX bge-m3** (port 8801, `mlx serve-embed`) — always active, no cloud dependency.
 
 ## Setup
 
-### 1. Install and Start Osaurus
+### 1. Start MLX Servers
 
 ```bash
-brew install --cask osaurus
-# Open Osaurus.app → Model Manager → download Qwen3.5-4B-MLX-4bit
-osaurus serve
+mlx serve        # text generation — port 8800
+mlx serve-embed  # embeddings — port 8801 (separate terminal)
 ```
 
 ### 2. Configure Environment
 
-Add to `.env` (optional — defaults shown):
+Add to `~/.claude-relay/.env` (optional — defaults shown):
 
 ```bash
-LOCAL_LLM_URL=http://localhost:1337
-LOCAL_LLM_MODEL=mlx-community/Qwen3.5-4B-MLX-4bit
+MLX_URL=http://localhost:8800
+MLX_MODEL=mlx-community/Qwen3.5-9B-MLX-4bit
+EMBED_URL=http://localhost:8801
 ```
 
 ### 3. Verify
 
 ```bash
-curl http://localhost:1337/v1/models
+curl http://localhost:8800/v1/models
 # → {"object":"list","data":[...]}
+
+curl http://localhost:8801/health
+# → {"status":"ok","model":"...bge-m3..."}
 ```
 
 Restart the relay and check the startup log for the fallback confirmation message.
@@ -71,8 +74,8 @@ Restart the relay and check the startup log for the fallback confirmation messag
 
 | File | Purpose |
 |------|---------|
-| `src/mlx/client.ts` | Osaurus client — `callMlxGenerate()` for text, OpenAI-compatible API calls |
-| `src/routines/routineModel.ts` | `callRoutineModel()` — all scheduled routines use this to call Osaurus |
+| `src/mlx/client.ts` | MLX client — `callMlxGenerate()` for text, OpenAI-compatible API calls |
+| `src/routines/routineModel.ts` | `callRoutineModel()` — all scheduled routines use this to call MLX |
 
 ## When Fallback Activates
 
@@ -88,10 +91,11 @@ Fallback does **not** activate for:
 
 ## Requirements
 
-- **Apple Silicon** (M1/M2/M3/M4) — Osaurus runs only on Apple Silicon
-- **Osaurus running** — `osaurus serve` on port 1337
-- **Model downloaded** — via Osaurus.app Model Manager (~2.5 GB for 4B-4bit)
+- **Apple Silicon** (M1/M2/M3/M4) — MLX runs only on Apple Silicon
+- **MLX generation server running** — `mlx serve` on port 8800
+- **MLX embed server running** — `mlx serve-embed` on port 8801
+- **Model weights downloaded** — via `mlx pull` (~5.6 GB for 9B-4bit)
 
 ## Disable Fallback
 
-Remove or comment out `LOCAL_LLM_URL` in `.env`. The relay will still use Ollama for embeddings if memory/search features are enabled.
+Unset or comment out `MLX_URL` in `~/.claude-relay/.env`. The relay will still use the MLX embed server for memory/search features.
