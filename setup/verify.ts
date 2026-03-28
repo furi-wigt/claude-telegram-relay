@@ -9,6 +9,7 @@
 
 import { existsSync } from "fs";
 import { join, dirname } from "path";
+import { homedir } from "os";
 
 const PROJECT_ROOT = dirname(import.meta.dir);
 
@@ -31,22 +32,32 @@ function pass(msg: string) { console.log(`  ${PASS} ${msg}`); passed++; }
 function fail(msg: string) { console.log(`  ${FAIL} ${msg}`); failed++; }
 function warn(msg: string) { console.log(`  ${WARN} ${msg}`); warned++; }
 
-// Load .env
+// Load .env with two-pass layering — same order as src/relay.ts:
+//   Pass 1: project .env  — defaults (do not override process.env)
+//   Pass 2: ~/.claude-relay/.env — user secrets (always wins)
 async function loadEnv(): Promise<Record<string, string>> {
-  try {
-    const content = await Bun.file(join(PROJECT_ROOT, ".env")).text();
-    const vars: Record<string, string> = {};
-    for (const line of content.split("\n")) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith("#")) continue;
-      const eq = trimmed.indexOf("=");
-      if (eq === -1) continue;
-      vars[trimmed.slice(0, eq).trim()] = trimmed.slice(eq + 1).trim();
+  const vars: Record<string, string> = {};
+
+  async function readEnvFile(filePath: string, override: boolean): Promise<void> {
+    try {
+      const content = await Bun.file(filePath).text();
+      for (const line of content.split("\n")) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith("#")) continue;
+        const eq = trimmed.indexOf("=");
+        if (eq === -1) continue;
+        const key = trimmed.slice(0, eq).trim();
+        const value = trimmed.slice(eq + 1).trim();
+        if (override || !(key in vars)) vars[key] = value;
+      }
+    } catch {
+      // file not found — continue
     }
-    return vars;
-  } catch {
-    return {};
   }
+
+  await readEnvFile(join(PROJECT_ROOT, ".env"), false);
+  await readEnvFile(join(homedir(), ".claude-relay", ".env"), true);
+  return vars;
 }
 
 async function main() {
