@@ -1,5 +1,25 @@
 # Changelog
 
+## [Unreleased] / 2026-03-28 — Agent Lineup Redesign (Option C: 5+1)
+
+### Changed
+- **config/agents.example.json**: Redesigned from 6 generic agents to 6 role-aligned agents (5 specialists + 1 orchestrator). New agents: `command-center`, `cloud-architect`, `security-compliance`, `engineering`, `strategy-comms`, `operations-hub`. Replaces: `aws-architect`, `security-analyst`, `documentation-specialist`, `code-quality-coach`, `research-analyst`, `general-assistant`.
+- **config/prompts/cloud-architect.md**: Broader scope — GCC 2.0, SGTS, multi-cloud (replaces AWS-only `aws-architect.md`).
+- **config/prompts/security-compliance.md**: Singapore jurisdiction — IM8 v4, PDPA, CSA, AIAS (replaces generic GDPR/HIPAA `security-analyst.md`).
+- **config/prompts/engineering.md**: Renamed from `code-quality-coach.md`, same TDD/correctness-by-construction scope.
+- **config/prompts/operations-hub.md**: PM-focused identity with Calendar/Things 3 integration (replaces generic `general-assistant.md`).
+- **CLAUDE.md**: Updated Phase 5 agent table, group names, and env var references.
+
+### Added
+- **config/prompts/command-center.md**: Orchestrator system prompt — intent classification, dispatch protocol, interrupt handling.
+- **config/prompts/strategy-comms.md**: New agent merging documentation-specialist + research-analyst + BD/proposal capabilities. Handles proposals, decks, research, ADRs, stakeholder comms.
+- **config/prompts/diagnostics/cloud-architect.md**: Diagnostic extraction prompt (renamed from aws-architect).
+- **config/prompts/diagnostics/security-compliance.md**: Diagnostic extraction prompt with IM8 compliance support (renamed from security-analyst).
+- **config/prompts/diagnostics/engineering.md**: Diagnostic extraction prompt (renamed from code-quality-coach).
+
+### Removed
+- Old agent prompts archived to `config/prompts/_archived/` (aws-architect, security-analyst, documentation-specialist, code-quality-coach, general-assistant, research-analyst + their diagnostic variants).
+
 ## [Unreleased] / 2026-03-28 — Jarvis Self-Learning System Phase 1
 
 ### Added

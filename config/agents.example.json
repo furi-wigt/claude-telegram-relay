@@ -1,67 +1,66 @@
 [
   {
-    "id": "aws-architect",
-    "name": "AWS Cloud Architect",
-    "groupName": "AWS Cloud Architect",
-    "shortName": "AWS",
-    "groupKey": "AWS_ARCHITECT",
+    "id": "command-center",
+    "name": "Jarvis Command Center",
+    "groupName": "Jarvis Command Center",
+    "shortName": "CC",
+    "groupKey": "COMMAND_CENTER",
     "chatId": null,
     "topicId": null,
-    "claudeAgent": "architect.md",
-    "capabilities": ["infrastructure-design", "cost-optimization", "aws-services"]
+    "capabilities": ["orchestration", "task-decomposition", "dispatch", "meeting-prep", "status-tracking"]
   },
   {
-    "id": "security-analyst",
+    "id": "cloud-architect",
+    "name": "Cloud & Infrastructure Architect",
+    "groupName": "Cloud & Infrastructure",
+    "shortName": "Cloud",
+    "groupKey": "CLOUD",
+    "chatId": null,
+    "topicId": null,
+    "capabilities": ["aws", "infrastructure-design", "cost-optimization", "well-architected", "cdk", "cloudformation", "architecture-diagrams", "gcc", "cloud-migration"],
+    "diagnostics": { "enabled": true }
+  },
+  {
+    "id": "security-compliance",
     "name": "Security & Compliance Analyst",
     "groupName": "Security & Compliance",
     "shortName": "Security",
     "groupKey": "SECURITY",
     "chatId": null,
     "topicId": null,
-    "claudeAgent": "security.md",
-    "capabilities": ["security-audit", "compliance-check", "threat-modeling"]
+    "capabilities": ["im8-compliance", "pdpa", "security-audit", "threat-modeling", "vulnerability-assessment", "iam-review", "security-runbook", "incident-response"],
+    "diagnostics": { "enabled": true }
   },
   {
-    "id": "documentation-specialist",
-    "name": "Technical Documentation Specialist",
-    "groupName": "Technical Documentation",
-    "shortName": "Docs",
-    "groupKey": "DOCUMENTATION",
+    "id": "engineering",
+    "name": "Engineering & Quality Lead",
+    "groupName": "Engineering & Quality",
+    "shortName": "Engineering",
+    "groupKey": "ENGINEERING",
     "chatId": null,
     "topicId": null,
-    "claudeAgent": "documentation-writer.md",
-    "capabilities": ["adr-creation", "system-docs", "runbooks"]
+    "capabilities": ["code-review", "tdd", "refactoring", "implementation", "debugging", "testing", "git-workflow", "typescript", "bun"],
+    "diagnostics": { "enabled": true }
   },
   {
-    "id": "code-quality-coach",
-    "name": "Code Quality & TDD Coach",
-    "groupName": "Code Quality & TDD",
-    "shortName": "Code Quality",
-    "groupKey": "CODE_QUALITY",
+    "id": "strategy-comms",
+    "name": "Strategy & Communications",
+    "groupName": "Strategy & Communications",
+    "shortName": "Strategy",
+    "groupKey": "STRATEGY",
     "chatId": null,
     "topicId": null,
-    "claudeAgent": "reviewer.md",
-    "capabilities": ["code-review", "test-generation", "refactoring"]
+    "capabilities": ["technical-proposal", "slide-deck", "adr", "system-design-doc", "executive-summary", "stakeholder-comms", "report-generation", "pricing-model", "rfp-response", "technology-evaluation", "market-research", "competitive-analysis", "vendor-assessment", "strategic-planning"]
   },
   {
-    "id": "research-analyst",
-    "name": "Technical Research Analyst",
-    "groupName": "Technical Research",
-    "shortName": "Research",
-    "groupKey": "RESEARCH",
-    "chatId": null,
-    "topicId": null,
-    "capabilities": ["technical-research", "architecture-analysis", "technology-evaluation", "comparative-analysis"]
-  },
-  {
-    "id": "general-assistant",
-    "name": "General AI Assistant",
-    "groupName": "General AI Assistant",
-    "shortName": "General",
-    "groupKey": "GENERAL",
+    "id": "operations-hub",
+    "name": "Operations Hub",
+    "groupName": "Operations Hub",
+    "shortName": "Ops",
+    "groupKey": "OPERATIONS",
     "chatId": null,
     "topicId": null,
     "isDefault": true,
-    "capabilities": ["general-qa", "meeting-summary", "task-breakdown"]
+    "capabilities": ["general", "meeting-prep", "task-management", "team-coordination", "planning", "analysis", "scheduling"]
   }
 ]

@@ -18,7 +18,7 @@
 This project turns Telegram into a personal AI assistant powered by Claude Code — with multi-agent group chats, persistent memory, scheduled routines, and agentic coding sessions you can start directly from Telegram.
 
 **What you get:**
-- 5 specialised AI agents, each in their own Telegram supergroup (AWS Architect, Security, Documentation, Code Quality, General)
+- 6 specialised AI agents, each in their own Telegram supergroup (Command Center, Cloud, Security, Engineering, Strategy, Operations)
 - Long-term memory: facts, goals, preferences stored locally with semantic search (SQLite + Qdrant + MLX bge-m3)
 - Scheduled routines: morning briefing, evening summary, proactive check-ins, health watchdog
 - Document RAG: upload PDFs, ask questions, get answers grounded in your documents
@@ -241,17 +241,18 @@ This directory is created automatically. No `.env` configuration needed.
 
 ## Phase 5: Multi-Agent Groups (Optional, ~15 min)
 
-This enables 5 specialised AI agents, each living in their own Telegram supergroup with a tailored persona.
+This enables 6 specialised AI agents, each living in their own Telegram supergroup with a tailored persona.
 
-**The 5 agents:**
+**The 6 agents:**
 
 | Group Name | Agent ID | Specialty |
 |---|---|---|
-| AWS Cloud Architect | `aws-architect` | AWS infrastructure, cost optimisation, Well-Architected |
-| Security & Compliance | `security-analyst` | Security audits, threat modelling, compliance |
-| Technical Documentation | `documentation-specialist` | ADRs, system design docs, runbooks |
-| Code Quality & TDD | `code-quality-coach` | Code review, test generation, refactoring |
-| General AI Assistant | `general-assistant` | General Q&A, meeting summaries, task breakdown |
+| Jarvis Command Center | `command-center` | Orchestration, task routing, dispatch audit log |
+| Cloud & Infrastructure | `cloud-architect` | AWS, CDK, GCC 2.0, cost optimisation, Well-Architected |
+| Security & Compliance | `security-compliance` | IM8 v4, PDPA, security audits, threat modelling, runbooks |
+| Engineering & Quality | `engineering` | Code review, TDD, refactoring, implementation |
+| Strategy & Communications | `strategy-comms` | Proposals, BD materials, decks, research, ADRs |
+| Operations Hub | `operations-hub` | General Q&A, meeting prep, task management (default) |
 
 **Steps:**
 
@@ -266,11 +267,12 @@ If auto-discovery works, the bot resolves groups at runtime. If it fails, set th
 
 **Option A — Environment variables (simpler):**
 ```
-GROUP_AWS_CHAT_ID=-100xxxxxxxxxx
+GROUP_COMMAND_CENTER_CHAT_ID=-100xxxxxxxxxx
+GROUP_CLOUD_CHAT_ID=-100xxxxxxxxxx
 GROUP_SECURITY_CHAT_ID=-100xxxxxxxxxx
-GROUP_DOCS_CHAT_ID=-100xxxxxxxxxx
-GROUP_CODE_CHAT_ID=-100xxxxxxxxxx
-GROUP_GENERAL_CHAT_ID=-100xxxxxxxxxx
+GROUP_ENGINEERING_CHAT_ID=-100xxxxxxxxxx
+GROUP_STRATEGY_CHAT_ID=-100xxxxxxxxxx
+GROUP_OPERATIONS_CHAT_ID=-100xxxxxxxxxx
 ```
 
 **Option B — agents.json (persistent, recommended for long-term use):**
@@ -445,7 +447,7 @@ Summarise what was set up and what is running. Remind the user:
 
 This relay already includes significant capabilities beyond basic chat:
 
-- **5 Specialised AI Agents** — each with a tailored persona in its own Telegram supergroup. Edit prompts at `~/.claude-relay/prompts/` to change any agent's focus, tone, or save paths.
+- **6 Specialised AI Agents** — each with a tailored persona in its own Telegram supergroup (Command Center, Cloud, Security, Engineering, Strategy, Operations). Edit prompts at `~/.claude-relay/prompts/` to change any agent's focus, tone, or save paths.
 - **Production Routines** — the `routines/` directory has ready-to-use scheduled tasks. Read `routines/CLAUDE.md` (code patterns and PM2 safety rules) then `routines/user_journey.md` (full lifecycle guide) before creating your own.
 - **Document RAG** — upload PDFs to Telegram, query them with natural language via `/doc query`
 - **Forum Topic Support** — route messages to specific topics within supergroups for clean separation
