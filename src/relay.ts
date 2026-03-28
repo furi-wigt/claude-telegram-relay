@@ -96,25 +96,40 @@ export function buildEnrichedQuery(
 
 const PROJECT_ROOT = dirname(dirname(import.meta.path));
 
-// Load .env file explicitly (for launchd and other non-interactive contexts)
-try {
-  const envPath = join(PROJECT_ROOT, ".env");
-  const envFile = readFileSync(envPath, "utf-8");
-  for (const line of envFile.split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-    const [key, ...valueParts] = trimmed.split("=");
-    if (key && valueParts.length > 0) {
-      const value = valueParts.join("=").trim();
-      // Only set if not already in environment
-      if (!process.env[key.trim()]) {
-        process.env[key.trim()] = value;
+// Load .env files explicitly (for launchd and other non-interactive contexts).
+// Layering order (later wins):
+//   1. process.env  — runtime / PM2 / shell exports (never overridden)
+//   2. project .env — committed defaults
+//   3. ~/.claude-relay/.env — user-specific secrets and overrides
+function _loadEnvFile(filePath: string, override: boolean): void {
+  try {
+    const envFile = readFileSync(filePath, "utf-8");
+    for (const line of envFile.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) continue;
+      const [key, ...valueParts] = trimmed.split("=");
+      const k = key?.trim();
+      if (k && valueParts.length > 0) {
+        const value = valueParts.join("=").trim();
+        // Project .env: only set if not already set (respects runtime env).
+        // User .env (override=true): always wins — user config is authoritative
+        // over both project defaults and stale shell-inherited vars.
+        if (override || !process.env[k]) {
+          process.env[k] = value;
+        }
       }
     }
+  } catch {
+    // file might not exist or be unreadable — continue
   }
-} catch (err) {
-  // .env file might not exist or be readable - continue anyway
 }
+
+// 1. Project .env — defaults, don't override runtime env
+_loadEnvFile(join(PROJECT_ROOT, ".env"), false);
+
+// 2. ~/.claude-relay/.env — user overrides (wins over project .env, not over runtime env)
+const _relayDir = process.env.RELAY_DIR || join(process.env.HOME || "~", ".claude-relay");
+_loadEnvFile(join(_relayDir, ".env"), true);
 
 // ============================================================
 // CONFIGURATION
