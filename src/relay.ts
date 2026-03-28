@@ -140,25 +140,13 @@ const UPLOADS_DIR = join(RELAY_DIR, "uploads");
 
 // Session management is now per-group — see src/session/groupSessions.ts
 
-// Model selection: default to Sonnet; user can prefix messages to override.
-const SONNET_MODEL = "claude-sonnet-4-6";
-const OPUS_MODEL   = "claude-opus-4-6";
-const HAIKU_MODEL  = "claude-haiku-4-5-20251001";
-
-/**
- * Parse an optional model-selection prefix from user text.
- * "[O] ..." → Opus, "[H] ..." → Haiku, no prefix → Sonnet.
- * Returns the resolved model id and the text with the prefix stripped.
- */
-function resolveModelPrefix(text: string): { model: string; label: string; text: string } {
-  const m = text.match(/^\[([OH])\]\s*/i);
-  if (!m) return { model: SONNET_MODEL, label: "Sonnet", text };
-  const tag = m[1].toUpperCase();
-  const stripped = text.slice(m[0].length);
-  if (tag === "O") return { model: OPUS_MODEL,  label: "Opus",  text: stripped };
-  if (tag === "H") return { model: HAIKU_MODEL, label: "Haiku", text: stripped };
-  return { model: SONNET_MODEL, label: "Sonnet", text: stripped };
-}
+import {
+  SONNET_MODEL,
+  OPUS_MODEL,
+  HAIKU_MODEL,
+  LOCAL_MODEL_TOKEN,
+  resolveModelPrefix,
+} from "./utils/modelPrefix.ts";
 
 // ============================================================
 // RELAY QUESTION FORM — state and helpers
@@ -1719,7 +1707,8 @@ async function processTextMessage(
     }
 
     // Resolve model prefix before building prompt so stripped text flows everywhere.
-    const { model: resolvedModel, label: modelLabel, text: cleanText } = resolveModelPrefix(text);
+    // Priority: user prefix [O/H/Q] > agent.defaultModel > Sonnet.
+    const { model: resolvedModel, label: modelLabel, text: cleanText } = resolveModelPrefix(text, agent.defaultModel);
     text = cleanText;
 
     // ── Show progress indicator immediately ──────────────────────────
@@ -1938,6 +1927,20 @@ async function processTextMessage(
     let rawResponse: string;
     const callStart = Date.now();
     trace({ event: "claude_start", traceId, chatId, promptLength: enrichedPrompt.length, resume: !!session.sessionId, sessionId: session.sessionId });
+
+    // [Q] prefix or agent defaultModel="local" → skip Claude CLI, call local Qwen directly.
+    if (resolvedModel === LOCAL_MODEL_TOKEN) {
+      try {
+        void indicator.update("Using Qwen (local)…", { immediate: true });
+        rawResponse = await callRoutineModel(enrichedPrompt, { label: "chat-local", timeoutMs: 120_000 });
+        await indicator.finish(true);
+      } catch (localErr) {
+        await indicator.finish(false);
+        console.error("[local model] callRoutineModel failed:", localErr);
+        rawResponse = "⚠️ Local Qwen model failed. Is `mlx serve` running on port 8800?";
+      }
+    } else
+
     try {
       rawResponse = await callClaude(enrichedPrompt, {
         resume: !!session.sessionId,
@@ -2436,9 +2439,12 @@ function enqueuePhotoJob(
         const agent = getAgentForChat(chatId);
         const traceId = generateTraceId();
 
-        // Honour [O]/[H] prefix in caption for Phase 2 (agent response).
+        // Honour [O]/[H]/[Q] prefix in caption for Phase 2 (agent response).
         // Phase 1 (vision description) always uses Sonnet — it requires vision capability.
-        const { model: resolvedModel, label: resolvedLabel, text: cleanCaption } = resolveModelPrefix(caption);
+        // [Q] is silently downgraded to Sonnet: local Qwen has no vision capability.
+        const { model: rawPhotoModel, label: rawPhotoLabel, text: cleanCaption } = resolveModelPrefix(caption, agent.defaultModel);
+        const resolvedModel = rawPhotoModel === LOCAL_MODEL_TOKEN ? SONNET_MODEL : rawPhotoModel;
+        const resolvedLabel = rawPhotoModel === LOCAL_MODEL_TOKEN ? "Sonnet" : rawPhotoLabel;
         caption = cleanCaption;
 
         console.log(`[${agent.name}] Image(s) received x${imageBuffers.length} (caption: ${caption.substring(0, 40)})`);

@@ -8,6 +8,7 @@
     "chatId": null,
     "topicId": null,
     "claudeAgent": "architect.md",
+    "defaultModel": "sonnet",
     "capabilities": ["infrastructure-design", "cost-optimization", "aws-services"]
   },
   {
@@ -19,6 +20,7 @@
     "chatId": null,
     "topicId": null,
     "claudeAgent": "security.md",
+    "defaultModel": "sonnet",
     "capabilities": ["security-audit", "compliance-check", "threat-modeling"]
   },
   {
@@ -30,6 +32,7 @@
     "chatId": null,
     "topicId": null,
     "claudeAgent": "documentation-writer.md",
+    "defaultModel": "sonnet",
     "capabilities": ["adr-creation", "system-docs", "runbooks"]
   },
   {
@@ -41,6 +44,7 @@
     "chatId": null,
     "topicId": null,
     "claudeAgent": "reviewer.md",
+    "defaultModel": "sonnet",
     "capabilities": ["code-review", "test-generation", "refactoring"]
   },
   {
@@ -51,6 +55,7 @@
     "groupKey": "RESEARCH",
     "chatId": null,
     "topicId": null,
+    "defaultModel": "sonnet",
     "capabilities": ["technical-research", "architecture-analysis", "technology-evaluation", "comparative-analysis"]
   },
   {
@@ -62,6 +67,7 @@
     "chatId": null,
     "topicId": null,
     "isDefault": true,
+    "defaultModel": "haiku",
     "capabilities": ["general-qa", "meeting-summary", "task-breakdown"]
   }
 ]

@@ -48,14 +48,19 @@ function extractCallClaudeBlocks(src: string): string[] {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe("relay.ts handler consistency — always Sonnet after model router removal", () => {
-  test("SONNET_MODEL constant is defined exactly once at module level (not duplicated per-handler)", () => {
-    // Count occurrences of the const declaration
+  test("SONNET_MODEL is imported from modelPrefix utility (not redeclared in relay.ts)", () => {
+    // Constants moved to src/utils/modelPrefix.ts — relay.ts must import, not redeclare.
     const declarations = (source.match(/const SONNET_MODEL\s*=/g) ?? []).length;
-    expect(declarations).toBe(1);
+    expect(declarations).toBe(0);
+    expect(source).toContain('SONNET_MODEL');           // still referenced
+    expect(source).toContain('from "./utils/modelPrefix.ts"'); // via import
   });
 
-  test("SONNET_MODEL is defined as claude-sonnet-4-6", () => {
-    expect(source).toContain('SONNET_MODEL = "claude-sonnet-4-6"');
+  test("modelPrefix.ts defines SONNET_MODEL as claude-sonnet-4-6", () => {
+    const { readFileSync } = require("fs");
+    const { join } = require("path");
+    const prefixSrc = readFileSync(join(import.meta.dir, "utils/modelPrefix.ts"), "utf8");
+    expect(prefixSrc).toContain('SONNET_MODEL = "claude-sonnet-4-6"');
   });
 
   test("every callClaude() invocation passes a model parameter", () => {
