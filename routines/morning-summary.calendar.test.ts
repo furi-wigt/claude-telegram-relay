@@ -65,7 +65,7 @@ mock.module("../src/utils/routineMessage.ts", () => ({
   sendAndRecord: async () => {},
 }));
 
-// -- Routine model mock (Osaurus/Ollama) --
+// -- Routine model mock (MLX) --
 // Without this mock, buildEnhancedBriefing tests hang waiting for local LLM.
 mock.module("../src/routines/routineModel.ts", () => ({
   callRoutineModel: async () => "No activity to summarize.",

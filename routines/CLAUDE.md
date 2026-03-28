@@ -336,7 +336,7 @@ npx pm2 save
 ## LLM provider order
 
 For text-only tasks (summarization, extraction, classification), use `callRoutineModel()`
-which calls the **Osaurus server** (`osaurus serve`). Logging is handled automatically.
+which calls the **MLX server** (`mlx serve`). Logging is handled automatically.
 
 ```ts
 import { callRoutineModel } from "../src/routines/routineModel.ts";
@@ -347,7 +347,7 @@ const result = await callRoutineModel(prompt, {
 });
 ```
 
-**Provider:** Osaurus (`/v1/chat/completions`) — Qwen3.5-4B, Apple Silicon native
+**Provider:** MLX serve (`/v1/chat/completions`) — Qwen3.5-9B, Apple Silicon native (port 8800)
 
 **Note:** Local models do **not** support tool use. If a routine needs
 Claude tools/agentic capabilities, use `claudeText`/`claudeStream` directly.
