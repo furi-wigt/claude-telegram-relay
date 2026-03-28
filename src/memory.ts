@@ -102,12 +102,15 @@ export function detectMemoryCategory(content: string): string {
  * Synchronously strips all memory intent tags from a response string.
  * Use this to get clean display text before firing processMemoryIntents in the background.
  */
+/** Matches tag content allowing one level of inner brackets, e.g. [kebab-case] */
+const TAG_CONTENT = String.raw`(?:[^\[\]]*|\[[^\]]*\])*`;
+
 export function stripMemoryTags(text: string): string {
   return text
-    .replace(/\[REMEMBER:\s*.+?\]/gi, "")
-    .replace(/\[REMEMBER_GLOBAL:\s*.+?\]/gi, "")
-    .replace(/\[GOAL:\s*.+?\]/gi, "")
-    .replace(/\[DONE:\s*.+?\]/gi, "")
+    .replace(new RegExp(`\\[REMEMBER:\\s*${TAG_CONTENT}\\]`, "gi"), "")
+    .replace(new RegExp(`\\[REMEMBER_GLOBAL:\\s*${TAG_CONTENT}\\]`, "gi"), "")
+    .replace(new RegExp(`\\[GOAL:\\s*${TAG_CONTENT}\\]`, "gi"), "")
+    .replace(new RegExp(`\\[DONE:\\s*${TAG_CONTENT}\\]`, "gi"), "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
@@ -173,13 +176,13 @@ export async function processMemoryIntents(
   };
 
   // [REMEMBER: fact to store]
-  for (const match of response.matchAll(/\[REMEMBER:\s*(.+)\]/gi)) {
+  for (const match of response.matchAll(/\[REMEMBER:\s*((?:[^\[\]]*|\[[^\]]*\])*)\]/gi)) {
     if (!isValidTagContent(match[1])) continue;
     await processRememberTag(match as RegExpExecArray, "REMEMBER:", chatId ?? null);
   }
 
   // [REMEMBER_GLOBAL: fact to share across all groups]
-  for (const match of response.matchAll(/\[REMEMBER_GLOBAL:\s*(.+)\]/gi)) {
+  for (const match of response.matchAll(/\[REMEMBER_GLOBAL:\s*((?:[^\[\]]*|\[[^\]]*\])*)\]/gi)) {
     if (!isValidTagContent(match[1])) continue;
     await processRememberTag(match as RegExpExecArray, "REMEMBER_GLOBAL:", null);
   }

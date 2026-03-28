@@ -1,12 +1,12 @@
 /**
  * Unit tests for embed.ts — retry-once logic and timeout handling.
  *
- * Uses a local HTTP server to simulate Ollama /api/embed responses.
+ * Uses a local HTTP server to simulate MLX /v1/embeddings responses.
  */
 import { describe, it, expect, beforeAll, afterAll } from "bun:test";
 import { localEmbed, localEmbedBatch } from "./embed";
 
-// ── Test server to simulate Ollama ──────────────────────────────────────────
+// ── Test server to simulate MLX embed server ────────────────────────────────
 
 let server: ReturnType<typeof Bun.serve>;
 let callCount = 0;
@@ -26,7 +26,7 @@ beforeAll(() => {
       callCount++;
       const url = new URL(req.url);
 
-      if (url.pathname === "/api/embed") {
+      if (url.pathname === "/v1/embeddings") {
         if (delayMs > 0) {
           await new Promise((r) => setTimeout(r, delayMs));
         }
@@ -35,12 +35,14 @@ beforeAll(() => {
           return new Response("Server busy", { status: 503 });
         }
 
-        const body = (await req.json()) as { input: string | string[] };
+        const body = (await req.json()) as { input: string | string[]; model?: string };
         const inputs = Array.isArray(body.input) ? body.input : [body.input];
-        const embeddings = inputs.map(() =>
-          Array.from({ length: 1024 }, () => Math.random())
-        );
-        return Response.json({ model: "bge-m3", embeddings });
+        const data = inputs.map((_, i) => ({
+          object: "embedding" as const,
+          index: i,
+          embedding: Array.from({ length: 1024 }, () => Math.random()),
+        }));
+        return Response.json({ object: "list", data, model: body.model ?? "bge-m3" });
       }
 
       return new Response("Not found", { status: 404 });
