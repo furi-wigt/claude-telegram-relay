@@ -18,7 +18,7 @@
 
 import { readFileSync } from "fs";
 import { basename } from "path";
-import { execFile } from "child_process";
+import { execFile, spawn } from "child_process";
 import { extractDocTitle } from "../utils/docTitle.ts";
 import type { Bot, Context } from "grammy";
 import { InlineKeyboard } from "grammy";
@@ -737,11 +737,18 @@ export function registerCommands(bot: Bot, options: CommandOptions): void {
   bot.callbackQuery("reboot:confirm", async (ctx) => {
     await ctx.answerCallbackQuery();
     await ctx.editMessageText("🔄 Restarting Jarvis… bot will be briefly offline.");
-    execFile("npx", ["pm2", "restart", "telegram-relay"], { shell: false }, (err) => {
-      if (err) {
+    // Delay restart so the edited message is delivered before the process dies.
+    // Use spawn+detach so the child outlives the parent process.
+    setTimeout(() => {
+      const child = spawn("/opt/homebrew/bin/pm2", ["restart", "telegram-relay"], {
+        detached: true,
+        stdio: "ignore",
+      });
+      child.on("error", (err) => {
         console.error("[/reboot] PM2 restart failed:", err.message);
-      }
-    });
+      });
+      child.unref();
+    }, 1000);
   });
 
   bot.callbackQuery("reboot:cancel", async (ctx) => {
