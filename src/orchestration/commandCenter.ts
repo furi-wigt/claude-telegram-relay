@@ -242,9 +242,9 @@ export function registerOrchestrationCallbacks(bot: Bot): void {
   });
 
   // Handle agent picker callbacks (low-confidence fallback)
-  bot.on("callback_query:data", async (ctx) => {
+  bot.on("callback_query:data", async (ctx, next) => {
     const data = ctx.callbackQuery.data;
-    if (!data.startsWith("op:")) return;
+    if (!data.startsWith("op:")) return next();
 
     const parts = data.slice("op:".length).split(":");
     if (parts.length < 2) return;
