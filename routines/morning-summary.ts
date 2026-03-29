@@ -27,6 +27,22 @@ import { join } from "path";
 import { sendAndRecord } from "../src/utils/routineMessage.ts";
 import { sendToGroup } from "../src/utils/sendToGroup.ts";
 import { GROUPS, validateGroup } from "../src/config/groups.ts";
+
+/**
+ * Priority: MORNING_SUMMARY_GROUP env var → OPERATIONS → first configured group.
+ */
+function resolveMorningGroupKey(): string | undefined {
+  for (const key of [
+    process.env.MORNING_SUMMARY_GROUP,
+    "OPERATIONS",
+    Object.keys(GROUPS).find((k) => (GROUPS[k]?.chatId ?? 0) !== 0),
+  ]) {
+    if (key && (GROUPS[key]?.chatId ?? 0) !== 0) return key;
+  }
+  return undefined;
+}
+
+const MORNING_GROUP_KEY = resolveMorningGroupKey();
 import { claudeText } from "../src/claude-process.ts";
 import { callRoutineModel } from "../src/routines/routineModel.ts";
 import { createWeatherClient } from "../integrations/weather/index.ts";
@@ -488,29 +504,31 @@ async function main() {
     process.exit(0);
   }
 
-  if (!validateGroup("GENERAL")) {
-    console.error("Cannot run — GENERAL group not configured");
-    console.error("Set chatId for the 'GENERAL' agent in config/agents.json");
+  if (!MORNING_GROUP_KEY) {
+    console.error("Cannot run — no group configured");
+    console.error("Set MORNING_SUMMARY_GROUP env var or ensure at least one agent has a chatId in agents.json");
     process.exit(0); // graceful skip — PM2 will retry on next cron cycle
   }
+  const MORNING_GROUP = GROUPS[MORNING_GROUP_KEY];
+  console.log(`[morning-summary] Sending to group: ${MORNING_GROUP_KEY}`);
 
   const { message, tasks, replyMarkup, devTodosMessage } = await buildEnhancedBriefing();
-  await sendAndRecord(GROUPS.GENERAL.chatId, message, {
+  await sendAndRecord(MORNING_GROUP.chatId, message, {
     routineName: "morning-summary",
     agentId: "general-assistant",
-    topicId: GROUPS.GENERAL.topicId,
+    topicId: MORNING_GROUP.topicId,
     reply_markup: replyMarkup,
   });
   markRanToday(LAST_RUN_FILE);
-  console.log("Enhanced morning summary sent to General group");
+  console.log(`Enhanced morning summary sent to ${MORNING_GROUP_KEY} group`);
 
   // Send dev todos as a separate reference message
   if (devTodosMessage) {
     try {
-      await sendAndRecord(GROUPS.GENERAL.chatId, devTodosMessage, {
+      await sendAndRecord(MORNING_GROUP.chatId, devTodosMessage, {
         routineName: "morning-summary",
         agentId: "general-assistant",
-        topicId: GROUPS.GENERAL.topicId,
+        topicId: MORNING_GROUP.topicId,
       });
       console.log("Dev todos message sent");
     } catch (err) {
@@ -534,7 +552,7 @@ if (_isEntry) {
     const msg = error instanceof Error ? error.message : String(error);
     console.error("Error running enhanced morning summary:", error);
     try {
-      await sendToGroup(GROUPS.GENERAL.chatId, `⚠️ morning-summary failed:\n\n${msg}`);
+      await sendToGroup((MORNING_GROUP_KEY ? GROUPS[MORNING_GROUP_KEY]?.chatId : undefined) ?? 0, `⚠️ morning-summary failed:\n\n${msg}`);
     } catch { /* ignore secondary failure */ }
     process.exit(0); // exit 0 so PM2 does not immediately restart — next run at scheduled cron time
   });

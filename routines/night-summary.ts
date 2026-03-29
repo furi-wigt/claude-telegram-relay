@@ -25,6 +25,22 @@ import { callRoutineModel } from "../src/routines/routineModel.ts";
 import { sendAndRecord } from "../src/utils/routineMessage.ts";
 import { sendToGroup } from "../src/utils/sendToGroup.ts";
 import { GROUPS, validateGroup } from "../src/config/groups.ts";
+
+/**
+ * Priority: NIGHT_SUMMARY_GROUP env var → OPERATIONS → first configured group.
+ */
+function resolveNightGroupKey(): string | undefined {
+  for (const key of [
+    process.env.NIGHT_SUMMARY_GROUP,
+    "OPERATIONS",
+    Object.keys(GROUPS).find((k) => (GROUPS[k]?.chatId ?? 0) !== 0),
+  ]) {
+    if (key && (GROUPS[key]?.chatId ?? 0) !== 0) return key;
+  }
+  return undefined;
+}
+
+const NIGHT_GROUP_KEY = resolveNightGroupKey();
 import { USER_NAME, USER_TIMEZONE } from "../src/config/userConfig.ts";
 import { shouldSkipRecently, markRanToday } from "../src/routines/runOnceGuard.ts";
 import { getPm2LogsDir } from "../config/observability.ts";
@@ -607,11 +623,13 @@ async function main() {
     process.exit(0);
   }
 
-  if (!validateGroup("GENERAL")) {
-    console.error("Cannot run — GENERAL group not configured");
-    console.error("Set chatId for the 'GENERAL' agent in config/agents.json");
+  if (!NIGHT_GROUP_KEY) {
+    console.error("Cannot run — no group configured");
+    console.error("Set NIGHT_SUMMARY_GROUP env var or ensure at least one agent has a chatId in agents.json");
     process.exit(0); // graceful skip — PM2 will retry on next cron cycle
   }
+  const NIGHT_GROUP = GROUPS[NIGHT_GROUP_KEY];
+  console.log(`[night-summary] Sending to group: ${NIGHT_GROUP_KEY}`);
 
   const { summary, provider } = await buildSummary();
 
@@ -622,23 +640,23 @@ async function main() {
       "Check that `mlx serve` is running.\n\n" +
       "Your day was still great — pick this up tomorrow! 🌟";
 
-    await sendAndRecord(GROUPS.GENERAL.chatId, failureMessage, {
+    await sendAndRecord(NIGHT_GROUP.chatId, failureMessage, {
       routineName: "night-summary",
       agentId: "general-assistant",
-      topicId: GROUPS.GENERAL.topicId,
+      topicId: NIGHT_GROUP.topicId,
     });
     markRanToday(LAST_RUN_FILE);
     console.error("Night summary failed — local LLM unavailable");
     process.exit(0); // failure message already sent to Telegram; exit 0 prevents PM2 restart loop
   }
 
-  await sendAndRecord(GROUPS.GENERAL.chatId, summary, {
+  await sendAndRecord(NIGHT_GROUP.chatId, summary, {
     routineName: "night-summary",
     agentId: "general-assistant",
-    topicId: GROUPS.GENERAL.topicId,
+    topicId: NIGHT_GROUP.topicId,
   });
   markRanToday(LAST_RUN_FILE);
-  console.log(`Night summary sent to General group (via ${provider})`);
+  console.log(`Night summary sent to ${NIGHT_GROUP_KEY} group (via ${provider})`);
 }
 
 // PM2's bun container uses require() internally, which sets import.meta.main = false.
@@ -652,7 +670,7 @@ if (_isEntry) {
     const msg = error instanceof Error ? error.message : String(error);
     console.error("Error running night summary:", error);
     try {
-      await sendToGroup(GROUPS.GENERAL.chatId, `⚠️ night-summary failed:\n\n${msg}`);
+      await sendToGroup((NIGHT_GROUP_KEY ? GROUPS[NIGHT_GROUP_KEY]?.chatId : undefined) ?? 0, `⚠️ night-summary failed:\n\n${msg}`);
     } catch { /* ignore secondary failure */ }
     process.exit(0); // exit 0 so PM2 does not immediately restart — next run at scheduled cron time
   });
