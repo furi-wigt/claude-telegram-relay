@@ -26,6 +26,7 @@ import {
   clearCountdown,
   ORCH_CB_PREFIX,
 } from "./interruptProtocol.ts";
+import { resolveModelPrefix } from "../utils/modelPrefix.ts";
 import { InlineKeyboard } from "grammy";
 import type { ClassificationResult, DispatchPlan, SubTask } from "./types.ts";
 
@@ -59,8 +60,14 @@ export async function orchestrateMessage(
   chatId: number,
   threadId: number | null,
 ): Promise<void> {
-  // 1. Classify intent
-  const classification = await classifyIntent(text);
+  // Strip model prefix before classification so [O]/[H]/[Q] doesn't confuse intent routing.
+  // The FULL original text (including prefix) flows to the dispatch runner so the target
+  // agent's processTextMessage() can call resolveModelPrefix() and honour the choice.
+  const { label: modelLabel, text: classifyText } = resolveModelPrefix(text);
+  const effectiveClassifyText = classifyText.trim() || text;
+
+  // 1. Classify intent (using prefix-stripped text)
+  const classification = await classifyIntent(effectiveClassifyText);
   const agent = AGENTS[classification.primaryAgent];
 
   if (!agent) {
@@ -70,7 +77,7 @@ export async function orchestrateMessage(
 
   // 2. Show routing plan
   const dispatchId = crypto.randomUUID();
-  const planText = formatPlanMessage(classification, agent, text);
+  const planText = formatPlanMessage(classification, agent, text, modelLabel);
 
   if (classification.confidence < AUTO_DISPATCH_THRESHOLD) {
     // Low confidence → show inline keyboard agent picker instead of auto-dispatching.
@@ -320,12 +327,21 @@ export function registerOrchestrationCallbacks(bot: Bot): void {
 
 // ── Formatting ──────────────────────────────────────────────────────────────
 
-function formatPlanMessage(classification: ClassificationResult, agent: AgentConfig, userMessage: string): string {
+function formatPlanMessage(
+  classification: ClassificationResult,
+  agent: AgentConfig,
+  userMessage: string,
+  modelLabel?: string,
+): string {
   const confidence = (classification.confidence * 100).toFixed(0);
+  const modelLine = modelLabel && modelLabel !== "Sonnet"
+    ? `Model: \u{1F9E0} ${modelLabel}`
+    : null;
   return [
     `\u{1F3AF} DISPATCH PLAN`,
     ``,
     `Query: "${truncate(userMessage, 100)}"`,
+    ...(modelLine ? [modelLine] : []),
     `Intent: ${classification.intent}`,
     `Target: ${agent.name} (${confidence}% confidence)`,
     `Reasoning: ${classification.reasoning}`,
