@@ -172,7 +172,7 @@ async function executeAndReport(
   const durationSec = (result.durationMs / 1000).toFixed(1);
   const statusIcon = result.success ? "\u2705" : "\u274C";
   const header = `${statusIcon} <b>${agentName}</b> \u2014 ${result.success ? "completed" : "failed"} (${durationSec}s)`;
-  const mdChunks = splitMarkdown(result.response);
+  const mdChunks = splitMarkdown(result.response, 3800);
   for (let i = 0; i < mdChunks.length; i++) {
     const html = i === 0 ? `${header}\n\n${markdownToHtml(mdChunks[i])}` : markdownToHtml(mdChunks[i]);
     await bot.api.sendMessage(ccChatId, html, {
@@ -289,7 +289,7 @@ export function registerOrchestrationCallbacks(bot: Bot): void {
     const durationSec = (result.durationMs / 1000).toFixed(1);
     const icon = result.success ? "\u2705" : "\u274C";
     const pickerHeader = `${icon} <b>${agent.name}</b> \u2014 ${result.success ? "completed" : "failed"} (${durationSec}s)`;
-    const pickerMdChunks = splitMarkdown(result.response);
+    const pickerMdChunks = splitMarkdown(result.response, 3800);
     for (let i = 0; i < pickerMdChunks.length; i++) {
       const html = i === 0 ? `${pickerHeader}\n\n${markdownToHtml(pickerMdChunks[i])}` : markdownToHtml(pickerMdChunks[i]);
       await bot.api.sendMessage(chatId, html, {
