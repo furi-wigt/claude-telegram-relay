@@ -32,6 +32,19 @@ import { sendAndRecord } from "../src/utils/routineMessage.ts";
 import { sendToGroup } from "../src/utils/sendToGroup.ts";
 import { GROUPS, validateGroup } from "../src/config/groups.ts";
 
+function resolveMemoryCleanupGroupKey(): string | undefined {
+  for (const key of [
+    process.env.MEMORY_CLEANUP_GROUP,
+    "OPERATIONS",
+    Object.keys(GROUPS).find((k) => (GROUPS[k]?.chatId ?? 0) !== 0),
+  ]) {
+    if (key && (GROUPS[key]?.chatId ?? 0) !== 0) return key;
+  }
+  return undefined;
+}
+
+const MEMORY_CLEANUP_GROUP_KEY = resolveMemoryCleanupGroupKey();
+
 // ============================================================
 // TYPES
 // ============================================================
@@ -819,20 +832,18 @@ export function runDemotionPass(
 async function main(): Promise<void> {
   const result = await runCleanup();
 
-  if (result.duplicatesFound > 0 && validateGroup("GENERAL")) {
+  if (result.duplicatesFound > 0 && MEMORY_CLEANUP_GROUP_KEY && validateGroup(MEMORY_CLEANUP_GROUP_KEY)) {
     const message = buildTelegramMessage(result);
-    await sendAndRecord(GROUPS.GENERAL.chatId, message, {
+    await sendAndRecord(GROUPS[MEMORY_CLEANUP_GROUP_KEY].chatId, message, {
       routineName: "memory-cleanup",
       agentId: "general-assistant",
-      topicId: GROUPS.GENERAL.topicId,
+      topicId: GROUPS[MEMORY_CLEANUP_GROUP_KEY].topicId,
     });
-    console.log("Summary sent to General group");
+    console.log(`Summary sent to ${MEMORY_CLEANUP_GROUP_KEY} group`);
   } else if (result.duplicatesFound === 0) {
     console.log("No duplicates found — no Telegram message sent");
   } else {
-    console.warn(
-      "GENERAL group not configured — skipping Telegram notification"
-    );
+    console.warn("No group configured — skipping Telegram notification");
   }
 
   process.exit(0);
@@ -847,7 +858,7 @@ if (_isEntry) {
     const msg = error instanceof Error ? error.message : String(error);
     console.error("Error running memory cleanup:", error);
     try {
-      await sendToGroup(GROUPS.GENERAL.chatId, `⚠️ memory-cleanup failed:\n\n${msg}`);
+      if (MEMORY_CLEANUP_GROUP_KEY) await sendToGroup(GROUPS[MEMORY_CLEANUP_GROUP_KEY].chatId, `⚠️ memory-cleanup failed:\n\n${msg}`);
     } catch { /* ignore secondary failure */ }
     process.exit(0);
   });

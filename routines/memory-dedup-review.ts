@@ -11,7 +11,7 @@
  * Memory Dedup Review Routine — Local Stack (SQLite + Qdrant + Ollama BGE-M3)
  *
  * Schedule: 4:00 PM every Friday (cron: 0 16 * * 5)
- * Target: General AI Assistant group (GROUPS.GENERAL), topic #General
+ * Target: OPERATIONS group (resolved dynamically from agents.json)
  *
  * Scans active memory for:
  *   1. Junk items — too short or matching known noise patterns
@@ -30,6 +30,19 @@ import { join, dirname } from "path";
 import { sendToGroup } from "../src/utils/sendToGroup.ts";
 import { loadEnv } from "../src/config/envLoader.ts";
 import { GROUPS, validateGroup } from "../src/config/groups.ts";
+
+function resolveMemoryDedupGroupKey(): string | undefined {
+  for (const key of [
+    process.env.MEMORY_DEDUP_GROUP,
+    "OPERATIONS",
+    Object.keys(GROUPS).find((k) => (GROUPS[k]?.chatId ?? 0) !== 0),
+  ]) {
+    if (key && (GROUPS[key]?.chatId ?? 0) !== 0) return key;
+  }
+  return undefined;
+}
+
+const MEMORY_DEDUP_GROUP_KEY = resolveMemoryDedupGroupKey();
 import { ensureCollection } from "../src/local/vectorStore.ts";
 import {
   fetchActiveItems,
@@ -296,8 +309,8 @@ async function main(): Promise<void> {
   }
 
   // 6. Send Telegram message with inline keyboard
-  if (!validateGroup("GENERAL")) {
-    console.warn("GENERAL group not configured — skipping Telegram notification");
+  if (!MEMORY_DEDUP_GROUP_KEY || !validateGroup(MEMORY_DEDUP_GROUP_KEY)) {
+    console.warn("No group configured — skipping Telegram notification");
     process.exit(0);
   }
 
@@ -312,10 +325,10 @@ async function main(): Promise<void> {
 
   if (!dryRun) {
     await sendWithKeyboard(
-      GROUPS.GENERAL.chatId,
+      GROUPS[MEMORY_DEDUP_GROUP_KEY].chatId,
       message,
       keyboard,
-      GROUPS.GENERAL.topicId
+      GROUPS[MEMORY_DEDUP_GROUP_KEY].topicId
     );
     console.log("Review message with inline keyboard sent to General group");
   } else {
@@ -336,7 +349,7 @@ if (_isEntry) {
     const msg = error instanceof Error ? error.message : String(error);
     console.error("Error running memory dedup review:", error);
     try {
-      await sendToGroup(GROUPS.GENERAL.chatId, `⚠️ memory-dedup-review failed:\n\n${msg}`);
+      if (MEMORY_DEDUP_GROUP_KEY) await sendToGroup(GROUPS[MEMORY_DEDUP_GROUP_KEY].chatId, `⚠️ memory-dedup-review failed:\n\n${msg}`);
     } catch { /* ignore secondary failure */ }
     process.exit(0);
   });

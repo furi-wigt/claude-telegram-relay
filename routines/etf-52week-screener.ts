@@ -23,6 +23,19 @@ import { sendToGroup } from "../src/utils/sendToGroup.ts";
 import { GROUPS, validateGroup } from "../src/config/groups.ts";
 import { USER_TIMEZONE } from "../src/config/userConfig.ts";
 
+function resolveEtfScreenerGroupKey(): string | undefined {
+  for (const key of [
+    process.env.ETF_SCREENER_GROUP,
+    "OPERATIONS",
+    Object.keys(GROUPS).find((k) => (GROUPS[k]?.chatId ?? 0) !== 0),
+  ]) {
+    if (key && (GROUPS[key]?.chatId ?? 0) !== 0) return key;
+  }
+  return undefined;
+}
+
+const ETF_SCREENER_GROUP_KEY = resolveEtfScreenerGroupKey();
+
 // ── ETF Universe (~55 tickers) ────────────────────────────────────────────────
 
 export const ETF_UNIVERSE: Array<{ ticker: string; name: string }> = [
@@ -416,9 +429,8 @@ export function formatMessage(
 async function main() {
   console.log("Running ETF 52-Week High Screener (with VIX + Volume + Triple RSI)...");
 
-  if (!validateGroup("GENERAL")) {
-    console.error("Cannot run — GENERAL group not configured");
-    console.error("Set chatId for the 'GENERAL' agent in config/agents.json");
+  if (!ETF_SCREENER_GROUP_KEY || !validateGroup(ETF_SCREENER_GROUP_KEY)) {
+    console.error("Cannot run — no group configured");
     process.exit(0); // graceful skip — PM2 will retry on next cron cycle
   }
 
@@ -454,10 +466,10 @@ async function main() {
 
   const message = formatMessage(breakouts, candidates, allPassing, quotes.length, vix);
 
-  await sendAndRecord(GROUPS.GENERAL.chatId, message, {
+  await sendAndRecord(GROUPS[ETF_SCREENER_GROUP_KEY!].chatId, message, {
     routineName: "etf-52week-screener",
     agentId: "general-assistant",
-    topicId: GROUPS.GENERAL.topicId,
+    topicId: GROUPS[ETF_SCREENER_GROUP_KEY!].topicId,
   });
 
   console.log("ETF 52-week screener sent to General group");
@@ -474,7 +486,7 @@ if (_isEntry) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error("ETF screener failed:", err);
     try {
-      await sendToGroup(GROUPS.GENERAL.chatId, `⚠️ etf-52week-screener failed:\n\n${msg}`);
+      if (ETF_SCREENER_GROUP_KEY) await sendToGroup(GROUPS[ETF_SCREENER_GROUP_KEY].chatId, `⚠️ etf-52week-screener failed:\n\n${msg}`);
     } catch { /* ignore secondary failure */ }
     process.exit(0); // exit 0 so PM2 does not immediately restart — next run at scheduled cron time
   });
