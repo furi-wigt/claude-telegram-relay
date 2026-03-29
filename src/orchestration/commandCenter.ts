@@ -14,6 +14,7 @@
 import type { Bot, Context } from "grammy";
 import { AGENTS, type AgentConfig } from "../agents/config.ts";
 import { classifyIntent, AUTO_DISPATCH_THRESHOLD } from "./intentClassifier.ts";
+import { chunkMessage } from "../utils/sendToGroup.ts";
 import { executeSingleDispatch } from "./dispatchEngine.ts";
 import {
   buildPlanKeyboard,
@@ -166,25 +167,20 @@ async function executeAndReport(
 
   const result = await executeSingleDispatch(bot, plan, ccChatId, ccThreadId);
 
-  // Post final result to CC
+  // Post final result to CC — chunk to respect Telegram's 4096-char limit
   const durationSec = (result.durationMs / 1000).toFixed(1);
-  if (result.success) {
-    const summary = truncate(result.response, 2000);
+  const statusIcon = result.success ? "\u2705" : "\u274C";
+  const header = `${statusIcon} ${agentName} \u2014 ${result.success ? "completed" : "failed"} (${durationSec}s)`;
+  const fullText = `${header}\n\n${result.response}`;
+  for (const chunk of chunkMessage(fullText)) {
     await bot.api.sendMessage(
       ccChatId,
-      `\u2705 ${agentName} \u2014 completed (${durationSec}s)\n\n${summary}`,
-      { message_thread_id: ccThreadId ?? undefined }
-    ).catch(() => {});
-  } else {
-    await bot.api.sendMessage(
-      ccChatId,
-      `\u274C ${agentName} \u2014 failed (${durationSec}s)\n\n${result.response}`,
+      chunk,
       { message_thread_id: ccThreadId ?? undefined }
     ).catch(() => {});
   }
 
   // Update plan message with final status
-  const statusIcon = result.success ? "\u2705" : "\u274C";
   await bot.api.editMessageText(
     ccChatId,
     planMessageId,
@@ -283,11 +279,14 @@ export function registerOrchestrationCallbacks(bot: Bot): void {
 
     const durationSec = (result.durationMs / 1000).toFixed(1);
     const icon = result.success ? "\u2705" : "\u274C";
-    await bot.api.sendMessage(
-      chatId,
-      `${icon} ${agent.name} \u2014 ${result.success ? "completed" : "failed"} (${durationSec}s)\n\n${truncate(result.response, 2000)}`,
-      { message_thread_id: threadId ?? undefined }
-    ).catch(() => {});
+    const pickerHeader = `${icon} ${agent.name} \u2014 ${result.success ? "completed" : "failed"} (${durationSec}s)`;
+    for (const chunk of chunkMessage(`${pickerHeader}\n\n${result.response}`)) {
+      await bot.api.sendMessage(
+        chatId,
+        chunk,
+        { message_thread_id: threadId ?? undefined }
+      ).catch(() => {});
+    }
   });
 }
 
