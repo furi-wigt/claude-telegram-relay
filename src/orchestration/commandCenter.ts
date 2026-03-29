@@ -26,10 +26,18 @@ import {
   clearCountdown,
   ORCH_CB_PREFIX,
 } from "./interruptProtocol.ts";
+import { resolveModelPrefix } from "../utils/modelPrefix.ts";
 import { InlineKeyboard } from "grammy";
 import type { ClassificationResult, DispatchPlan, SubTask } from "./types.ts";
 
 const COUNTDOWN_SECONDS = 5;
+
+/**
+ * Stores the full user message for pending agent-picker dispatches keyed by dispatchId.
+ * Prevents truncation when extracting the query from the plan display text (which is capped at 100 chars).
+ * Entries are deleted after dispatch or cancellation; unresolved pickers are cleared on restart.
+ */
+const pendingPickerMessages = new Map<string, string>();
 
 /**
  * Check if a chat ID belongs to the Command Center agent.
@@ -52,8 +60,14 @@ export async function orchestrateMessage(
   chatId: number,
   threadId: number | null,
 ): Promise<void> {
-  // 1. Classify intent
-  const classification = await classifyIntent(text);
+  // Strip model prefix before classification so [O]/[H]/[Q] doesn't confuse intent routing.
+  // The FULL original text (including prefix) flows to the dispatch runner so the target
+  // agent's processTextMessage() can call resolveModelPrefix() and honour the choice.
+  const { label: modelLabel, text: classifyText } = resolveModelPrefix(text);
+  const effectiveClassifyText = classifyText.trim() || text;
+
+  // 1. Classify intent (using prefix-stripped text)
+  const classification = await classifyIntent(effectiveClassifyText);
   const agent = AGENTS[classification.primaryAgent];
 
   if (!agent) {
@@ -63,10 +77,12 @@ export async function orchestrateMessage(
 
   // 2. Show routing plan
   const dispatchId = crypto.randomUUID();
-  const planText = formatPlanMessage(classification, agent, text);
+  const planText = formatPlanMessage(classification, agent, text, modelLabel);
 
   if (classification.confidence < AUTO_DISPATCH_THRESHOLD) {
-    // Low confidence → show inline keyboard agent picker instead of auto-dispatching
+    // Low confidence → show inline keyboard agent picker instead of auto-dispatching.
+    // Store full message so the op: callback can retrieve it without truncation.
+    pendingPickerMessages.set(dispatchId, text);
     const keyboard = buildAgentPickerKeyboard(dispatchId, text);
     await ctx.reply(
       `${planText}\n\n\u26A0\uFE0F Low confidence (${(classification.confidence * 100).toFixed(0)}%) \u2014 please pick the right agent:`,
@@ -227,6 +243,7 @@ export function registerOrchestrationCallbacks(bot: Bot): void {
         break;
       case "cancelled":
         await ctx.answerCallbackQuery({ text: "\u274C Cancelled" });
+        pendingPickerMessages.delete(dispatchId);
         break;
     }
   });
@@ -248,9 +265,12 @@ export function registerOrchestrationCallbacks(bot: Bot): void {
 
     await ctx.answerCallbackQuery({ text: `Routing to ${agent.name}...` });
 
-    // Reconstruct a minimal dispatch plan
+    // Retrieve the full user message stored when the picker was shown.
+    // Falls back to plan-text extraction only if the entry was evicted (e.g. after a restart).
+    const storedMessage = pendingPickerMessages.get(dispatchId);
     const msgText = ctx.callbackQuery.message?.text;
-    const userMessage = extractUserMessageFromPlan(msgText ?? "");
+    const userMessage = storedMessage ?? extractUserMessageFromPlan(msgText ?? "");
+    pendingPickerMessages.delete(dispatchId);
 
     // Remove the keyboard
     if (ctx.callbackQuery.message) {
@@ -307,12 +327,21 @@ export function registerOrchestrationCallbacks(bot: Bot): void {
 
 // ── Formatting ──────────────────────────────────────────────────────────────
 
-function formatPlanMessage(classification: ClassificationResult, agent: AgentConfig, userMessage: string): string {
+function formatPlanMessage(
+  classification: ClassificationResult,
+  agent: AgentConfig,
+  userMessage: string,
+  modelLabel?: string,
+): string {
   const confidence = (classification.confidence * 100).toFixed(0);
+  const modelLine = modelLabel && modelLabel !== "Sonnet"
+    ? `Model: \u{1F9E0} ${modelLabel}`
+    : null;
   return [
     `\u{1F3AF} DISPATCH PLAN`,
     ``,
     `Query: "${truncate(userMessage, 100)}"`,
+    ...(modelLine ? [modelLine] : []),
     `Intent: ${classification.intent}`,
     `Target: ${agent.name} (${confidence}% confidence)`,
     `Reasoning: ${classification.reasoning}`,

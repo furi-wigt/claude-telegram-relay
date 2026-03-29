@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased] / 2026-03-29 — fix(orchestration): restore model prefix routing for /new [o] in CC
+
+### Fixed
+- **commandCenter.ts**: Strip `[O]/[H]/[Q]` model prefix before `classifyIntent()` so intent routing isn't confused by model selectors. Previously `[o] review code` would fail keyword classification because no capability matched the `[o]` token.
+- **commandCenter.ts**: Restored `pendingPickerMessages` Map — prevents message truncation in the low-confidence agent picker flow for messages >100 chars. This was a regression introduced in `feat/orchestration_layer` when the map was removed in favour of `extractUserMessageFromPlan()` alone.
+- **commandCenter.ts**: Dispatch plan now shows `Model: 🧠 Opus` (or Haiku/Qwen) line when a non-Sonnet model prefix is detected, giving the user visual confirmation the model choice was captured.
+- **tests/orchestration/commandCenter.test.ts**: Restored deleted test file + 10 new tests covering model prefix preservation through truncation and `pendingPickerMessages` Map lifecycle.
+
 ## [Unreleased] / 2026-03-29 — Command Center Orchestration Layer (Phase 0 + Phase 1)
 
 ### Added
