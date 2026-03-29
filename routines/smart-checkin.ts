@@ -29,6 +29,22 @@ import { readFile, writeFile } from "fs/promises";
 import { sendAndRecord } from "../src/utils/routineMessage.ts";
 import { sendToGroup } from "../src/utils/sendToGroup.ts";
 import { GROUPS, validateGroup } from "../src/config/groups.ts";
+
+/**
+ * Priority: SMART_CHECKIN_GROUP env var → OPERATIONS → first configured group.
+ */
+function resolveCheckinGroupKey(): string | undefined {
+  for (const key of [
+    process.env.SMART_CHECKIN_GROUP,
+    "OPERATIONS",
+    Object.keys(GROUPS).find((k) => (GROUPS[k]?.chatId ?? 0) !== 0),
+  ]) {
+    if (key && (GROUPS[key]?.chatId ?? 0) !== 0) return key;
+  }
+  return undefined;
+}
+
+const CHECKIN_GROUP_KEY = resolveCheckinGroupKey();
 import { USER_NAME, USER_TIMEZONE } from "../src/config/userConfig.ts";
 import {
   createAppleCalendarClient,
@@ -378,10 +394,13 @@ async function main() {
     process.exit(0);
   }
 
-  if (!validateGroup("GENERAL")) {
-    console.error("[smart-checkin] GENERAL group not configured");
+  if (!CHECKIN_GROUP_KEY) {
+    console.error("[smart-checkin] No group configured");
+    console.error("Set SMART_CHECKIN_GROUP env var or ensure at least one agent has a chatId in agents.json");
     process.exit(0);
   }
+  const CHECKIN_GROUP = GROUPS[CHECKIN_GROUP_KEY];
+  console.log(`[smart-checkin] Sending to group: ${CHECKIN_GROUP_KEY}`);
 
   const state = await loadState();
 
@@ -409,20 +428,20 @@ async function main() {
 
   // Send the main check-in message
   console.log("[smart-checkin] Sending check-in...");
-  await sendAndRecord(GROUPS.GENERAL.chatId, decision.message, {
+  await sendAndRecord(CHECKIN_GROUP.chatId, decision.message, {
     routineName: "smart-checkin",
     agentId: "general-assistant",
-    topicId: GROUPS.GENERAL.topicId,
+    topicId: CHECKIN_GROUP.topicId,
   });
 
   // If Haiku suggested tasks, generate and send atomic breakdown
   if (decision.suggestTasks) {
     const taskSuggestions = await buildTaskSuggestions(thingsTasks, calendarEvents, goals);
     if (taskSuggestions) {
-      await sendAndRecord(GROUPS.GENERAL.chatId, taskSuggestions.text, {
+      await sendAndRecord(CHECKIN_GROUP.chatId, taskSuggestions.text, {
         routineName: "smart-checkin",
         agentId: "general-assistant",
-        topicId: GROUPS.GENERAL.topicId,
+        topicId: CHECKIN_GROUP.topicId,
         reply_markup: taskSuggestions.replyMarkup,
       });
       console.log("[smart-checkin] Task suggestions sent with inline keyboard.");
@@ -449,7 +468,7 @@ if (_isEntry) {
     const msg = error instanceof Error ? error.message : String(error);
     console.error("[smart-checkin] Error:", error);
     try {
-      await sendToGroup(GROUPS.GENERAL.chatId, `⚠️ smart-checkin failed:\n\n${msg}`);
+      await sendToGroup((CHECKIN_GROUP_KEY ? GROUPS[CHECKIN_GROUP_KEY]?.chatId : undefined) ?? 0, `⚠️ smart-checkin failed:\n\n${msg}`);
     } catch { /* ignore secondary failure */ }
     process.exit(0);
   });
