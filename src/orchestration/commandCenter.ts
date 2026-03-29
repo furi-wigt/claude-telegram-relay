@@ -15,6 +15,7 @@ import type { Bot, Context } from "grammy";
 import { AGENTS, type AgentConfig } from "../agents/config.ts";
 import { classifyIntent, AUTO_DISPATCH_THRESHOLD } from "./intentClassifier.ts";
 import { chunkMessage } from "../utils/sendToGroup.ts";
+import { markdownToHtml, splitMarkdown } from "../utils/htmlFormat.ts";
 import { executeSingleDispatch } from "./dispatchEngine.ts";
 import {
   buildPlanKeyboard,
@@ -167,17 +168,25 @@ async function executeAndReport(
 
   const result = await executeSingleDispatch(bot, plan, ccChatId, ccThreadId);
 
-  // Post final result to CC — chunk to respect Telegram's 4096-char limit
+  // Post final result to CC — convert markdown → HTML, chunk to stay within Telegram's 4096-char limit
   const durationSec = (result.durationMs / 1000).toFixed(1);
   const statusIcon = result.success ? "\u2705" : "\u274C";
-  const header = `${statusIcon} ${agentName} \u2014 ${result.success ? "completed" : "failed"} (${durationSec}s)`;
-  const fullText = `${header}\n\n${result.response}`;
-  for (const chunk of chunkMessage(fullText)) {
-    await bot.api.sendMessage(
-      ccChatId,
-      chunk,
-      { message_thread_id: ccThreadId ?? undefined }
-    ).catch(() => {});
+  const header = `${statusIcon} <b>${agentName}</b> \u2014 ${result.success ? "completed" : "failed"} (${durationSec}s)`;
+  const mdChunks = splitMarkdown(result.response);
+  for (let i = 0; i < mdChunks.length; i++) {
+    const html = i === 0 ? `${header}\n\n${markdownToHtml(mdChunks[i])}` : markdownToHtml(mdChunks[i]);
+    await bot.api.sendMessage(ccChatId, html, {
+      parse_mode: "HTML",
+      message_thread_id: ccThreadId ?? undefined,
+    }).catch(async () => {
+      // Telegram rejected HTML — fall back to plain text
+      const plain = i === 0 ? `${statusIcon} ${agentName} — ${result.success ? "completed" : "failed"} (${durationSec}s)\n\n${mdChunks[i]}` : mdChunks[i];
+      for (const chunk of chunkMessage(plain)) {
+        await bot.api.sendMessage(ccChatId, chunk, {
+          message_thread_id: ccThreadId ?? undefined,
+        }).catch(() => {});
+      }
+    });
   }
 
   // Update plan message with final status
@@ -279,13 +288,19 @@ export function registerOrchestrationCallbacks(bot: Bot): void {
 
     const durationSec = (result.durationMs / 1000).toFixed(1);
     const icon = result.success ? "\u2705" : "\u274C";
-    const pickerHeader = `${icon} ${agent.name} \u2014 ${result.success ? "completed" : "failed"} (${durationSec}s)`;
-    for (const chunk of chunkMessage(`${pickerHeader}\n\n${result.response}`)) {
-      await bot.api.sendMessage(
-        chatId,
-        chunk,
-        { message_thread_id: threadId ?? undefined }
-      ).catch(() => {});
+    const pickerHeader = `${icon} <b>${agent.name}</b> \u2014 ${result.success ? "completed" : "failed"} (${durationSec}s)`;
+    const pickerMdChunks = splitMarkdown(result.response);
+    for (let i = 0; i < pickerMdChunks.length; i++) {
+      const html = i === 0 ? `${pickerHeader}\n\n${markdownToHtml(pickerMdChunks[i])}` : markdownToHtml(pickerMdChunks[i]);
+      await bot.api.sendMessage(chatId, html, {
+        parse_mode: "HTML",
+        message_thread_id: threadId ?? undefined,
+      }).catch(async () => {
+        const plain = i === 0 ? `${icon} ${agent.name} — ${result.success ? "completed" : "failed"} (${durationSec}s)\n\n${pickerMdChunks[i]}` : pickerMdChunks[i];
+        for (const chunk of chunkMessage(plain)) {
+          await bot.api.sendMessage(chatId, chunk, { message_thread_id: threadId ?? undefined }).catch(() => {});
+        }
+      });
     }
   });
 }
