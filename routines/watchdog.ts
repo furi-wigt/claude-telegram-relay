@@ -25,7 +25,29 @@
 import { createRequire } from "module";
 import { sendToGroup } from "../src/utils/sendToGroup.ts";
 import { GROUPS, validateGroup } from "../src/config/groups.ts";
+import { loadEnv } from "../src/config/envLoader.ts";
 import { getDb } from "../src/local/db.ts";
+
+loadEnv();
+
+/**
+ * Resolve the target group for watchdog alerts.
+ * Priority: WATCHDOG_GROUP env var → OPERATIONS → first configured group.
+ * Returns the group key string, or null if no group is configured.
+ */
+function resolveWatchdogGroupKey(): string | null {
+  const candidates = [
+    process.env.WATCHDOG_GROUP,
+    "OPERATIONS",
+    Object.keys(GROUPS).find((k) => (GROUPS[k]?.chatId ?? 0) !== 0),
+  ];
+  for (const key of candidates) {
+    if (key && (GROUPS[key]?.chatId ?? 0) !== 0) return key;
+  }
+  return null;
+}
+
+const WATCHDOG_GROUP_KEY = resolveWatchdogGroupKey();
 
 // ============================================================
 // CONFIGURATION
@@ -366,11 +388,14 @@ export function buildResponsivenessAlert(result: ResponsivenessResult): string {
 async function main() {
   console.log("Running Watchdog...");
 
-  if (!validateGroup("GENERAL")) {
-    console.error("Cannot run — GENERAL group not configured");
-    console.error("Set chatId for the 'GENERAL' agent in config/agents.json");
+  if (!WATCHDOG_GROUP_KEY) {
+    console.error("Cannot run — no configured group found for watchdog alerts");
+    console.error("Set WATCHDOG_GROUP env var or ensure at least one agent has a chatId in agents.json");
     process.exit(0); // graceful skip — PM2 will retry on next cron cycle
   }
+
+  const WATCHDOG_GROUP = GROUPS[WATCHDOG_GROUP_KEY];
+  console.log(`[watchdog] Sending alerts to group: ${WATCHDOG_GROUP_KEY}`);
 
   const processes = await getPM2Processes();
 
@@ -378,9 +403,9 @@ async function main() {
     console.log("No PM2 processes found — PM2 may not be running");
     // Still alert since this is unexpected if the watchdog itself is running via PM2
     await sendToGroup(
-      GROUPS.GENERAL.chatId,
+      WATCHDOG_GROUP.chatId,
       "Watchdog: No PM2 processes detected. PM2 may not be running or ecosystem is not started. Run: npx pm2 start ecosystem.config.cjs",
-      { topicId: GROUPS.GENERAL.topicId }
+      { topicId: WATCHDOG_GROUP.topicId }
     );
     return;
   }
@@ -393,7 +418,7 @@ async function main() {
   const alert = buildAlert(issues, statusLines);
 
   if (alert) {
-    await sendToGroup(GROUPS.GENERAL.chatId, alert, { topicId: GROUPS.GENERAL.topicId });
+    await sendToGroup(WATCHDOG_GROUP.chatId, alert, { topicId: WATCHDOG_GROUP.topicId });
     console.log("Alert sent to General group");
   } else {
     console.log("All processes healthy — no alert needed");
@@ -406,7 +431,7 @@ async function main() {
     const responsiveness = checkBotResponsiveness(db, thresholdMin);
     if (!responsiveness.ok) {
       const respAlert = buildResponsivenessAlert(responsiveness);
-      await sendToGroup(GROUPS.GENERAL.chatId, respAlert, { topicId: GROUPS.GENERAL.topicId });
+      await sendToGroup(WATCHDOG_GROUP.chatId, respAlert, { topicId: WATCHDOG_GROUP.topicId });
       console.log("[watchdog] Responsiveness alert sent");
     } else {
       console.log("[watchdog] Responsiveness ok");
@@ -427,7 +452,8 @@ if (_isEntry) {
     const msg = error instanceof Error ? error.message : String(error);
     console.error("Error running watchdog:", error);
     try {
-      await sendToGroup(GROUPS.GENERAL.chatId, `⚠️ watchdog failed:\n\n${msg}`);
+      const fallbackGroup = WATCHDOG_GROUP_KEY ? GROUPS[WATCHDOG_GROUP_KEY] : null;
+      if (fallbackGroup) await sendToGroup(fallbackGroup.chatId, `⚠️ watchdog failed:\n\n${msg}`);
     } catch { /* ignore secondary failure */ }
     process.exit(0); // exit 0 so PM2 does not immediately restart — next run at scheduled cron time
   });
