@@ -44,6 +44,7 @@ import { learnTopicName, learnChatName, getTopicName } from "./utils/chatNames.t
 import { isMlxAvailable } from "./mlx/index.ts";
 import { callRoutineModel } from "./routines/routineModel.ts";
 import { getAgentForChat, autoDiscoverGroup, loadGroupMappings } from "./routing/groupRouter.ts";
+import { isCommandCenter, orchestrateMessage, registerOrchestrationCallbacks, setDispatchRunner } from "./orchestration/index.ts";
 // Router removed: always use Sonnet for simplicity and predictable latency
 import { loadSession as loadGroupSession, updateSessionIdGuarded, initSessions, loadAllSessions, saveSession, isResumeReliable, didResumeFail, lockActiveCwd, resetSession, getSessionSince } from "./session/groupSessions.ts";
 import { buildAgentPrompt } from "./agents/promptBuilder.ts";
@@ -278,6 +279,15 @@ function flushTextBurst(burstKey: string): void {
     queueManager.getOrCreate(chatId, threadId).enqueue({
       label: `[chat:${chatId}] doc-ingest-flush`,
       run: () => handleIngestFlush(chatId, threadId, burstKey, assembled, ctx),
+    });
+    return;
+  }
+
+  // Command Center intercept — route through orchestration layer instead of normal Claude flow
+  if (isCommandCenter(chatId)) {
+    queueManager.getOrCreate(chatId, threadId).enqueue({
+      label: `[chat:${chatId}] CC orchestrate: ${assembled.substring(0, 30)}`,
+      run: () => orchestrateMessage(bot, ctx, assembled, chatId, threadId),
     });
     return;
   }
@@ -629,6 +639,31 @@ bot.command("doc", async (ctx, next) => {
   await ctx.reply("📋 Ready. Paste your content now. (/cancel to abort)");
 });
 
+// Register orchestration callback handlers (Pause/Edit/Cancel + agent picker)
+registerOrchestrationCallbacks(bot);
+
+// Register dispatch runner — dispatch engine calls processTextMessage directly
+// instead of going through Telegram API (outgoing bot messages don't trigger handlers).
+setDispatchRunner(async (chatId: number, topicId: number | null, text: string) => {
+  const syntheticCtx = {
+    replyWithChatAction: (action: string) =>
+      bot.api.sendChatAction(chatId, action as Parameters<typeof bot.api.sendChatAction>[1], {
+        message_thread_id: topicId ?? undefined,
+      }).catch(() => {}),
+    reply: (replyText: string, other?: Record<string, unknown>) =>
+      bot.api.sendMessage(chatId, replyText, {
+        message_thread_id: topicId ?? undefined,
+        ...(other ?? {}),
+      }),
+    chat: { id: chatId },
+    message: { message_thread_id: topicId ?? undefined },
+    from: { id: allowedUserId },
+  } as unknown as Context;
+
+  await processTextMessage(chatId, topicId, text, syntheticCtx);
+  return lastAssistantResponses.get(streamKey(chatId, topicId))?.join("") ?? null;
+});
+
 registerCommands(bot, {
   userId: allowedUserId,
   projectDir: PROJECT_DIR || undefined,
@@ -640,10 +675,17 @@ registerCommands(bot, {
       await ctx.reply("Queue is full. Please try again shortly.");
       return;
     }
-    queueManager.getOrCreate(chatId, threadId).enqueue({
-      label: `[chat:${chatId}] /new: ${text.substring(0, 30)}`,
-      run: () => processTextMessage(chatId, threadId, text, ctx),
-    });
+    if (isCommandCenter(chatId)) {
+      queueManager.getOrCreate(chatId, threadId).enqueue({
+        label: `[chat:${chatId}] CC orchestrate: ${text.substring(0, 30)}`,
+        run: () => orchestrateMessage(bot, ctx, text, chatId, threadId),
+      });
+    } else {
+      queueManager.getOrCreate(chatId, threadId).enqueue({
+        label: `[chat:${chatId}] /new: ${text.substring(0, 30)}`,
+        run: () => processTextMessage(chatId, threadId, text, ctx),
+      });
+    }
   },
   getLastPaste: (chatId: number) => lastLargePastes.get(chatId),
 });
