@@ -1,4 +1,4 @@
-"""CLI for mlx: unified local inference — text generation + embeddings on Apple Silicon."""
+"""CLI for mlx-local: text generation + embeddings on Apple Silicon (separate servers)."""
 
 import os
 import click
@@ -103,13 +103,12 @@ def embed(text: tuple, model: str, json_output: bool):
 
 @main.command()
 @click.option("--model", "-m", default=DEFAULT_GEN_MODEL, help="Generation model ID")
-@click.option("--embed-model", default=DEFAULT_EMBED_MODEL, help="Embedding model ID")
 @click.option("--host", default="127.0.0.1")
 @click.option("--port", "-p", default=8800, type=int)
-def serve(model: str, embed_model: str, host: str, port: int):
-    """Start unified HTTP server — text generation + embeddings."""
-    from mlx_local.server import run_server
-    run_server(model=model, embed_model=embed_model, host=host, port=port)
+def serve(model: str, host: str, port: int):
+    """Start generation-only HTTP server (no embeddings — use serve-embed for that)."""
+    from mlx_local.server import run_gen_server
+    run_gen_server(model=model, host=host, port=port)
 
 
 @main.command("serve-embed")
