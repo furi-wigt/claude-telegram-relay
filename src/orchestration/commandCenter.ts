@@ -32,6 +32,13 @@ import type { ClassificationResult, DispatchPlan, SubTask } from "./types.ts";
 const COUNTDOWN_SECONDS = 5;
 
 /**
+ * Stores the full user message for pending agent-picker dispatches keyed by dispatchId.
+ * Prevents truncation when extracting the query from the plan display text (which is capped at 100 chars).
+ * Entries are deleted after dispatch or cancellation; unresolved pickers are cleared on restart.
+ */
+const pendingPickerMessages = new Map<string, string>();
+
+/**
  * Check if a chat ID belongs to the Command Center agent.
  */
 export function isCommandCenter(chatId: number): boolean {
@@ -66,7 +73,9 @@ export async function orchestrateMessage(
   const planText = formatPlanMessage(classification, agent, text);
 
   if (classification.confidence < AUTO_DISPATCH_THRESHOLD) {
-    // Low confidence → show inline keyboard agent picker instead of auto-dispatching
+    // Low confidence → show inline keyboard agent picker instead of auto-dispatching.
+    // Store full message so the op: callback can retrieve it without truncation.
+    pendingPickerMessages.set(dispatchId, text);
     const keyboard = buildAgentPickerKeyboard(dispatchId, text);
     await ctx.reply(
       `${planText}\n\n\u26A0\uFE0F Low confidence (${(classification.confidence * 100).toFixed(0)}%) \u2014 please pick the right agent:`,
@@ -227,6 +236,7 @@ export function registerOrchestrationCallbacks(bot: Bot): void {
         break;
       case "cancelled":
         await ctx.answerCallbackQuery({ text: "\u274C Cancelled" });
+        pendingPickerMessages.delete(dispatchId);
         break;
     }
   });
@@ -248,9 +258,12 @@ export function registerOrchestrationCallbacks(bot: Bot): void {
 
     await ctx.answerCallbackQuery({ text: `Routing to ${agent.name}...` });
 
-    // Reconstruct a minimal dispatch plan
+    // Retrieve the full user message stored when the picker was shown.
+    // Falls back to plan-text extraction only if the entry was evicted (e.g. after a restart).
+    const storedMessage = pendingPickerMessages.get(dispatchId);
     const msgText = ctx.callbackQuery.message?.text;
-    const userMessage = extractUserMessageFromPlan(msgText ?? "");
+    const userMessage = storedMessage ?? extractUserMessageFromPlan(msgText ?? "");
+    pendingPickerMessages.delete(dispatchId);
 
     // Remove the keyboard
     if (ctx.callbackQuery.message) {
