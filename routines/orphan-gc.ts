@@ -44,6 +44,19 @@ import { sendAndRecord } from "../src/utils/routineMessage.ts";
 import { sendToGroup } from "../src/utils/sendToGroup.ts";
 import { GROUPS, validateGroup } from "../src/config/groups.ts";
 
+function resolveOrphanGCGroupKey(): string | undefined {
+  for (const key of [
+    process.env.ORPHAN_GC_GROUP,
+    "OPERATIONS",
+    Object.keys(GROUPS).find((k) => (GROUPS[k]?.chatId ?? 0) !== 0),
+  ]) {
+    if (key && (GROUPS[key]?.chatId ?? 0) !== 0) return key;
+  }
+  return undefined;
+}
+
+const ORPHAN_GC_GROUP_KEY = resolveOrphanGCGroupKey();
+
 // ============================================================
 // TYPES
 // ============================================================
@@ -435,18 +448,18 @@ export async function runOrphanGC(): Promise<GCResult> {
 async function main(): Promise<void> {
   const result = await runOrphanGC();
 
-  if (result.orphansFound > 0 && validateGroup("GENERAL")) {
+  if (result.orphansFound > 0 && ORPHAN_GC_GROUP_KEY && validateGroup(ORPHAN_GC_GROUP_KEY)) {
     const message = buildTelegramMessage(result);
-    await sendAndRecord(GROUPS.GENERAL.chatId, message, {
+    await sendAndRecord(GROUPS[ORPHAN_GC_GROUP_KEY].chatId, message, {
       routineName: "orphan-gc",
       agentId: "general-assistant",
-      topicId: GROUPS.GENERAL.topicId,
+      topicId: GROUPS[ORPHAN_GC_GROUP_KEY].topicId,
     });
-    console.log("Summary sent to General group");
+    console.log(`Summary sent to ${ORPHAN_GC_GROUP_KEY} group`);
   } else if (result.orphansFound === 0) {
     console.log("No orphans found — no Telegram message sent");
   } else {
-    console.warn("GENERAL group not configured — skipping Telegram notification");
+    console.warn("No group configured — skipping Telegram notification");
   }
 
   process.exit(0);
@@ -463,7 +476,7 @@ if (_isEntry) {
     const msg = error instanceof Error ? error.message : String(error);
     console.error("Error running orphan GC:", error);
     try {
-      await sendToGroup(GROUPS.GENERAL.chatId, `⚠️ orphan-gc failed:\n\n${msg}`);
+      if (ORPHAN_GC_GROUP_KEY) await sendToGroup(GROUPS[ORPHAN_GC_GROUP_KEY].chatId, `⚠️ orphan-gc failed:\n\n${msg}`);
     } catch { /* ignore secondary failure */ }
     process.exit(0); // exit 0 so PM2 does not immediately restart
   });

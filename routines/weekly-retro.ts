@@ -11,6 +11,19 @@ import { join } from "path";
 import { sendAndRecord } from "../src/utils/routineMessage.ts";
 import { sendToGroup } from "../src/utils/sendToGroup.ts";
 import { GROUPS, validateGroup } from "../src/config/groups.ts";
+
+function resolveWeeklyRetroGroupKey(): string | undefined {
+  for (const key of [
+    process.env.WEEKLY_RETRO_GROUP,
+    "OPERATIONS",
+    Object.keys(GROUPS).find((k) => (GROUPS[k]?.chatId ?? 0) !== 0),
+  ]) {
+    if (key && (GROUPS[key]?.chatId ?? 0) !== 0) return key;
+  }
+  return undefined;
+}
+
+const WEEKLY_RETRO_GROUP_KEY = resolveWeeklyRetroGroupKey();
 import { USER_NAME } from "../src/config/userConfig.ts";
 import { shouldSkipRecently, markRanToday } from "../src/routines/runOnceGuard.ts";
 import { getPm2LogsDir } from "../config/observability.ts";
@@ -146,8 +159,8 @@ async function main() {
     process.exit(0);
   }
 
-  if (!validateGroup("GENERAL")) {
-    console.error("[weekly-retro] Cannot run — GENERAL group not configured");
+  if (!WEEKLY_RETRO_GROUP_KEY || !validateGroup(WEEKLY_RETRO_GROUP_KEY)) {
+    console.error("[weekly-retro] Cannot run — no group configured");
     process.exit(0);
   }
 
@@ -166,10 +179,10 @@ async function main() {
       `_Learnings need confidence >= ${MIN_CONFIDENCE} and age >= ${MIN_AGE_DAYS} days._`,
     ].join("\n");
 
-    await sendAndRecord(GROUPS.GENERAL.chatId, msg, {
+    await sendAndRecord(GROUPS[WEEKLY_RETRO_GROUP_KEY!].chatId, msg, {
       routineName: "weekly-retro",
       agentId: "general-assistant",
-      topicId: GROUPS.GENERAL.topicId,
+      topicId: GROUPS[WEEKLY_RETRO_GROUP_KEY!].topicId,
     });
     markRanToday(LAST_RUN_FILE);
     console.log("[weekly-retro] No candidates — summary sent.");
@@ -198,10 +211,10 @@ async function main() {
     `Review each learning below:`,
   ].join("\n");
 
-  await sendAndRecord(GROUPS.GENERAL.chatId, header, {
+  await sendAndRecord(GROUPS[WEEKLY_RETRO_GROUP_KEY!].chatId, header, {
     routineName: "weekly-retro",
     agentId: "general-assistant",
-    topicId: GROUPS.GENERAL.topicId,
+    topicId: GROUPS[WEEKLY_RETRO_GROUP_KEY!].topicId,
   });
 
   // Send each candidate with inline keyboard
@@ -217,8 +230,8 @@ async function main() {
     );
     const kb = buildRetroKeyboard(sessionId, i);
 
-    await sendToGroup(GROUPS.GENERAL.chatId, msg, {
-      topicId: GROUPS.GENERAL.topicId ?? undefined,
+    await sendToGroup(GROUPS[WEEKLY_RETRO_GROUP_KEY!].chatId, msg, {
+      topicId: GROUPS[WEEKLY_RETRO_GROUP_KEY!].topicId ?? undefined,
       reply_markup: kb,
     });
   }
@@ -236,7 +249,7 @@ if (_isEntry) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error("[weekly-retro] Error:", err);
     try {
-      await sendToGroup(GROUPS.GENERAL.chatId, `Weekly-retro failed:\n\n${msg}`);
+      if (WEEKLY_RETRO_GROUP_KEY) await sendToGroup(GROUPS[WEEKLY_RETRO_GROUP_KEY].chatId, `Weekly-retro failed:\n\n${msg}`);
     } catch { /* ignore secondary failure */ }
     process.exit(0);
   });

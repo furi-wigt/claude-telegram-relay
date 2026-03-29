@@ -31,6 +31,19 @@ import { sendAndRecord } from "../src/utils/routineMessage.ts";
 import { sendToGroup } from "../src/utils/sendToGroup.ts";
 import { GROUPS, validateGroup } from "../src/config/groups.ts";
 
+function resolveWeeklyEtfGroupKey(): string | undefined {
+  for (const key of [
+    process.env.WEEKLY_ETF_GROUP,
+    "OPERATIONS",
+    Object.keys(GROUPS).find((k) => (GROUPS[k]?.chatId ?? 0) !== 0),
+  ]) {
+    if (key && (GROUPS[key]?.chatId ?? 0) !== 0) return key;
+  }
+  return undefined;
+}
+
+const WEEKLY_ETF_GROUP_KEY = resolveWeeklyEtfGroupKey();
+
 // ============================================================
 // UCITS ETF UNIVERSE (Ireland-domiciled, LSE-listed via IBKR)
 // ============================================================
@@ -532,14 +545,13 @@ async function buildReport(): Promise<string> {
 async function main() {
   console.log("Running Weekly UCITS ETF Analysis...");
 
-  if (!validateGroup("GENERAL")) {
-    console.error("Cannot run — GENERAL group not configured");
-    console.error("Set chatId for the 'GENERAL' agent in config/agents.json");
+  if (!WEEKLY_ETF_GROUP_KEY || !validateGroup(WEEKLY_ETF_GROUP_KEY)) {
+    console.error("Cannot run — no group configured");
     process.exit(0); // graceful skip — PM2 will retry on next cron cycle
   }
 
   const report = await buildReport();
-  await sendAndRecord(GROUPS.GENERAL.chatId, report, { routineName: 'weekly-etf', agentId: 'general-assistant', topicId: GROUPS.GENERAL.topicId });
+  await sendAndRecord(GROUPS[WEEKLY_ETF_GROUP_KEY].chatId, report, { routineName: 'weekly-etf', agentId: 'general-assistant', topicId: GROUPS[WEEKLY_ETF_GROUP_KEY].topicId });
   console.log("Weekly UCITS ETF analysis sent to General group");
 }
 
@@ -554,7 +566,7 @@ if (_isEntry) {
     const msg = error instanceof Error ? error.message : String(error);
     console.error("Error running weekly ETF analysis:", error);
     try {
-      await sendToGroup(GROUPS.GENERAL.chatId, `⚠️ weekly-etf failed:\n\n${msg}`);
+      if (WEEKLY_ETF_GROUP_KEY) await sendToGroup(GROUPS[WEEKLY_ETF_GROUP_KEY].chatId, `⚠️ weekly-etf failed:\n\n${msg}`);
     } catch { /* ignore secondary failure */ }
     process.exit(0); // exit 0 so PM2 does not immediately restart — next run at scheduled cron time
   });
