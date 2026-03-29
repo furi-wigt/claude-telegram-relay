@@ -5,9 +5,10 @@
  * Both are loaded once at startup — no file I/O on each message.
  *
  * agents.json load order (first found wins):
- *   1. ~/.claude-relay/agents.json  — user runtime config (chatIds, topicIds)
- *   2. config/agents.json           — repo gitignored copy (legacy / local dev)
- *   3. config/agents.example.json   — committed template (fresh clone fallback)
+ *   1. RELAY_AGENTS_PATH env var    — system/CI override (absolute path)
+ *   2. ~/.claude-relay/agents.json  — user runtime config (chatIds, topicIds)
+ *   3. config/agents.json           — repo gitignored copy (legacy / local dev)
+ *   4. config/agents.example.json   — committed template (fresh clone fallback)
  *
  * To add, remove, or rename a specialist:
  *   1. Edit ~/.claude-relay/agents.json (or config/agents.json for dev)
@@ -20,6 +21,7 @@ import { join, dirname } from "path";
 import {
   getUserPromptsDir,
   getRepoPromptsDir,
+  getSystemAgentsPath,
   getUserAgentsPath,
   getRepoAgentsPath,
   getRepoAgentsExamplePath,
@@ -91,16 +93,23 @@ function loadPrompt(agentId: string): string {
   return `You are a helpful AI assistant (${agentId}).`;
 }
 
-// ─── Resolve agents.json path (3-tier: user → repo → example) ────────────────
+// ─── Resolve agents.json path (4-tier: system env → user → repo → example) ───
 
 function resolveAgentsPath(): string {
+  // 1. system env — RELAY_AGENTS_PATH (CI, Docker, explicit override)
+  const sys = getSystemAgentsPath();
+  if (sys && existsSync(sys)) return sys;
+
+  // 2. user env — ~/.claude-relay/agents.json
   const user = getUserAgentsPath();
   if (existsSync(user)) return user;
 
+  // 3. project env — config/agents.json (gitignored dev copy)
   const repo = getRepoAgentsPath();
   if (existsSync(repo)) return repo;
 
-  return getRepoAgentsExamplePath(); // fresh clone fallback
+  // 4. project env fallback — config/agents.example.json (fresh clone)
+  return getRepoAgentsExamplePath();
 }
 
 // ─── Build AGENTS ─────────────────────────────────────────────────────────────

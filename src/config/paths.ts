@@ -36,6 +36,15 @@ export function getRepoPromptsDir(): string {
   return join(import.meta.dir, "..", "..", "config", "prompts");
 }
 
+/**
+ * System-level agents config override — RELAY_AGENTS_PATH env var.
+ * Takes precedence over all file-based locations.
+ * Returns undefined when the env var is not set.
+ */
+export function getSystemAgentsPath(): string | undefined {
+  return process.env.RELAY_AGENTS_PATH || undefined;
+}
+
 /** User-level agents config — ~/.claude-relay/agents.json */
 export function getUserAgentsPath(): string {
   return join(getUserDir(), "agents.json");
