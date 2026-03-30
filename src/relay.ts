@@ -9,7 +9,7 @@
 
 import { Bot, Context, InlineKeyboard } from "grammy";
 import { writeFile, mkdir, readFile, unlink, appendFile } from "fs/promises";
-import { readFileSync } from "fs";
+import { readFileSync, existsSync } from "fs";
 import { join, dirname, basename, extname } from "path";
 import { insertMessageRecord, deleteDocumentRecords } from "./local/storageBackend";
 import {
@@ -782,9 +782,21 @@ async function callClaude(
   try {
     const chatId = options?.chatId;
     const threadId = options?.threadId ?? null;
+
+    // Guard: if the requested cwd no longer exists (e.g. a deleted worktree), fall back to
+    // PROJECT_DIR rather than letting the Claude CLI fail with exit 1 + empty stderr, which
+    // is indistinguishable from the stale-session fingerprint and triggers a false reset.
+    const requestedCwd = options?.cwd;
+    const resolvedCwd = requestedCwd && !existsSync(requestedCwd)
+      ? (() => {
+          console.warn(`[callClaude] cwd does not exist: ${requestedCwd} — falling back to PROJECT_DIR`);
+          return PROJECT_DIR || undefined;
+        })()
+      : (requestedCwd ?? (PROJECT_DIR || undefined));
+
     return await claudeStream(prompt, {
       sessionId: options?.resume && options?.sessionId ? options.sessionId : undefined,
-      cwd: options?.cwd ?? (PROJECT_DIR || undefined),
+      cwd: resolvedCwd,
       claudePath: CLAUDE_PATH,
       onProgress: options?.onProgress,
       onSessionId: options?.onSessionId,
