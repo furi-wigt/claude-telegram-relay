@@ -8,7 +8,7 @@
  * Session files are stored at: {RELAY_DIR}/sessions/{chatId}_{threadId}.json
  */
 
-import { readFile, writeFile, mkdir, readdir, access } from "fs/promises";
+import { readFile, writeFile, rename, unlink, mkdir, readdir, access } from "fs/promises";
 import { join } from "path";
 import { mkdirSync, existsSync } from "fs";
 
@@ -91,6 +91,10 @@ function sessionKey(chatId: number, threadId?: number | null): string {
 /** In-memory cache of active sessions keyed by chatId_threadId */
 const sessions = new Map<string, SessionState>();
 
+/** Monotonic counter for unique tmp file names — avoids rename races when
+ *  concurrent saves run for the same session within the same millisecond. */
+let _saveSeq = 0;
+
 /** M-6: LRU cap — evict oldest-inserted entry when cache exceeds this size */
 const MAX_SESSIONS_CACHE = 500;
 function evictIfNeeded(): void {
@@ -133,7 +137,9 @@ export async function loadSession(chatId: number, agentId: string, threadId?: nu
     evictIfNeeded();
     return state;
   } catch {
-    // No existing session file -- create a fresh state
+    // No existing session file -- create a fresh state and persist it
+    // immediately so /cwd and other commands that run before the first message
+    // have a file on disk to recover from after a crash.
     const state: SessionState = {
       chatId,
       agentId,
@@ -152,18 +158,35 @@ export async function loadSession(chatId: number, agentId: string, threadId?: nu
     };
     sessions.set(key, state);
     evictIfNeeded();
+    // Fire-and-forget — failure is non-fatal; next saveSession will retry.
+    saveSession(state).catch((err) =>
+      console.error(`[loadSession] failed to persist fresh session ${key}:`, err)
+    );
     return state;
   }
 }
 
 /**
- * Persist session state to disk and update the in-memory cache.
+ * Persist session state to disk atomically (write tmp → rename) and update
+ * the in-memory cache. Atomic rename ensures a crash mid-write never leaves
+ * a truncated/corrupt session file — the old file remains intact until the
+ * new one is fully flushed to disk.
  */
 export async function saveSession(state: SessionState): Promise<void> {
   ensureSessionsDir();
   const key = sessionKey(state.chatId, state.threadId);
   const sessionFile = join(SESSIONS_DIR, `${key}.json`);
-  await writeFile(sessionFile, JSON.stringify(state, null, 2));
+  // Unique tmp suffix prevents rename races when concurrent saves run for the
+  // same session (e.g. loadSession fire-and-forget + setTopicCwd in the same tick).
+  // Monotonic counter is collision-free within a process; Date.now() alone is not
+  // (millisecond granularity → same value for two synchronous calls).
+  const tmpFile = `${sessionFile}.${++_saveSeq}.tmp`;
+  await writeFile(tmpFile, JSON.stringify(state, null, 2));
+  await rename(tmpFile, sessionFile).catch(async (err) => {
+    // Clean up orphaned tmp file and re-throw so callers know it failed.
+    await unlink(tmpFile).catch(() => {});
+    throw err;
+  });
   sessions.set(key, state);
   evictIfNeeded();
 }
