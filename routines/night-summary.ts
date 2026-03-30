@@ -477,7 +477,7 @@ async function analyzeDay(
   const prompt = buildReflectionPrompt(messages, facts, goals, USER_NAME, summaries);
 
   return analyzeWithLocalLLM(prompt, (p) =>
-    callRoutineModel(p, { label: "night-summary", maxTokens: 4096 })
+    callRoutineModel(p, { label: "night-summary", maxTokens: 4096, timeoutMs: 300_000 })
   );
 }
 
