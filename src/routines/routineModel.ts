@@ -18,6 +18,12 @@ export interface RoutineModelOptions {
   maxTokens?: number;
   /** Label for log messages (e.g. "morning-summary:recap"). */
   label?: string;
+  /**
+   * Max ms of silence between SSE chunks before aborting.
+   * Defaults to 30 000ms. Increase for heavy prompts that may queue
+   * behind another in-flight MLX request (e.g. night-summary analyzeDay).
+   */
+  chunkTimeoutMs?: number;
 }
 
 // Simple mutex: serializes LLM calls to prevent concurrent GPU access
@@ -48,8 +54,9 @@ export async function callRoutineModel(
   const timeoutMs = options?.timeoutMs ?? 120_000;
   const maxTokens = options?.maxTokens ?? 2048;
 
+  const chunkTimeoutMs = options?.chunkTimeoutMs;
   const result = await withLlmLock(() =>
-    callMlxGenerate(prompt, { timeoutMs, maxTokens })
+    callMlxGenerate(prompt, { timeoutMs, maxTokens, ...(chunkTimeoutMs !== undefined && { chunkTimeoutMs }) })
   );
   _lastProvider = "local";
   console.log(`[${label}] Local LLM succeeded`);

@@ -476,8 +476,11 @@ async function analyzeDay(
 ): Promise<AnalysisResult> {
   const prompt = buildReflectionPrompt(messages, facts, goals, USER_NAME, summaries);
 
+  // 60s chunk timeout: analyzeDay fires at 23:00 alongside smart-checkin.
+  // If MLX is busy serving another request, the first keepalive may arrive
+  // up to ~45s late — 60s gives headroom without masking real hangs.
   return analyzeWithLocalLLM(prompt, (p) =>
-    callRoutineModel(p, { label: "night-summary", maxTokens: 4096, timeoutMs: 300_000 })
+    callRoutineModel(p, { label: "night-summary", maxTokens: 4096, timeoutMs: 300_000, chunkTimeoutMs: 60_000 })
   );
 }
 
