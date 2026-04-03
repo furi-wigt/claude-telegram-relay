@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased] / 2026-04-03 — fix(mlx): switch to streaming SSE with per-chunk timeout
+
+### Fixed
+- **src/mlx/client.ts**: `callMlxGenerate` now uses `stream: true` with incremental SSE parsing instead of buffered `stream: false`. Bun's `fetch` `AbortController` does not terminate idle HTTP/1.0 connections — the previous non-streaming mode caused 60+ minute hangs when the MLX server generated large responses (4096 tokens at ~1 tok/s). With streaming, tokens arrive incrementally and a `Promise.race`-based per-chunk inactivity timeout (default 30s) detects stalls immediately.
+
+### Added
+- **src/mlx/client.test.ts**: 11 new unit tests covering streaming SSE parsing, thinking block stripping, chunk timeout, HTTP errors, split SSE boundaries, `[DONE]` sentinel, keepalive handling, and AbortController propagation.
+
 ## [Unreleased] / 2026-03-29 — fix(orchestration): restore model prefix routing for /new [o] in CC
 
 ### Fixed
