@@ -25,16 +25,19 @@ describe("intentClassifier — keyword fallback", () => {
     expect(result.primaryAgent).toBe("strategy-comms");
   });
 
-  test("routes 'what is 2+2' to operations-hub (default)", () => {
+  test("routes 'what is 2+2' to operations-hub (default) with high confidence", () => {
+    // No domain keyword match → ops-hub is correct default; confidence should be HIGH
+    // so the CC does NOT show the agent picker for general questions.
     const result = classifyWithKeywords("what is 2+2");
     expect(result.primaryAgent).toBe("operations-hub");
-    expect(result.confidence).toBeLessThanOrEqual(0.5);
+    expect(result.confidence).toBeGreaterThanOrEqual(0.7);
   });
 
-  test("routes 'good morning' to operations-hub (default)", () => {
+  test("routes 'good morning' to operations-hub (default) with high confidence", () => {
+    // Small talk: no keyword match → ops-hub, high confidence, no picker shown.
     const result = classifyWithKeywords("good morning");
     expect(result.primaryAgent).toBe("operations-hub");
-    expect(result.confidence).toBeLessThanOrEqual(0.5);
+    expect(result.confidence).toBeGreaterThanOrEqual(0.7);
   });
 
   test("routes 'AWS cost optimization for EDEN' to cloud-architect", () => {

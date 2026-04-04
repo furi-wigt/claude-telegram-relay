@@ -12,7 +12,7 @@
  */
 
 import type { Bot, Context } from "grammy";
-import { AGENTS, type AgentConfig } from "../agents/config.ts";
+import { AGENTS, DEFAULT_AGENT, type AgentConfig } from "../agents/config.ts";
 import { classifyIntent, AUTO_DISPATCH_THRESHOLD } from "./intentClassifier.ts";
 import { chunkMessage } from "../utils/sendToGroup.ts";
 import { markdownToHtml, splitMarkdown } from "../utils/htmlFormat.ts";
@@ -80,9 +80,10 @@ export async function orchestrateMessage(
   const dispatchId = crypto.randomUUID();
   const planText = formatPlanMessage(classification, agent, text, modelLabel);
 
-  if (classification.confidence < AUTO_DISPATCH_THRESHOLD) {
-    // Low confidence → show inline keyboard agent picker instead of auto-dispatching.
-    // Store full message so the op: callback can retrieve it without truncation.
+  if (classification.confidence < AUTO_DISPATCH_THRESHOLD && classification.primaryAgent !== DEFAULT_AGENT.id) {
+    // Low confidence on a non-default agent → show inline keyboard picker so user can choose.
+    // Skip picker when agent is already the default (ops-hub): low confidence on ops-hub just means
+    // "no domain match = general question", and ops-hub is always the correct fallback.
     pendingPickerMessages.set(dispatchId, text);
     const keyboard = buildAgentPickerKeyboard(dispatchId, text);
     await ctx.reply(
