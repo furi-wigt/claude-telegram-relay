@@ -126,3 +126,68 @@ export interface CountdownState {
   chatId: number;
   threadId: number | null;
 }
+
+// ── Blackboard Types ───────────────────────────────────────────────────────
+
+export type BbSpace = "input" | "tasks" | "evidence" | "artifacts" | "decisions" | "reviews" | "conflicts" | "final";
+
+export type BbRecordType = "task" | "finding" | "artifact" | "decision" | "review" | "conflict" | "output";
+
+export type BbSessionStatus = "active" | "finalizing" | "done" | "failed" | "cancelled";
+
+export type BbRecordStatus = "pending" | "active" | "done" | "failed" | "superseded" | "archived";
+
+export interface BbSession {
+  id: string;
+  dispatch_id: string | null;
+  status: BbSessionStatus;
+  workflow: string;
+  max_rounds: number;
+  current_round: number;
+  budget_tokens: number | null;
+  created_at: string;
+  completed_at: string | null;
+  metadata: string | null;
+}
+
+export interface BbRecord {
+  id: string;
+  session_id: string;
+  space: BbSpace;
+  record_type: BbRecordType;
+  producer: string | null;
+  owner: string | null;
+  status: BbRecordStatus;
+  confidence: number | null;
+  content: string; // JSON
+  parent_id: string | null;
+  supersedes: string | null;
+  round: number | null;
+  created_at: string;
+  updated_at: string | null;
+}
+
+/** Content shape for task records in the tasks space */
+export interface BbTaskContent {
+  taskDescription: string;
+  agentId: string;
+  seq: number;
+  dependsOn: number[];
+  topicHint: string | null;
+  retryCount?: number;
+}
+
+/** Content shape for artifact/evidence records */
+export interface BbArtifactContent {
+  summary: string;
+  fullResponse?: string;
+  artifactPath?: string;
+}
+
+/** Returned by controlPlane.selectNextAgents() */
+export interface AgentTrigger {
+  rule: "INIT" | "EXECUTE" | "REVIEW" | "CONFLICT" | "FINALIZE" | "ESCALATE";
+  agentId: string;
+  taskRecordId?: string; // bb_records id of the task to execute
+  reason: string;
+}
