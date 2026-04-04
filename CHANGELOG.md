@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased] / 2026-04-04 — Fix: Governance Keyboard Never Sent
+
+### Fixed
+- **interviewPipeline**: `handleOrchestrationComplete` now sends the Approve/Archive inline keyboard after posting the dispatch synthesis. The keyboard was built and the callback handler was registered, but `buildFinalKeyboard()` was never called — Step 5 of the E2E flow was silently skipped.
+- **dispatchEngine**: `executeBlackboardDispatch` now returns `sessionId` in the result so callers can attach the governance keyboard to the correct session.
+
 ## [Unreleased] / 2026-04-04 — Fix: Dispatch Engine Error Resilience
 
 ### Fixed
