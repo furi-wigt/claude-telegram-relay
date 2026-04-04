@@ -126,3 +126,49 @@ export interface CountdownState {
   chatId: number;
   threadId: number | null;
 }
+
+// ── Blackboard Types ────────────────────────────────────────────────────────
+
+export type BbSessionStatus = "active" | "done" | "failed" | "cancelled";
+
+export type BbSpace = "input" | "tasks" | "results" | "context" | "output";
+
+export type BbRecordType =
+  | "task"
+  | "result"
+  | "context"
+  | "plan"
+  | "error"
+  | string;
+
+export type BbRecordStatus = "pending" | "in_progress" | "done" | "failed" | "cancelled";
+
+export interface BbSession {
+  id: string;
+  dispatch_id: string | null;
+  status: BbSessionStatus;
+  workflow: string;
+  max_rounds: number;
+  current_round: number;
+  budget_tokens: number | null;
+  created_at: string;
+  completed_at: string | null;
+  metadata: string | null;
+}
+
+export interface BbRecord {
+  id: string;
+  session_id: string;
+  space: BbSpace;
+  record_type: BbRecordType;
+  producer: string | null;
+  owner: string | null;
+  status: BbRecordStatus;
+  confidence: number | null;
+  content: string; // JSON-serialised
+  parent_id: string | null;
+  supersedes: string | null;
+  round: number | null;
+  created_at: string;
+  updated_at: string | null;
+}
