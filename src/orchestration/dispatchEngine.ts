@@ -15,6 +15,8 @@ import type { DispatchPlan, DispatchEvent, DispatchRow, DispatchTaskRow, TaskSta
 import { createSession, writeRecord, getRecordsBySpace, updateRecordStatus, updateSessionStatus, incrementRound } from "./blackboard.ts";
 import { selectNextAgents } from "./controlPlane.ts";
 import { aggregateResults, type AggregatedResult } from "./responseAggregator.ts";
+import { checkSecurityReviewNeeded, buildReviewRequest, recordReviewVerdict, REVIEWER_AGENT, SECURITY_AGENT } from "./reviewLoop.ts";
+import { finalizeSynthesis } from "./finalizer.ts";
 
 /** Max time to wait for an agent response before timing out */
 const AGENT_RESPONSE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
@@ -205,13 +207,14 @@ export async function executeBlackboardDispatch(
       };
     }
 
-    // FINALIZE — aggregate and return
+    // FINALIZE — run synthesis, then aggregate and return
     if (triggers[0].rule === "FINALIZE") {
+      const synthesis = finalizeSynthesis(db, session.id);
       updateSessionStatus(db, session.id, "done");
       const aggregated = aggregateResults(db, session.id);
       return {
         success: aggregated.failedCount === 0,
-        response: aggregated.summaryText,
+        response: synthesis?.summary ?? aggregated.summaryText,
         durationMs: Date.now() - startTime,
         aggregated,
       };
@@ -239,7 +242,7 @@ export async function executeBlackboardDispatch(
 
       if (response) {
         updateRecordStatus(db, trigger.taskRecordId, "done");
-        writeRecord(db, {
+        const artifactRecord = writeRecord(db, {
           sessionId: session.id,
           space: "artifacts",
           recordType: "artifact",
@@ -249,6 +252,48 @@ export async function executeBlackboardDispatch(
           round: round + 1,
         });
         lastResponse = response;
+
+        // Review loop: check if code-quality review is needed
+        const reviewReq = buildReviewRequest(db, session.id, artifactRecord.id, round + 1);
+        if (reviewReq) {
+          const agentConfig = AGENTS[REVIEWER_AGENT];
+          if (agentConfig?.chatId && runner) {
+            const reviewResponse = await runner(agentConfig.chatId, agentConfig.topicId ?? null, reviewReq.prompt);
+            if (reviewResponse) {
+              const verdict = parseReviewVerdict(reviewResponse);
+              recordReviewVerdict(db, {
+                sessionId: session.id,
+                targetRecordId: artifactRecord.id,
+                reviewerAgent: REVIEWER_AGENT,
+                verdict,
+                feedback: reviewResponse,
+                iteration: 1,
+                round: round + 1,
+              });
+            }
+          }
+        }
+
+        // Security review gate: check if security review is needed
+        const securityReq = checkSecurityReviewNeeded(db, session.id, artifactRecord.id, round + 1);
+        if (securityReq) {
+          const secAgentConfig = AGENTS[SECURITY_AGENT];
+          if (secAgentConfig?.chatId && runner) {
+            const securityResponse = await runner(secAgentConfig.chatId, secAgentConfig.topicId ?? null, securityReq.prompt);
+            if (securityResponse) {
+              const verdict = parseReviewVerdict(securityResponse);
+              recordReviewVerdict(db, {
+                sessionId: session.id,
+                targetRecordId: artifactRecord.id,
+                reviewerAgent: SECURITY_AGENT,
+                verdict,
+                feedback: securityResponse,
+                iteration: 1,
+                round: round + 1,
+              });
+            }
+          }
+        }
       } else {
         updateRecordStatus(db, trigger.taskRecordId, "failed");
       }
@@ -363,6 +408,14 @@ function updateTaskResult(dispatchId: string, agentId: string, summary: string):
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
+
+/** Parse a review verdict from agent response text */
+function parseReviewVerdict(response: string): "approved" | "revision_needed" | "rejected" {
+  const upper = response.toUpperCase();
+  if (upper.includes("REJECTED")) return "rejected";
+  if (upper.includes("REVISION_NEEDED") || upper.includes("REVISION NEEDED")) return "revision_needed";
+  return "approved"; // default to approved if no clear signal
+}
 
 function truncate(text: string, maxLen: number): string {
   return text.length > maxLen ? text.slice(0, maxLen - 3) + "..." : text;

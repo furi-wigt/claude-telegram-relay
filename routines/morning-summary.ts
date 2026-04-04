@@ -420,6 +420,35 @@ async function buildEnhancedBriefing(): Promise<{
     // Orchestration tables may not exist yet — graceful skip
   }
 
+  // ── Mesh Board Activity (Constrained Mesh sessions) ────────────────────────
+  try {
+    const { getDb } = await import("../src/local/db");
+    const db = getDb();
+    const boardActivity = db.query(`
+      SELECT
+        s.status,
+        COUNT(DISTINCT s.id) as session_count,
+        COUNT(r.id) as record_count
+      FROM bb_sessions s
+      LEFT JOIN bb_records r ON r.session_id = s.id
+      WHERE s.created_at >= datetime('now', '-1 day')
+      GROUP BY s.status
+    `).all() as Array<{ status: string; session_count: number; record_count: number }>;
+
+    if (boardActivity.length > 0) {
+      const totalSessions = boardActivity.reduce((sum, r) => sum + r.session_count, 0);
+      const totalRecords = boardActivity.reduce((sum, r) => sum + r.record_count, 0);
+      const completedSessions = boardActivity.find(r => r.status === "done")?.session_count ?? 0;
+      const activeSessions = boardActivity.find(r => r.status === "active")?.session_count ?? 0;
+
+      lines.push(`🕸️ **Mesh Activity:**`);
+      lines.push(`• ${totalSessions} session${totalSessions !== 1 ? "s" : ""} (${completedSessions} done, ${activeSessions} active), ${totalRecords} board records`);
+      lines.push("");
+    }
+  } catch {
+    // bb_sessions table may not exist yet — graceful skip
+  }
+
   // ── Active Goals ────────────────────────────────────────────────────────────
   if (goals.length > 0) {
     lines.push(`🎯 **Active Goals**`);
