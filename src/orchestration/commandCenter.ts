@@ -30,8 +30,23 @@ import {
 import { resolveModelPrefix } from "../utils/modelPrefix.ts";
 import { InlineKeyboard } from "grammy";
 import type { ClassificationResult, DispatchPlan, SubTask } from "./types.ts";
+import type { InteractiveStateMachine } from "../interactive/stateMachine.ts";
 
 const COUNTDOWN_SECONDS = 5;
+
+/** Confidence threshold below which compound interview is triggered */
+const INTERVIEW_CONFIDENCE_THRESHOLD = 0.8;
+
+/** Registered state machine instance — set by relay.ts at startup */
+let _stateMachine: InteractiveStateMachine | null = null;
+
+export function setInterviewStateMachine(sm: InteractiveStateMachine): void {
+  _stateMachine = sm;
+}
+
+export function getInterviewStateMachine(): InteractiveStateMachine | null {
+  return _stateMachine;
+}
 
 /**
  * Stores the full user message for pending agent-picker dispatches keyed by dispatchId.
@@ -76,7 +91,17 @@ export async function orchestrateMessage(
     return;
   }
 
-  // 2. Show routing plan
+  // 2. Interview branch — compound or ambiguous tasks get clarifying questions
+  const shouldInterview =
+    classification.isCompound ||
+    (classification.confidence < INTERVIEW_CONFIDENCE_THRESHOLD && classification.primaryAgent !== DEFAULT_AGENT.id);
+
+  if (shouldInterview && _stateMachine) {
+    await _stateMachine.startOrchestrationInterview(chatId, threadId, text, classification);
+    return;
+  }
+
+  // 3. Show routing plan
   const dispatchId = crypto.randomUUID();
   const planText = formatPlanMessage(classification, agent, text, modelLabel);
 

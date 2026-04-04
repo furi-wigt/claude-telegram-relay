@@ -21,6 +21,9 @@ export type SessionPhase =
   | "confirming"  // All answered — showing summary card
   | "done";       // Confirmed — Claude spawned, session over
 
+/** Session mode — determines what happens after interview completes */
+export type SessionMode = "plan" | "orchestrate";
+
 export interface BatchResult {
   goal?: string;
   description?: string;
@@ -32,9 +35,10 @@ export interface InteractiveSession {
   sessionId: string;
   chatId: number;
   phase: SessionPhase;
-  task: string;          // Original task from /plan
-  goal: string;          // "jwt-auth"
-  description: string;   // "implement-jwt-auth-system"
+  mode: SessionMode;       // "plan" = TDD /plan flow, "orchestrate" = CC board dispatch
+  task: string;            // Original task from /plan or CC message
+  goal: string;            // "jwt-auth"
+  description: string;     // "implement-jwt-auth-system"
   questions: Question[];
   answers: (string | null)[];  // parallel to questions
   currentIndex: number;
@@ -45,4 +49,7 @@ export interface InteractiveSession {
   currentBatchStart: number;   // index in questions[] where current round's batch starts
   round: number;               // 1-based, capped at 3
   editingIndex?: number;       // set when user picks a question from the edit menu — single-Q edit mode
+  // orchestrate-mode fields
+  classification?: import("../orchestration/types.ts").ClassificationResult;
+  threadId?: number | null;    // CC thread ID for posting results back
 }

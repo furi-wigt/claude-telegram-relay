@@ -3,7 +3,8 @@
  */
 
 export { classifyIntent, classifyWithKeywords, AUTO_DISPATCH_THRESHOLD } from "./intentClassifier.ts";
-export { isCommandCenter, orchestrateMessage, registerOrchestrationCallbacks } from "./commandCenter.ts";
+export { isCommandCenter, orchestrateMessage, registerOrchestrationCallbacks, setInterviewStateMachine } from "./commandCenter.ts";
+export { decomposeFromInterview, handleOrchestrationComplete, formatDispatchPlan, buildGovernanceKeyboard } from "./interviewPipeline.ts";
 export { executeSingleDispatch, executeBlackboardDispatch, getRecentDispatches, getYesterdayActivity, setDispatchRunner, getDispatchRunner } from "./dispatchEngine.ts";
 export { initOrchestrationSchema } from "./schema.ts";
 export { initBlackboardSchema } from "./blackboardSchema.ts";

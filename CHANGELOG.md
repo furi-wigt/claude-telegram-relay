@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased] / 2026-04-04 — Phase 3: Interview + Plan Generation
+
+### Added
+- **orchestration/interviewPipeline**: Interview-to-board pipeline — decomposes interview Q&A into blackboard task and evidence records. Supports MLX-based compound task decomposition with heuristic fallback. Governance UI with `[Approve][Edit][Cancel][Skip Review][Force Security]` buttons.
+- **interactive/stateMachine**: `startOrchestrationInterview()` — new entry point for CC interview flow. `setOrchestrationHandler()` for registering post-interview callback. `mode: 'plan' | 'orchestrate'` on `InteractiveSession`.
+- **commandCenter**: Interview trigger branch — `isCompound OR confidence < 0.8` routes to interview instead of direct dispatch. `setInterviewStateMachine()` for DI of state machine.
+
+### Changed
+- **interactive/types**: `InteractiveSession` gains `mode`, `classification`, `threadId` fields for orchestration context.
+- **interactive/stateMachine**: `confirm()` now branches on `mode` — `plan` spawns Claude TDD, `orchestrate` calls board dispatch pipeline.
+
 ## [Unreleased] / 2026-04-04 — Constrained Mesh + Blackboard Orchestration
 
 ### Added

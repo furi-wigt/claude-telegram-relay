@@ -27,14 +27,19 @@ import {
   clearSession,
   hasSession,
 } from "./sessionStore.ts";
-import type { InteractiveSession, Question, BatchResult } from "./types.ts";
+import type { InteractiveSession, SessionMode, Question, BatchResult } from "./types.ts";
+import type { ClassificationResult } from "../orchestration/types.ts";
 
 type CallerCallClaude = (prompt: string) => Promise<string>;
+
+/** Callback invoked when orchestrate-mode interview completes */
+export type OnOrchestrationComplete = (session: InteractiveSession) => Promise<void>;
 
 const PLAN_DIR = ".claude/todos";
 
 export class InteractiveStateMachine {
   private dashboard: QuestionDashboard;
+  private onOrchestrationComplete?: OnOrchestrationComplete;
 
   constructor(
     private bot: Bot,
@@ -44,6 +49,11 @@ export class InteractiveStateMachine {
     private callClaudeForQuestions?: CallerCallClaude
   ) {
     this.dashboard = new QuestionDashboard(bot);
+  }
+
+  /** Register the callback for orchestrate-mode interview completion */
+  setOrchestrationHandler(handler: OnOrchestrationComplete): void {
+    this.onOrchestrationComplete = handler;
   }
 
   // ──────────────────────────────────────────────
@@ -76,6 +86,7 @@ export class InteractiveStateMachine {
       sessionId: crypto.randomUUID(),
       chatId,
       phase: "loading",
+      mode: "plan",
       task,
       goal: "",
       description: "",
@@ -117,6 +128,75 @@ export class InteractiveStateMachine {
       } catch {
         /* ignore */
       }
+    }
+  }
+
+  // ──────────────────────────────────────────────
+  // Orchestration interview (called from CC)
+  // ──────────────────────────────────────────────
+
+  /**
+   * Start an interview for a compound/ambiguous CC message.
+   * After all questions are answered, calls onOrchestrationComplete
+   * instead of spawning a Claude TDD session.
+   */
+  async startOrchestrationInterview(
+    chatId: number,
+    threadId: number | null,
+    task: string,
+    classification: ClassificationResult,
+  ): Promise<void> {
+    // Clear any existing session in this chat
+    if (hasSession(chatId)) clearSession(chatId);
+
+    const cardMessageId = await this.dashboard.createLoadingCard(chatId, task);
+    const now = Date.now();
+
+    const session: InteractiveSession = {
+      sessionId: crypto.randomUUID(),
+      chatId,
+      phase: "loading",
+      mode: "orchestrate",
+      task,
+      goal: "",
+      description: "",
+      questions: [],
+      answers: [],
+      currentIndex: 0,
+      cardMessageId,
+      createdAt: now,
+      lastActivityAt: now,
+      completedQA: [],
+      currentBatchStart: 0,
+      round: 1,
+      classification,
+      threadId,
+    };
+    setSession(chatId, session);
+
+    try {
+      const result = await this.generateNextBatch(task, [], 1);
+      const updated = updateSession(chatId, {
+        phase: "collecting",
+        goal: result.goal ?? "",
+        description: result.description ?? "",
+        questions: result.questions,
+        answers: new Array(result.questions.length).fill(null),
+        completedQA: [],
+        currentBatchStart: 0,
+        round: 1,
+      });
+      if (updated) await this.dashboard.showQuestion(updated);
+    } catch (err) {
+      console.error("[interactive] Failed to generate orchestration questions:", err);
+      clearSession(chatId);
+      try {
+        await this.bot.api.editMessageText(
+          chatId,
+          cardMessageId,
+          "\u274C Failed to generate interview questions. Message will be dispatched directly."
+        );
+      } catch { /* ignore */ }
     }
   }
 
@@ -407,6 +487,50 @@ export class InteractiveStateMachine {
   }
 
   private async confirm(session: InteractiveSession): Promise<void> {
+    const { chatId, mode } = session;
+
+    if (mode === "orchestrate") {
+      await this.confirmOrchestration(session);
+      return;
+    }
+
+    await this.confirmPlan(session);
+  }
+
+  /** Orchestrate mode: hand off to the board dispatch pipeline */
+  private async confirmOrchestration(session: InteractiveSession): Promise<void> {
+    const { chatId } = session;
+
+    const updated = updateSession(chatId, { phase: "done" });
+    if (updated) await this.dashboard.showExecuting(updated);
+
+    // Keep session data accessible before clearing
+    const finalSession = { ...session, ...updated, phase: "done" as const };
+    clearSession(chatId);
+
+    if (this.onOrchestrationComplete) {
+      try {
+        await this.onOrchestrationComplete(finalSession);
+      } catch (err) {
+        console.error("[interactive] Orchestration completion failed:", err);
+        await this.bot.api.sendMessage(
+          chatId,
+          "\u274C Failed to create dispatch plan. Try sending your message again.",
+          { message_thread_id: session.threadId ?? undefined },
+        ).catch(() => {});
+      }
+    } else {
+      console.error("[interactive] No orchestration handler registered");
+      await this.bot.api.sendMessage(
+        chatId,
+        "\u26A0\uFE0F Orchestration handler not configured. Message not dispatched.",
+        { message_thread_id: session.threadId ?? undefined },
+      ).catch(() => {});
+    }
+  }
+
+  /** Plan mode: spawn Claude with TDD context (original flow) */
+  private async confirmPlan(session: InteractiveSession): Promise<void> {
     const { chatId, task, completedQA } = session;
 
     const updated = updateSession(chatId, { phase: "done" });
