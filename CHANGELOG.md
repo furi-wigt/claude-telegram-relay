@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased] / 2026-04-04 — Fix: Dispatch Engine Error Resilience
+
+### Fixed
+- **dispatchEngine**: Runner calls wrapped in try-catch — `claudeStream: exit 1` exceptions no longer crash the dispatch loop. Failed tasks are marked `failed` and the loop continues to FINALIZE.
+- **dispatchEngine**: Reviewer and security reviewer runner calls wrapped in try-catch — reviewer failures no longer interrupt artifact dispatch.
+- **dispatchEngine**: Loop exit fallback now attempts `finalizeSynthesis()` before marking session `done` — ensures governance keyboard fires even when FINALIZE trigger doesn't reach from controlPlane.
+
 ## [Unreleased] / 2026-04-04 — Fix: Mesh Interview Trigger
 
 ### Fixed

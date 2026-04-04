@@ -237,8 +237,15 @@ export async function executeBlackboardDispatch(
       const taskContent = taskRec ? JSON.parse(taskRec.content) as BbTaskContent : null;
       const taskText = taskContent?.taskDescription ?? plan.userMessage;
 
-      // Dispatch to agent
-      const response = await runner(chatId, topicId, taskText);
+      // Dispatch to agent — catch throws so the loop continues to FINALIZE
+      let response: string | null = null;
+      try {
+        response = await runner(chatId, topicId, taskText);
+      } catch (err) {
+        console.error(`[dispatchEngine] runner threw for ${trigger.agentId}:`, err instanceof Error ? err.message : err);
+        updateRecordStatus(db, trigger.taskRecordId, "failed");
+        continue;
+      }
 
       if (response) {
         updateRecordStatus(db, trigger.taskRecordId, "done");
@@ -253,44 +260,52 @@ export async function executeBlackboardDispatch(
         });
         lastResponse = response;
 
-        // Review loop: check if code-quality review is needed
+        // Review loop — catch throws so artifact dispatch is not interrupted
         const reviewReq = buildReviewRequest(db, session.id, artifactRecord.id, round + 1);
         if (reviewReq) {
           const agentConfig = AGENTS[REVIEWER_AGENT];
           if (agentConfig?.chatId && runner) {
-            const reviewResponse = await runner(agentConfig.chatId, agentConfig.topicId ?? null, reviewReq.prompt);
-            if (reviewResponse) {
-              const verdict = parseReviewVerdict(reviewResponse);
-              recordReviewVerdict(db, {
-                sessionId: session.id,
-                targetRecordId: artifactRecord.id,
-                reviewerAgent: REVIEWER_AGENT,
-                verdict,
-                feedback: reviewResponse,
-                iteration: 1,
-                round: round + 1,
-              });
+            try {
+              const reviewResponse = await runner(agentConfig.chatId, agentConfig.topicId ?? null, reviewReq.prompt);
+              if (reviewResponse) {
+                const verdict = parseReviewVerdict(reviewResponse);
+                recordReviewVerdict(db, {
+                  sessionId: session.id,
+                  targetRecordId: artifactRecord.id,
+                  reviewerAgent: REVIEWER_AGENT,
+                  verdict,
+                  feedback: reviewResponse,
+                  iteration: 1,
+                  round: round + 1,
+                });
+              }
+            } catch (err) {
+              console.error(`[dispatchEngine] reviewer threw for ${REVIEWER_AGENT}:`, err instanceof Error ? err.message : err);
             }
           }
         }
 
-        // Security review gate: check if security review is needed
+        // Security review gate — catch throws so dispatch continues
         const securityReq = checkSecurityReviewNeeded(db, session.id, artifactRecord.id, round + 1);
         if (securityReq) {
           const secAgentConfig = AGENTS[SECURITY_AGENT];
           if (secAgentConfig?.chatId && runner) {
-            const securityResponse = await runner(secAgentConfig.chatId, secAgentConfig.topicId ?? null, securityReq.prompt);
-            if (securityResponse) {
-              const verdict = parseReviewVerdict(securityResponse);
-              recordReviewVerdict(db, {
-                sessionId: session.id,
-                targetRecordId: artifactRecord.id,
-                reviewerAgent: SECURITY_AGENT,
-                verdict,
-                feedback: securityResponse,
-                iteration: 1,
-                round: round + 1,
-              });
+            try {
+              const securityResponse = await runner(secAgentConfig.chatId, secAgentConfig.topicId ?? null, securityReq.prompt);
+              if (securityResponse) {
+                const verdict = parseReviewVerdict(securityResponse);
+                recordReviewVerdict(db, {
+                  sessionId: session.id,
+                  targetRecordId: artifactRecord.id,
+                  reviewerAgent: SECURITY_AGENT,
+                  verdict,
+                  feedback: securityResponse,
+                  iteration: 1,
+                  round: round + 1,
+                });
+              }
+            } catch (err) {
+              console.error(`[dispatchEngine] security reviewer threw for ${SECURITY_AGENT}:`, err instanceof Error ? err.message : err);
             }
           }
         }
@@ -302,12 +317,18 @@ export async function executeBlackboardDispatch(
     incrementRound(db, session.id);
   }
 
-  // Loop exited without FINALIZE — check final state
+  // Loop exited without FINALIZE trigger — attempt synthesis before marking done
+  let synthesis: ReturnType<typeof finalizeSynthesis> = null;
+  try {
+    synthesis = finalizeSynthesis(db, session.id);
+  } catch (err) {
+    console.error("[dispatchEngine] finalizeSynthesis threw at loop exit:", err instanceof Error ? err.message : err);
+  }
   updateSessionStatus(db, session.id, "done");
   const aggregated = aggregateResults(db, session.id);
   return {
     success: aggregated.failedCount === 0,
-    response: aggregated.taskCount > 0 ? aggregated.summaryText : lastResponse,
+    response: synthesis?.summary ?? (aggregated.taskCount > 0 ? aggregated.summaryText : lastResponse),
     durationMs: Date.now() - startTime,
     aggregated,
   };
