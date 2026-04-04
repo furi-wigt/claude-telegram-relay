@@ -328,6 +328,29 @@ export async function resetSession(chatId: number, threadId?: number | null): Pr
 }
 
 /**
+ * Renew the session: start a new Claude subprocess but preserve the full
+ * short-term context window. Unlike resetSession(), this does NOT update
+ * startedAt (history remains in scope) and does NOT suppress context
+ * injection — full STM + LTM are injected on the first post-renewal message.
+ *
+ * Use case: Claude's internal context is stale or too large, but the user
+ * wants continuity — inject all STM/LTM as if picking up where we left off.
+ */
+export async function renewSession(chatId: number, threadId?: number | null): Promise<void> {
+  const session = sessions.get(sessionKey(chatId, threadId));
+  if (session) {
+    session.sessionId = null;                          // new subprocess, no --resume
+    session.lastActivity = new Date().toISOString();
+    session.pendingContextInjection = false;
+    session.suppressContextInjection = false;          // inject full context on first message
+    // startedAt deliberately NOT updated — preserves STM window
+    // wasExplicitReset deliberately NOT set — not a true reset
+    session.resetGen = (session.resetGen ?? 0) + 1;   // guard stale onSessionId callbacks
+    await saveSession(session);
+  }
+}
+
+/**
  * Returns session.startedAt to scope short-term memory queries to the current
  * session. Always returns startedAt — this prevents loading messages from a
  * prior session when messageCount is below VERBATIM_LIMIT.

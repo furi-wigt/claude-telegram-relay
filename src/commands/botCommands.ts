@@ -6,6 +6,7 @@
  * Available commands:
  *   /status         - Show current session status
  *   /new            - Force start a new session (clear current)
+ *   /renew          - New Claude session, preserve full STM + LTM context
  *   /memory         - Show all memory (goals, prefs, facts, dates)
  *   /memory goals   - Active goals only
  *   /memory done    - Completed goals
@@ -22,7 +23,7 @@ import { execFile, spawn } from "child_process";
 import { extractDocTitle } from "../utils/docTitle.ts";
 import type { Bot, Context } from "grammy";
 import { InlineKeyboard } from "grammy";
-import { getSession, loadSession, getSessionSummary, resetSession, saveSession, setTopicCwd } from "../session/groupSessions.ts";
+import { getSession, loadSession, getSessionSummary, resetSession, renewSession, saveSession, setTopicCwd } from "../session/groupSessions.ts";
 import { getMemoryFull, type FullMemory } from "../memory.ts";
 import { detectConflicts } from "../memory/conflictResolver.ts";
 import { savePendingConflicts } from "../memory/pendingConflict.ts";
@@ -348,6 +349,7 @@ export function registerCommands(bot: Bot, options: CommandOptions): void {
       "Available commands:",
       "",
       "/new [prompt] - Start a fresh conversation (optionally with first message)",
+      "/renew [prompt] - New Claude session, inject full conversation context (STM + LTM)",
       "/memory - Show all memory (goals, prefs, facts, dates)",
       "/memory goals - Active goals only",
       "/memory done - Completed goals",
@@ -433,6 +435,37 @@ export function registerCommands(bot: Bot, options: CommandOptions): void {
       }
     } catch (replyErr) {
       console.error("[/new] ctx.reply failed:", replyErr instanceof Error ? replyErr.message : replyErr);
+    }
+  });
+
+  // /renew [prompt] - new Claude session, full STM + LTM context injected
+  bot.command("renew", async (ctx) => {
+    if (process.env.E2E_DEBUG) console.log("[e2e:command:renew]", JSON.stringify({ message: ctx.message, chat: ctx.chat, from: ctx.from, match: ctx.match }));
+    const chatId = ctx.chat?.id;
+    if (!chatId) return;
+
+    const threadId = ctx.msg?.message_thread_id ?? null;
+    const prompt = (ctx.match ?? "").trim();
+
+    try {
+      await renewSession(chatId, threadId);
+    } catch (err) {
+      console.error("[/renew] renewSession failed:", err instanceof Error ? err.message : err);
+      // Continue — session may not have existed yet. Next Claude call starts fresh.
+    }
+
+    try {
+      if (prompt && onMessage) {
+        await ctx.reply("Session renewed with full context! Processing your message...");
+        await onMessage(chatId, prompt, ctx);
+      } else {
+        await ctx.reply(
+          "Session renewed! Starting a fresh Claude session with your full conversation context.\n" +
+          "What would you like to continue with?"
+        );
+      }
+    } catch (replyErr) {
+      console.error("[/renew] ctx.reply failed:", replyErr instanceof Error ? replyErr.message : replyErr);
     }
   });
 
