@@ -7,7 +7,7 @@ import { QdrantClient } from "@qdrant/js-client-rest";
 const QDRANT_URL = process.env.QDRANT_URL || "http://localhost:6333";
 const VECTOR_DIM = 1024; // BGE-M3 output dimension
 
-export type CollectionName = "memory" | "messages" | "documents" | "summaries";
+export type CollectionName = "memory" | "messages" | "documents" | "summaries" | "blackboard";
 
 let _client: QdrantClient | null = null;
 
@@ -45,10 +45,13 @@ export async function initCollections(): Promise<void> {
     "messages",
     "documents",
     "summaries",
+    "blackboard",
   ];
   for (const name of collections) {
     await ensureCollection(name);
   }
+  // Blackboard-specific payload indexes for efficient filtered search
+  await ensureBlackboardIndexes();
 }
 
 /**
@@ -127,6 +130,35 @@ export async function deletePoints(
   if (ids.length === 0) return;
   const client = getQdrantClient();
   await client.delete(collection, { wait: true, points: ids });
+}
+
+/**
+ * Create payload indexes for the blackboard collection.
+ * Enables efficient filtered search by session, record type, status, etc.
+ * Safe to call multiple times — Qdrant ignores duplicate index requests.
+ */
+async function ensureBlackboardIndexes(): Promise<void> {
+  const client = getQdrantClient();
+  const indexes: Array<{ field: string; schema: "keyword" | "integer" | "datetime" }> = [
+    { field: "session_id", schema: "keyword" },
+    { field: "record_type", schema: "keyword" },
+    { field: "status", schema: "keyword" },
+    { field: "space", schema: "keyword" },
+    { field: "producer", schema: "keyword" },
+    { field: "owner", schema: "keyword" },
+    { field: "created_at", schema: "datetime" },
+  ];
+  for (const { field, schema } of indexes) {
+    try {
+      await client.createPayloadIndex("blackboard", {
+        field_name: field,
+        field_schema: schema,
+        wait: false,
+      });
+    } catch {
+      // Index may already exist — ignore
+    }
+  }
 }
 
 /**

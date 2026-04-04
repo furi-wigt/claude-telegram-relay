@@ -101,3 +101,22 @@ export function getRecordsBySpace(db: Database, sessionId: string, space: BbSpac
 export function updateRecordStatus(db: Database, recordId: string, status: BbRecordStatus): void {
   db.run("UPDATE bb_records SET status = ?, updated_at = datetime('now') WHERE id = ?", [status, recordId]);
 }
+
+/**
+ * Archive all completed records for a session (status 'done' → 'archived').
+ * Returns the number of records archived.
+ */
+export function archiveCompletedRecords(db: Database, sessionId: string): number {
+  const result = db.run(
+    "UPDATE bb_records SET status = 'archived', updated_at = datetime('now') WHERE session_id = ? AND status = 'done'",
+    [sessionId]
+  );
+  return result.changes;
+}
+
+/**
+ * Get a single record by ID.
+ */
+export function getRecord(db: Database, recordId: string): BbRecord | null {
+  return db.query("SELECT * FROM bb_records WHERE id = ?").get(recordId) as BbRecord | null;
+}

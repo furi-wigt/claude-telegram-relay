@@ -177,11 +177,36 @@ export interface BbTaskContent {
   retryCount?: number;
 }
 
-/** Content shape for artifact/evidence records */
+/** Content shape for artifact records */
 export interface BbArtifactContent {
   summary: string;
   fullResponse?: string;
   artifactPath?: string;
+}
+
+/** Content shape for evidence/finding records */
+export interface BbEvidenceContent {
+  summary: string;
+  source: string;
+  confidence: number;
+  supportsTasks: number[]; // seq numbers this evidence relates to
+}
+
+/** Content shape for review records */
+export interface BbReviewContent {
+  verdict: "approved" | "revision_needed" | "rejected";
+  targetRecordId: string; // bb_records id of the artifact under review
+  feedback: string;
+  iteration: number;
+}
+
+/** Content shape for conflict records */
+export interface BbConflictContent {
+  type: "state_conflict" | "recommendation_conflict";
+  agents: string[];
+  relatedRecords: string[]; // bb_records ids
+  resolutionPolicy: "evidence_then_arbitration" | "human_escalation";
+  resolution?: string;
 }
 
 /** Returned by controlPlane.selectNextAgents() */
