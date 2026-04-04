@@ -736,7 +736,7 @@ export function registerCommands(bot: Bot, options: CommandOptions): void {
 
   bot.callbackQuery("reboot:confirm", async (ctx) => {
     await ctx.answerCallbackQuery();
-    await ctx.editMessageText("🔄 Restarting Jarvis… bot will be briefly offline.");
+    await ctx.editMessageText("🔄 Restarting Jarvis… bot will be briefly offline.", { reply_markup: { inline_keyboard: [] } });
     // Delay restart so the edited message is delivered before the process dies.
     // Use spawn+detach so the child outlives the parent process.
     setTimeout(() => {
