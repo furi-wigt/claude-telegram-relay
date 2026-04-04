@@ -26,7 +26,7 @@ const TEST_CHAT_IDS = [
   100020, 100021, 100022, 100023,
   200001, 200002, 200003,
   200010, 200011, 200012,
-  300001, 300002, 300003, 300004,
+  300001, 300002, 300003, 300004, 300005,
 ];
 
 beforeAll(async () => {
@@ -288,6 +288,25 @@ describe("resetGen — guards against stale onSessionId callbacks", () => {
     expect(getSession(CHAT_ID, null)?.sessionId).toBeNull();
   });
 
+  test("updateSessionIdGuarded allows new session ID after reset when gen matches", async () => {
+    const { initSessions, loadSession, resetSession, updateSessionIdGuarded, getSession } = await getModule();
+    await initSessions();
+
+    const CHAT_ID = 200012;
+    const session = await loadSession(CHAT_ID, "test-agent", null);
+    session.sessionId = "old-session-id";
+
+    // /new resets session
+    await resetSession(CHAT_ID, null);
+    const newGen = getSession(CHAT_ID, null)!.resetGen; // 1
+
+    // Next Claude call (after reset) fires onSessionId — gen matches
+    await updateSessionIdGuarded(CHAT_ID, "fresh-session-id", newGen, null);
+
+    expect(getSession(CHAT_ID, null)?.sessionId).toBe("fresh-session-id");
+  });
+});
+
 // ─── renewSession ─────────────────────────────────────────────────────────────
 
 describe("renewSession — new subprocess, preserved STM window", () => {
@@ -329,11 +348,24 @@ describe("renewSession — new subprocess, preserved STM window", () => {
     expect(getSession(CHAT_ID, null)?.suppressContextInjection).toBe(false);
   });
 
-  test("increments resetGen (guards stale onSessionId callbacks)", async () => {
+  test("clears pendingContextInjection (deduplicates STM injection intent)", async () => {
     const { initSessions, loadSession, renewSession, getSession } = await getModule();
     await initSessions();
 
     const CHAT_ID = 300004;
+    const session = await loadSession(CHAT_ID, "test-agent", null);
+    session.pendingContextInjection = true;
+
+    await renewSession(CHAT_ID, null);
+
+    expect(getSession(CHAT_ID, null)?.pendingContextInjection).toBe(false);
+  });
+
+  test("increments resetGen (guards stale onSessionId callbacks)", async () => {
+    const { initSessions, loadSession, renewSession, getSession } = await getModule();
+    await initSessions();
+
+    const CHAT_ID = 300005;
     const session = await loadSession(CHAT_ID, "test-agent", null);
     expect(session.resetGen).toBe(0);
 
@@ -342,24 +374,5 @@ describe("renewSession — new subprocess, preserved STM window", () => {
 
     await renewSession(CHAT_ID, null);
     expect(getSession(CHAT_ID, null)?.resetGen).toBe(2);
-  });
-});
-
-  test("updateSessionIdGuarded allows new session ID after reset when gen matches", async () => {
-    const { initSessions, loadSession, resetSession, updateSessionIdGuarded, getSession } = await getModule();
-    await initSessions();
-
-    const CHAT_ID = 200012;
-    const session = await loadSession(CHAT_ID, "test-agent", null);
-    session.sessionId = "old-session-id";
-
-    // /new resets session
-    await resetSession(CHAT_ID, null);
-    const newGen = getSession(CHAT_ID, null)!.resetGen; // 1
-
-    // Next Claude call (after reset) fires onSessionId — gen matches
-    await updateSessionIdGuarded(CHAT_ID, "fresh-session-id", newGen, null);
-
-    expect(getSession(CHAT_ID, null)?.sessionId).toBe("fresh-session-id");
   });
 });
