@@ -10,6 +10,8 @@ import {
   getRecords,
   getRecordsBySpace,
   updateRecordStatus,
+  archiveCompletedRecords,
+  getRecord,
 } from "../../src/orchestration/blackboard";
 
 describe("blackboard schema", () => {
@@ -196,5 +198,38 @@ describe("blackboard CRUD", () => {
     const updated = rows.find((r) => r.id === record.id);
     expect(updated!.status).toBe("done");
     expect(updated!.updated_at).toBeTruthy();
+  });
+
+  test("archiveCompletedRecords archives done records", () => {
+    const session = createSession(db, { dispatchId: "d-108" });
+    const r1 = writeRecord(db, { sessionId: session.id, space: "tasks", recordType: "task", content: { a: 1 }, round: 0 });
+    const r2 = writeRecord(db, { sessionId: session.id, space: "tasks", recordType: "task", content: { b: 2 }, round: 0 });
+    const r3 = writeRecord(db, { sessionId: session.id, space: "tasks", recordType: "task", content: { c: 3 }, round: 0 });
+    updateRecordStatus(db, r1.id, "done");
+    updateRecordStatus(db, r2.id, "done");
+    // r3 stays pending
+    const archived = archiveCompletedRecords(db, session.id);
+    expect(archived).toBe(2);
+    expect(getRecord(db, r1.id)!.status).toBe("archived");
+    expect(getRecord(db, r2.id)!.status).toBe("archived");
+    expect(getRecord(db, r3.id)!.status).toBe("pending");
+  });
+
+  test("archiveCompletedRecords returns 0 when no done records", () => {
+    const session = createSession(db, { dispatchId: "d-109" });
+    writeRecord(db, { sessionId: session.id, space: "tasks", recordType: "task", content: { a: 1 }, round: 0 });
+    expect(archiveCompletedRecords(db, session.id)).toBe(0);
+  });
+
+  test("getRecord returns single record by id", () => {
+    const session = createSession(db, { dispatchId: "d-110" });
+    const record = writeRecord(db, { sessionId: session.id, space: "evidence", recordType: "finding", content: { finding: "test" }, round: 0 });
+    const fetched = getRecord(db, record.id);
+    expect(fetched).toBeTruthy();
+    expect(fetched!.space).toBe("evidence");
+  });
+
+  test("getRecord returns null for missing id", () => {
+    expect(getRecord(db, "nonexistent")).toBeNull();
   });
 });

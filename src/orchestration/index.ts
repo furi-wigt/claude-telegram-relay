@@ -7,7 +7,7 @@ export { isCommandCenter, orchestrateMessage, registerOrchestrationCallbacks } f
 export { executeSingleDispatch, executeBlackboardDispatch, getRecentDispatches, getYesterdayActivity, setDispatchRunner, getDispatchRunner } from "./dispatchEngine.ts";
 export { initOrchestrationSchema } from "./schema.ts";
 export { initBlackboardSchema } from "./blackboardSchema.ts";
-export { createSession, getSession, updateSessionStatus, incrementRound, writeRecord, getRecords, getRecordsBySpace, updateRecordStatus } from "./blackboard.ts";
+export { createSession, getSession, updateSessionStatus, incrementRound, writeRecord, getRecords, getRecordsBySpace, updateRecordStatus, archiveCompletedRecords, getRecord } from "./blackboard.ts";
 export { selectNextAgents } from "./controlPlane.ts";
 export { decomposeTask } from "./taskDecomposer.ts";
 export { aggregateResults } from "./responseAggregator.ts";

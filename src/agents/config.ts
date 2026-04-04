@@ -46,6 +46,15 @@ interface AgentDefinition {
   diagnostics?: { enabled: boolean }; // opt-in: use structured extraction prompts for images
   /** Default Claude model for this agent: "opus" | "sonnet" | "haiku" | "local". Overridden by user prefix. */
   defaultModel?: string;
+  // ── Mesh contract fields (optional, for constrained mesh orchestration) ──
+  /** Agent IDs this agent may communicate with directly (bypassing blackboard) */
+  meshPeers?: string[];
+  /** Preconditions that must be met before this agent can be triggered */
+  preconditions?: string[];
+  /** Risk level of this agent's output — drives review requirements */
+  riskLevel?: "low" | "medium" | "high" | "critical";
+  /** Whether artifacts from this agent require reviewer approval */
+  reviewRequired?: boolean;
 }
 
 /** Runtime agent config (prompt resolved, ready to use) */
@@ -63,6 +72,11 @@ export interface AgentConfig {
   diagnostics?: { enabled: boolean };
   /** Default Claude model for this agent: "opus" | "sonnet" | "haiku" | "local". Overridden by user prefix. */
   defaultModel?: string;
+  // ── Mesh contract fields ──
+  meshPeers?: string[];
+  preconditions?: string[];
+  riskLevel?: "low" | "medium" | "high" | "critical";
+  reviewRequired?: boolean;
 }
 
 // ─── Loaders ─────────────────────────────────────────────────────────────────
@@ -134,6 +148,10 @@ for (const def of agentDefs) {
     systemPrompt: loadPrompt(def.id),
     diagnostics: def.diagnostics,
     defaultModel: def.defaultModel,
+    meshPeers: def.meshPeers,
+    preconditions: def.preconditions,
+    riskLevel: def.riskLevel,
+    reviewRequired: def.reviewRequired,
   };
 }
 
