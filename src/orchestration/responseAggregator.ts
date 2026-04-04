@@ -55,7 +55,8 @@ export function aggregateResults(db: Database, sessionId: string): AggregatedRes
     lines.push("");
     lines.push("Key findings:");
     for (const a of artifacts) {
-      lines.push(`• ${a.producer}: ${a.summary.slice(0, 120)}`);
+      const s = a.summary;
+      lines.push(`• ${a.producer}: ${s.length > 200 ? s.slice(0, 197) + "…" : s}`);
     }
   }
 
