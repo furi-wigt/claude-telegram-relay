@@ -1,5 +1,5 @@
-import { describe, test, expect, beforeAll } from "bun:test";
-import { classifyWithKeywords } from "../../src/orchestration/intentClassifier";
+import { describe, test, expect } from "bun:test";
+import { classifyWithKeywords, detectCompound } from "../../src/orchestration/intentClassifier";
 
 describe("intentClassifier — keyword fallback", () => {
   test("routes 'review EDEN security posture' to security-compliance", () => {
@@ -60,9 +60,21 @@ describe("intentClassifier — keyword fallback", () => {
     expect(result.primaryAgent).toBe("operations-hub");
   });
 
-  test("always returns isCompound=false (keyword fallback cannot detect compound)", () => {
+  test("detects compound task — multi-agent message", () => {
     const result = classifyWithKeywords("prep deck for CityWatch meeting and review security");
+    expect(result.isCompound).toBe(true);
+  });
+
+  test("detects single task — simple message", () => {
+    const result = classifyWithKeywords("what is 2+2");
     expect(result.isCompound).toBe(false);
+  });
+
+  test("detects compound — E2E test message", () => {
+    const result = classifyWithKeywords(
+      "Prepare for CityWatch meeting, write the proposal, and review the infra"
+    );
+    expect(result.isCompound).toBe(true);
   });
 
   test("result shape is complete", () => {
@@ -76,5 +88,41 @@ describe("intentClassifier — keyword fallback", () => {
     expect(typeof result.confidence).toBe("number");
     expect(result.confidence).toBeGreaterThanOrEqual(0);
     expect(result.confidence).toBeLessThanOrEqual(1);
+  });
+});
+
+describe("detectCompound", () => {
+  test("true: multiple verbs with conjunction", () => {
+    expect(detectCompound("write the proposal and review the infra")).toBe(true);
+  });
+
+  test("true: 2+ conjunctions", () => {
+    expect(detectCompound("prepare the deck and draft the ADR and review security")).toBe(true);
+  });
+
+  test("true: multi-agent capability match (security + cloud)", () => {
+    expect(detectCompound("audit IM8 compliance and optimize AWS costs")).toBe(true);
+  });
+
+  test("true: E2E test message", () => {
+    expect(
+      detectCompound("Prepare for CityWatch meeting, write the proposal, and review the infra")
+    ).toBe(true);
+  });
+
+  test("false: single action, no conjunction", () => {
+    expect(detectCompound("what is the weather today")).toBe(false);
+  });
+
+  test("false: single verb, no conjunction", () => {
+    expect(detectCompound("review the EDEN security posture")).toBe(false);
+  });
+
+  test("false: small talk", () => {
+    expect(detectCompound("good morning")).toBe(false);
+  });
+
+  test("false: single domain question", () => {
+    expect(detectCompound("how do I write CDK for an S3 bucket")).toBe(false);
   });
 });
