@@ -1,5 +1,14 @@
 # Changelog
 
+## [Unreleased] / 2026-04-04 — Phase 6: Relay + DispatchEngine Wiring
+
+### Added
+- **relay.ts**: Wire interview state machine into CC orchestration — `setInterviewStateMachine()` + `setOrchestrationHandler()` called after interactive SM creation. Compound/ambiguous tasks now flow through interview pipeline automatically.
+- **relay.ts**: Register finalizer governance callback handler — `orch:final_*` callbacks (Approve & Archive, Override, Retry Failed, Discard) parsed and routed to `handleFinalAction()`.
+- **dispatchEngine.ts**: Review loop integration in blackboard dispatch — after each artifact is written, `buildReviewRequest()` triggers code-quality-coach review; `checkSecurityReviewNeeded()` triggers security-compliance review for infra/code artifacts.
+- **dispatchEngine.ts**: Finalizer synthesis in FINALIZE branch — `finalizeSynthesis()` called before aggregation, producing structured final summary with task/artifact/review/conflict data.
+- **tests/orchestration/meshIntegration.test.ts**: 12 integration tests covering SM injection, review loop creation, security gate bypass, finalizer governance callbacks, backward compatibility, and progress snapshots.
+
 ## [Unreleased] / 2026-04-04 — Phase 5: Finalizer & Governance
 
 ### Added

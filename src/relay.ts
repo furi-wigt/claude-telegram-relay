@@ -44,7 +44,7 @@ import { learnTopicName, learnChatName, getTopicName } from "./utils/chatNames.t
 import { isMlxAvailable } from "./mlx/index.ts";
 import { callRoutineModel } from "./routines/routineModel.ts";
 import { getAgentForChat, autoDiscoverGroup, loadGroupMappings } from "./routing/groupRouter.ts";
-import { isCommandCenter, orchestrateMessage, registerOrchestrationCallbacks, setDispatchRunner } from "./orchestration/index.ts";
+import { isCommandCenter, orchestrateMessage, registerOrchestrationCallbacks, setDispatchRunner, setInterviewStateMachine, handleOrchestrationComplete, parseFinalCallback, handleFinalAction } from "./orchestration/index.ts";
 // Router removed: always use Sonnet for simplicity and predictable latency
 import { loadSession as loadGroupSession, updateSessionIdGuarded, initSessions, loadAllSessions, saveSession, isResumeReliable, didResumeFail, lockActiveCwd, resetSession, getSessionSince } from "./session/groupSessions.ts";
 import { buildAgentPrompt } from "./agents/promptBuilder.ts";
@@ -642,6 +642,35 @@ bot.command("doc", async (ctx, next) => {
 // Register orchestration callback handlers (Pause/Edit/Cancel + agent picker)
 registerOrchestrationCallbacks(bot);
 
+// Register finalizer governance callbacks (Approve/Override/Retry/Discard)
+bot.on("callback_query:data", async (ctx, next) => {
+  const data = ctx.callbackQuery.data;
+  const parsed = parseFinalCallback(data);
+  if (!parsed) return next();
+
+  const { getDb } = await import("./local/db.ts");
+  const db = getDb();
+  const result = handleFinalAction(db, parsed.action, parsed.sessionId);
+
+  await ctx.answerCallbackQuery({ text: result.message.slice(0, 200) });
+
+  // Post result to the chat
+  if (ctx.callbackQuery.message) {
+    await bot.api.sendMessage(
+      ctx.callbackQuery.message.chat.id,
+      result.message,
+      { message_thread_id: ctx.callbackQuery.message.message_thread_id ?? undefined },
+    ).catch(() => {});
+
+    // Remove the keyboard from the original message
+    await bot.api.editMessageReplyMarkup(
+      ctx.callbackQuery.message.chat.id,
+      ctx.callbackQuery.message.message_id,
+      {},
+    ).catch(() => {});
+  }
+});
+
 // Register dispatch runner — dispatch engine calls processTextMessage directly
 // instead of going through Telegram API (outgoing bot messages don't trigger handlers).
 setDispatchRunner(async (chatId: number, topicId: number | null, text: string) => {
@@ -1232,6 +1261,11 @@ async function questionCallClaude(prompt: string): Promise<string> {
 
 // Interactive Q&A flow (/plan command)
 const interactive = new InteractiveStateMachine(bot, callClaude, questionCallClaude);
+
+// Wire constrained mesh: inject interview SM into CC for compound/ambiguous tasks
+setInterviewStateMachine(interactive);
+interactive.setOrchestrationHandler((session) => handleOrchestrationComplete(bot, session));
+
 bot.command("plan", (ctx) => interactive.handlePlanCommand(ctx));
 
 // Report Generator integration (/report command + QA sessions)
