@@ -16,7 +16,8 @@ import { AGENTS, type AgentConfig } from "../agents/config.ts";
 import { classifyIntent, AUTO_DISPATCH_THRESHOLD } from "./intentClassifier.ts";
 import { chunkMessage } from "../utils/sendToGroup.ts";
 import { markdownToHtml, splitMarkdown } from "../utils/htmlFormat.ts";
-import { executeSingleDispatch } from "./dispatchEngine.ts";
+import { executeSingleDispatch, executeBlackboardDispatch, getDispatchRunner } from "./dispatchEngine.ts";
+import { getDb } from "../local/db.ts";
 import {
   buildPlanKeyboard,
   buildPausedKeyboard,
@@ -182,7 +183,15 @@ async function executeAndReport(
     `${planText}\n\n\u{1F680} Dispatching to ${agentName}...`,
   ).catch(() => {});
 
-  const result = await executeSingleDispatch(bot, plan, ccChatId, ccThreadId);
+  const runner = getDispatchRunner();
+  if (!runner) {
+    await bot.api.sendMessage(ccChatId, "⚠️ Dispatch runner not registered — cannot execute", {
+      message_thread_id: ccThreadId ?? undefined,
+    });
+    return;
+  }
+  const db = getDb();
+  const result = await executeBlackboardDispatch(db, plan, runner);
 
   // Post final result to CC — convert markdown → HTML, chunk to stay within Telegram's 4096-char limit
   const durationSec = (result.durationMs / 1000).toFixed(1);
