@@ -106,6 +106,19 @@ export function buildAgentPrompt(
   // Blackboard context — evidence and decisions from active orchestration session
   if (context.blackboardContext) {
     parts.push(`\n<blackboard_context>\n${context.blackboardContext}\n</blackboard_context>`);
+    // Orchestration tag instructions — only when agent is in a board session
+    parts.push(
+      "\n<orchestration_tags>" +
+        "\nYou are part of a multi-agent orchestration session. Use these tags to coordinate:" +
+        "\n[BOARD: finding] <text> — post evidence or a finding to the shared board" +
+        "\n[BOARD: artifact] <text> — post a deliverable (code, doc, report)" +
+        "\n[BOARD: decision] <text> — record a decision with rationale" +
+        "\n[ASK_AGENT: <agent-id>] <question> — ask a peer agent directly (only whitelisted pairs)" +
+        "\n[BOARD_SUMMARY: <text>] — post a brief status update" +
+        "\n[CONFIDENCE: <0-1>] — self-assess confidence in your output" +
+        "\n[DONE_TASK: <seq>] — mark your assigned task as complete" +
+        "\n</orchestration_tags>"
+    );
   }
 
   // Memory management instructions

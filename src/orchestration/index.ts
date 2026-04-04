@@ -12,6 +12,9 @@ export { selectNextAgents } from "./controlPlane.ts";
 export { decomposeTask } from "./taskDecomposer.ts";
 export { aggregateResults } from "./responseAggregator.ts";
 export { canCommunicateDirect, MESH_LINKS } from "./meshPolicy.ts";
+export { parseTags } from "./tagParser.ts";
+export type { ParsedTag, BoardTag, AskAgentTag, BoardSummaryTag, ConfidenceTag, DoneTaskTag } from "./tagParser.ts";
+export { sendAgentMessage, MeshViolationError, RateLimitError, clearRateCounts } from "./agentComms.ts";
 export {
   startCountdown,
   handleInterrupt,
