@@ -1,5 +1,14 @@
 # Changelog
 
+## [Unreleased] / 2026-04-04 — Phase 5: Finalizer & Governance
+
+### Added
+- **orchestration/finalizer**: Complete end-of-dispatch lifecycle with 4 subsystems:
+  - **P5.1 Synthesis**: `finalizeSynthesis()` — reads all board state, produces final summary record in `"final"` space. Excludes superseded artifacts, includes review verdicts and conflict resolutions. Session transitions to `"finalizing"`.
+  - **P5.2 Board compaction**: `compactBoard()` — archives done records, cleans stale pending/active records (>72h). `compactAllSessions()` for scheduled global cleanup.
+  - **P5.3 Governance UI**: `buildFinalKeyboard()` with `[Approve & Archive][Override][Retry Failed][Discard]`. `parseFinalCallback()` + `handleFinalAction()` for callback handling.
+  - **P5.4 CC progress dashboard**: `buildProgressSnapshot()` — throttled (3s) single-pass O(n) progress snapshots with visual progress bar, task counters, artifact/review/conflict counts.
+
 ## [Unreleased] / 2026-04-04 — Phase 4: Review & Critique Loop
 
 ### Added

@@ -43,4 +43,18 @@ export {
   REVIEWER_AGENT,
   SECURITY_AGENT,
 } from "./reviewLoop.ts";
+export {
+  finalizeSynthesis,
+  completeSession,
+  compactBoard,
+  compactAllSessions,
+  buildFinalKeyboard,
+  parseFinalCallback,
+  handleFinalAction,
+  buildProgressSnapshot,
+  clearProgressThrottle,
+  STALE_HOURS,
+  PROGRESS_THROTTLE_MS,
+} from "./finalizer.ts";
+export type { SynthesisResult, CompactionResult, ProgressSnapshot, FinalAction } from "./finalizer.ts";
 export type * from "./types.ts";
