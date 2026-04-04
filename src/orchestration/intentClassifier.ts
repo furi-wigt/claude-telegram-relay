@@ -58,7 +58,7 @@ Rules:
 - primaryAgent MUST be one of: ${agents.map((a) => a.id).join(", ")}
 - isCompound=true only if the task clearly requires 2+ different agents
 - confidence: 0.9+ for exact domain match, 0.6-0.8 for reasonable match, <0.6 if unsure
-- For general questions or small talk, use "operations-hub"`;
+- For general questions, small talk, or anything without a clear domain, ALWAYS use "operations-hub" with confidence 0.85`;
 
   const raw = await callMlxGenerate(prompt, { maxTokens: 256, timeoutMs: 15_000 });
 
@@ -130,8 +130,9 @@ export function classifyWithKeywords(message: string): ClassificationResult {
     }
   }
 
-  // Normalize score to 0-1 confidence
-  const confidence = bestScore >= 3 ? 0.85 : bestScore >= 2 ? 0.7 : bestScore >= 1 ? 0.5 : 0.3;
+  // Normalize score to 0-1 confidence.
+  // Zero-score means no domain keyword matched → general question → ops-hub is the right default at high confidence.
+  const confidence = bestScore >= 3 ? 0.85 : bestScore >= 2 ? 0.7 : bestScore >= 1 ? 0.5 : 0.8;
 
   return {
     intent: bestCapability || "general",
