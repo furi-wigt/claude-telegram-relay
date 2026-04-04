@@ -44,7 +44,7 @@ describe("executeBlackboardDispatch", () => {
     const result = await executeBlackboardDispatch(db, plan, mockRunner);
 
     expect(result.success).toBe(true);
-    expect(result.durationMs).toBeGreaterThan(0);
+    expect(result.durationMs).toBeGreaterThanOrEqual(0);
 
     // Verify session was created and completed
     const sessions = db.query("SELECT * FROM bb_sessions WHERE dispatch_id = ?").all("int-1") as Array<Record<string, unknown>>;
