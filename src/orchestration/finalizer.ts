@@ -27,6 +27,7 @@ import {
   updateSessionStatus,
   writeRecord,
   archiveCompletedRecords,
+  writeAuditEntry,
 } from "./blackboard.ts";
 import { ORCH_CB_PREFIX } from "./interruptProtocol.ts";
 
@@ -358,11 +359,19 @@ export function handleFinalAction(
       };
     }
     case "final_retry": {
-      // Reset failed tasks to pending for re-execution
+      // Reset failed tasks to pending for re-execution (bulk SQL — failed→pending is a valid transition)
       const resetCount = db.run(
         "UPDATE bb_records SET status = 'pending', updated_at = datetime('now') WHERE session_id = ? AND space = 'tasks' AND status = 'failed'",
         [sessionId],
       ).changes;
+      // Audit the bulk retry
+      writeAuditEntry(db, {
+        sessionId,
+        eventType: "record_status_changed",
+        oldStatus: "failed",
+        newStatus: "pending",
+        metadata: { action: "final_retry", resetCount },
+      });
       // Return session to active
       updateSessionStatus(db, sessionId, "active");
       return {

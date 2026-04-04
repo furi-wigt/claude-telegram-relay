@@ -47,9 +47,23 @@ export function initBlackboardSchema(db: Database): void {
       UNIQUE(from_agent, to_agent)
     );
 
+    CREATE TABLE IF NOT EXISTS bb_audit_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT,
+      record_id TEXT,
+      event_type TEXT NOT NULL,
+      agent TEXT,
+      old_status TEXT,
+      new_status TEXT,
+      metadata TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+
     CREATE INDEX IF NOT EXISTS idx_bb_sessions_status ON bb_sessions(status);
     CREATE INDEX IF NOT EXISTS idx_bb_records_session ON bb_records(session_id);
     CREATE INDEX IF NOT EXISTS idx_bb_records_space ON bb_records(session_id, space);
     CREATE INDEX IF NOT EXISTS idx_bb_records_status ON bb_records(status);
+    CREATE INDEX IF NOT EXISTS idx_bb_audit_session ON bb_audit_log(session_id);
+    CREATE INDEX IF NOT EXISTS idx_bb_audit_event ON bb_audit_log(event_type);
   `);
 }

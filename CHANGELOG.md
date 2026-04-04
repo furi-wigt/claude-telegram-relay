@@ -1,5 +1,22 @@
 # Changelog
 
+## [Unreleased] / 2026-04-05 — Mesh Gaps Tier 1+2: Correctness, Observability, Resilience
+
+### Added
+- **blackboard**: Status transition validation — `updateRecordStatus()` and `updateSessionStatus()` now enforce valid state machine transitions. Invalid transitions throw `InvalidTransitionError`. Idempotent self-transitions are allowed.
+- **blackboard**: `VALID_RECORD_TRANSITIONS` and `VALID_SESSION_TRANSITIONS` maps exported for inspection and testing.
+- **blackboardSchema**: `bb_audit_log` table — captures every board write, status transition, trigger firing, and orphan reap with timestamps, agent, old/new status, and JSON metadata.
+- **blackboard**: `writeAuditEntry()` — fire-and-forget audit writer (never blocks parent operation). Called automatically from `writeRecord()`, `updateRecordStatus()`, `updateSessionStatus()`.
+- **blackboard**: `getAuditEntries()` — query audit log by session for debugging.
+- **blackboard**: `reapOrphanRecords()` — detects and fails stale `active` records on active sessions (default threshold: 10 min with no update). Returns count of reaped records.
+- **dispatchEngine**: Wall-clock timeout for blackboard dispatch — hard exit at 10 min with `DISPATCH_TIMEOUT_MS`, soft warning logged at 80%. Prevents hung dispatches from blocking indefinitely.
+- **dispatchEngine**: Trigger firing persistence — every `selectNextAgents()` result is written to `bb_audit_log` with rule, agent, reason, and round number. Enables post-mortem debugging of control flow decisions.
+- **finalizer**: Bulk retry audit — `handleFinalAction("final_retry")` now writes audit entry for the bulk `failed→pending` reset.
+
+### Changed
+- **blackboard**: `updateRecordStatus()` reads current status before writing (one extra query) to validate transitions and emit accurate audit entries.
+- **blackboard**: `updateSessionStatus()` reads current status before writing for the same reason.
+
 ## [Unreleased] / 2026-04-04 — Fix: Governance Keyboard Never Sent
 
 ### Fixed

@@ -12,7 +12,7 @@ import type { Database } from "bun:sqlite";
 import { getDb } from "../local/db.ts";
 import { AGENTS } from "../agents/config.ts";
 import type { DispatchPlan, DispatchEvent, DispatchRow, DispatchTaskRow, TaskStatus, BbTaskContent, BbArtifactContent, AgentTrigger } from "./types.ts";
-import { createSession, writeRecord, getRecordsBySpace, updateRecordStatus, updateSessionStatus, incrementRound } from "./blackboard.ts";
+import { createSession, writeRecord, getRecordsBySpace, updateRecordStatus, updateSessionStatus, incrementRound, writeAuditEntry } from "./blackboard.ts";
 import { selectNextAgents } from "./controlPlane.ts";
 import { aggregateResults, type AggregatedResult } from "./responseAggregator.ts";
 import { checkSecurityReviewNeeded, buildReviewRequest, recordReviewVerdict, REVIEWER_AGENT, SECURITY_AGENT } from "./reviewLoop.ts";
@@ -23,6 +23,12 @@ const AGENT_RESPONSE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 
 /** Throttle CC progress updates to max 1 per 10s per dispatch */
 const PROGRESS_THROTTLE_MS = 10_000;
+
+/** Gap 4: Max wall-clock time for a blackboard dispatch (ms). Default 10 minutes. */
+export const DISPATCH_TIMEOUT_MS = 10 * 60 * 1000;
+
+/** Gap 4: Soft warning threshold — fires at 80% of timeout */
+const DISPATCH_TIMEOUT_WARN_RATIO = 0.8;
 
 /**
  * Execute a single-agent dispatch.
@@ -189,9 +195,41 @@ export async function executeBlackboardDispatch(
   // 3. Blackboard loop
   let lastResponse = "";
   const maxRounds = session.max_rounds;
+  const deadline = startTime + DISPATCH_TIMEOUT_MS;
+  let softWarningFired = false;
 
   for (let round = 0; round < maxRounds; round++) {
+    // Gap 4: wall-clock timeout
+    const elapsed = Date.now() - startTime;
+    if (elapsed >= DISPATCH_TIMEOUT_MS) {
+      console.warn(`[dispatchEngine] Hard timeout — dispatch ${plan.dispatchId} exceeded ${DISPATCH_TIMEOUT_MS}ms`);
+      updateSessionStatus(db, session.id, "failed");
+      const aggregated = aggregateResults(db, session.id);
+      return {
+        success: false,
+        response: `⏰ Dispatch timed out after ${Math.round(elapsed / 1000)}s\n\n${aggregated.summaryText}`,
+        durationMs: elapsed,
+        sessionId: session.id,
+        aggregated,
+      };
+    }
+    if (!softWarningFired && elapsed >= DISPATCH_TIMEOUT_MS * DISPATCH_TIMEOUT_WARN_RATIO) {
+      console.warn(`[dispatchEngine] Soft timeout warning — dispatch ${plan.dispatchId} at ${Math.round(elapsed / 1000)}s (80% of limit)`);
+      softWarningFired = true;
+    }
+
     const triggers = selectNextAgents(db, session.id);
+
+    // Gap 10: persist trigger firings
+    for (const t of triggers) {
+      writeAuditEntry(db, {
+        sessionId: session.id,
+        recordId: t.taskRecordId ?? null,
+        eventType: "trigger_fired",
+        agent: t.agentId,
+        metadata: { rule: t.rule, reason: t.reason, round },
+      });
+    }
 
     if (triggers.length === 0) break;
 
