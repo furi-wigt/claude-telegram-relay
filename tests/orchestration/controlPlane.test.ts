@@ -114,4 +114,117 @@ describe("controlPlane.selectNextAgents", () => {
     const triggers = selectNextAgents(db, "nonexistent");
     expect(triggers).toEqual([]);
   });
+
+  test("REVIEW rule: pending artifact without review → triggers code-quality-coach", () => {
+    const session = createSession(db, { dispatchId: "cp-review-1" });
+    writeRecord(db, { sessionId: session.id, space: "input", recordType: "task", content: { message: "test" }, round: 0 });
+    writeRecord(db, {
+      sessionId: session.id,
+      space: "tasks",
+      recordType: "task",
+      owner: "engineering",
+      content: { taskDescription: "Build auth", agentId: "engineering", seq: 1, dependsOn: [], topicHint: null },
+      round: 0,
+    });
+    // Agent produced an artifact
+    writeRecord(db, {
+      sessionId: session.id,
+      space: "artifacts",
+      recordType: "artifact",
+      producer: "engineering",
+      content: { summary: "Auth module implementation", fullResponse: "..." },
+      confidence: 0.8,
+      round: 1,
+    });
+    const triggers = selectNextAgents(db, session.id);
+    expect(triggers.some((t) => t.rule === "REVIEW" && t.agentId === "code-quality-coach")).toBe(true);
+  });
+
+  test("REVIEW rule: artifact with existing review → NOT triggered", () => {
+    const session = createSession(db, { dispatchId: "cp-review-2" });
+    writeRecord(db, { sessionId: session.id, space: "input", recordType: "task", content: { message: "test" }, round: 0 });
+    writeRecord(db, {
+      sessionId: session.id,
+      space: "tasks",
+      recordType: "task",
+      owner: "engineering",
+      content: { taskDescription: "Build auth", agentId: "engineering", seq: 1, dependsOn: [], topicHint: null },
+      round: 0,
+    });
+    const artifact = writeRecord(db, {
+      sessionId: session.id,
+      space: "artifacts",
+      recordType: "artifact",
+      producer: "engineering",
+      content: { summary: "Auth module" },
+      confidence: 0.8,
+      round: 1,
+    });
+    // Review already exists for this artifact
+    writeRecord(db, {
+      sessionId: session.id,
+      space: "reviews",
+      recordType: "review",
+      producer: "code-quality-coach",
+      content: { verdict: "approved", targetRecordId: artifact.id, feedback: "LGTM", iteration: 1 },
+      round: 2,
+    });
+    const triggers = selectNextAgents(db, session.id);
+    expect(triggers.some((t) => t.rule === "REVIEW")).toBe(false);
+  });
+
+  test("CONFLICT rule: open conflict → triggers command-center", () => {
+    const session = createSession(db, { dispatchId: "cp-conflict-1" });
+    writeRecord(db, { sessionId: session.id, space: "input", recordType: "task", content: { message: "test" }, round: 0 });
+    writeRecord(db, {
+      sessionId: session.id,
+      space: "tasks",
+      recordType: "task",
+      owner: "engineering",
+      content: { taskDescription: "Task", agentId: "engineering", seq: 1, dependsOn: [], topicHint: null },
+      round: 0,
+    });
+    writeRecord(db, {
+      sessionId: session.id,
+      space: "conflicts",
+      recordType: "conflict",
+      producer: "security-compliance",
+      content: {
+        type: "recommendation_conflict",
+        agents: ["cloud-architect", "security-compliance"],
+        relatedRecords: [],
+        resolutionPolicy: "evidence_then_arbitration",
+      },
+      round: 1,
+    });
+    const triggers = selectNextAgents(db, session.id);
+    expect(triggers).toHaveLength(1);
+    expect(triggers[0].rule).toBe("CONFLICT");
+    expect(triggers[0].agentId).toBe("command-center");
+  });
+
+  test("ESCALATE: low confidence artifact → escalates before REVIEW", () => {
+    const session = createSession(db, { dispatchId: "cp-lowconf-1" });
+    writeRecord(db, { sessionId: session.id, space: "input", recordType: "task", content: { message: "test" }, round: 0 });
+    writeRecord(db, {
+      sessionId: session.id,
+      space: "tasks",
+      recordType: "task",
+      owner: "engineering",
+      content: { taskDescription: "Risky task", agentId: "engineering", seq: 1, dependsOn: [], topicHint: null },
+      round: 0,
+    });
+    writeRecord(db, {
+      sessionId: session.id,
+      space: "artifacts",
+      recordType: "artifact",
+      producer: "engineering",
+      content: { summary: "Uncertain implementation" },
+      confidence: 0.3, // Below LOW_CONFIDENCE_THRESHOLD (0.5)
+      round: 1,
+    });
+    const triggers = selectNextAgents(db, session.id);
+    expect(triggers).toHaveLength(1);
+    expect(triggers[0].rule).toBe("ESCALATE");
+  });
 });
