@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased] / 2026-04-04 — Phase 4: Review & Critique Loop
+
+### Added
+- **orchestration/reviewLoop**: Full review lifecycle module with 4 subsystems:
+  - **P4.1 Review trigger**: `buildReviewRequest()` → `code-quality-coach` reviews unreviewed artifacts with structured prompts. `recordReviewVerdict()` writes approved/revision_needed/rejected verdicts.
+  - **P4.2 Revision loop**: `handleRevisionNeeded()` returns revise (re-activate original agent with feedback) or escalate (max 3 iterations). `recordRevisedArtifact()` supersedes previous versions.
+  - **P4.3 Security gate**: `checkSecurityReviewNeeded()` triggers `security-compliance` review for infra/code artifacts (producer-based + keyword-based detection). Skips docs/general artifacts.
+  - **P4.4 Conflict resolution**: `raiseConflict()` → `buildConflictCase()` → `resolveConflict()` with evidence gathering. CC buttons: `[Keep A][Keep B][Neither]`. Loser artifacts auto-superseded.
+- **orchestration/reviewLoop**: Escalation UI — `buildEscalationKeyboard()` with `[Accept Anyway][Override][Cancel Task]` for max-iteration breaches. `formatConflictSummary()` and `formatEscalationMessage()` for CC display.
+
 ## [Unreleased] / 2026-04-04 — Phase 3: Interview + Plan Generation
 
 ### Added

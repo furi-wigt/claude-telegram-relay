@@ -26,4 +26,21 @@ export {
   clearCountdown,
   ORCH_CB_PREFIX,
 } from "./interruptProtocol.ts";
+export {
+  buildReviewRequest,
+  recordReviewVerdict,
+  handleRevisionNeeded,
+  recordRevisedArtifact,
+  checkSecurityReviewNeeded,
+  raiseConflict,
+  buildConflictCase,
+  buildConflictKeyboard,
+  resolveConflict,
+  buildEscalationKeyboard,
+  formatConflictSummary,
+  formatEscalationMessage,
+  MAX_REVISION_ITERATIONS,
+  REVIEWER_AGENT,
+  SECURITY_AGENT,
+} from "./reviewLoop.ts";
 export type * from "./types.ts";
