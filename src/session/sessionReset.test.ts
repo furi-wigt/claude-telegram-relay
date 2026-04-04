@@ -26,6 +26,7 @@ const TEST_CHAT_IDS = [
   100020, 100021, 100022, 100023,
   200001, 200002, 200003,
   200010, 200011, 200012,
+  300001, 300002, 300003, 300004, 300005,
 ];
 
 beforeAll(async () => {
@@ -303,5 +304,75 @@ describe("resetGen — guards against stale onSessionId callbacks", () => {
     await updateSessionIdGuarded(CHAT_ID, "fresh-session-id", newGen, null);
 
     expect(getSession(CHAT_ID, null)?.sessionId).toBe("fresh-session-id");
+  });
+});
+
+// ─── renewSession ─────────────────────────────────────────────────────────────
+
+describe("renewSession — new subprocess, preserved STM window", () => {
+  test("clears sessionId (new subprocess)", async () => {
+    const { initSessions, loadSession, renewSession, getSession } = await getModule();
+    await initSessions();
+
+    const CHAT_ID = 300001;
+    const session = await loadSession(CHAT_ID, "test-agent", null);
+    session.sessionId = "existing-session-xyz";
+
+    await renewSession(CHAT_ID, null);
+
+    expect(getSession(CHAT_ID, null)?.sessionId).toBeNull();
+  });
+
+  test("preserves startedAt (STM window stays open)", async () => {
+    const { initSessions, loadSession, renewSession, getSession } = await getModule();
+    await initSessions();
+
+    const CHAT_ID = 300002;
+    const session = await loadSession(CHAT_ID, "test-agent", null);
+    const originalStartedAt = new Date(Date.now() - 3_600_000).toISOString();
+    session.startedAt = originalStartedAt;
+
+    await renewSession(CHAT_ID, null);
+
+    expect(getSession(CHAT_ID, null)?.startedAt).toBe(originalStartedAt);
+  });
+
+  test("does NOT set suppressContextInjection (full context is injected)", async () => {
+    const { initSessions, loadSession, renewSession, getSession } = await getModule();
+    await initSessions();
+
+    const CHAT_ID = 300003;
+    await loadSession(CHAT_ID, "test-agent", null);
+    await renewSession(CHAT_ID, null);
+
+    expect(getSession(CHAT_ID, null)?.suppressContextInjection).toBe(false);
+  });
+
+  test("clears pendingContextInjection (deduplicates STM injection intent)", async () => {
+    const { initSessions, loadSession, renewSession, getSession } = await getModule();
+    await initSessions();
+
+    const CHAT_ID = 300004;
+    const session = await loadSession(CHAT_ID, "test-agent", null);
+    session.pendingContextInjection = true;
+
+    await renewSession(CHAT_ID, null);
+
+    expect(getSession(CHAT_ID, null)?.pendingContextInjection).toBe(false);
+  });
+
+  test("increments resetGen (guards stale onSessionId callbacks)", async () => {
+    const { initSessions, loadSession, renewSession, getSession } = await getModule();
+    await initSessions();
+
+    const CHAT_ID = 300005;
+    const session = await loadSession(CHAT_ID, "test-agent", null);
+    expect(session.resetGen).toBe(0);
+
+    await renewSession(CHAT_ID, null);
+    expect(getSession(CHAT_ID, null)?.resetGen).toBe(1);
+
+    await renewSession(CHAT_ID, null);
+    expect(getSession(CHAT_ID, null)?.resetGen).toBe(2);
   });
 });
