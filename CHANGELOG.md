@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased] / 2026-04-04 — Fix: Mesh Interview Trigger
+
+### Fixed
+- **intentClassifier**: Added `detectCompound()` heuristic so compound tasks trigger the interview path even when MLX is unavailable or under-classifies. Uses conjunction counting, action verb detection, and multi-agent capability matching.
+- **intentClassifier**: MLX classification result is now OR'd with heuristic — MLX saying `isCompound: false` no longer blocks interview for clearly compound messages.
+- **intentClassifier**: MLX timeout increased from 15s → 30s for intent classification.
+- **intentClassifier**: `AbortError` from MLX timeout now logs a clean one-liner instead of dumping the full DOMException object.
+
 ## [Unreleased] / 2026-04-04 — Phase 6: Relay + DispatchEngine Wiring
 
 ### Added

@@ -20,6 +20,66 @@ function getRoutableAgents(): AgentConfig[] {
   return Object.values(AGENTS).filter((a) => a.id !== "command-center");
 }
 
+// ── Compound Detection Heuristic ────────────────────────────────────────────
+
+/** Conjunction patterns joining independent clauses. */
+const COMPOUND_CONJUNCTIONS = /\b(?:and then|and also|as well as|and|also|plus|then)\b/gi;
+
+/** Action verbs signalling discrete tasks. */
+const ACTION_VERBS = /\b(?:write|draft|prepare|review|check|audit|create|build|implement|deploy|fix|update|analyze|summarize|present|send|schedule|plan|design|test|refactor|migrate|research|investigate)\b/gi;
+
+/**
+ * Detect whether a message describes a compound (multi-agent) task.
+ *
+ * Heuristic — compound if:
+ * 1. 2+ conjunctions joining clauses, OR
+ * 2. 2+ distinct action verbs with at least 1 conjunction, OR
+ * 3. Message matches capabilities of 2+ different agents.
+ *
+ * Complexity: O(n) single pass over message + O(agents × capabilities).
+ */
+export function detectCompound(message: string): boolean {
+  const lower = message.toLowerCase();
+
+  const conjunctions = lower.match(COMPOUND_CONJUNCTIONS);
+  const verbs = lower.match(ACTION_VERBS);
+
+  // 2+ conjunctions → likely multi-part instruction
+  if (conjunctions && conjunctions.length >= 2) return true;
+
+  // 2+ distinct action verbs + at least 1 conjunction
+  if (verbs && conjunctions) {
+    const uniqueVerbs = new Set(verbs.map((v) => v.toLowerCase()));
+    if (uniqueVerbs.size >= 2) return true;
+  }
+
+  // Matches capabilities of 2+ different agents — only if a conjunction is present
+  // (prevents "review security posture" from being compound just because
+  //  "review" matches engineering and "security" matches security-compliance)
+  if (conjunctions && conjunctions.length >= 1) {
+    const agents = getRoutableAgents();
+    const matchedAgents = new Set<string>();
+    for (const agent of agents) {
+      for (const cap of agent.capabilities) {
+        const capLower = cap.toLowerCase();
+        if (lower.includes(capLower)) {
+          matchedAgents.add(agent.id);
+        } else {
+          for (const w of capLower.split("-")) {
+            if (w.length >= 4 && lower.includes(w)) {
+              matchedAgents.add(agent.id);
+              break;
+            }
+          }
+        }
+      }
+      if (matchedAgents.size >= 2) return true;
+    }
+  }
+
+  return false;
+}
+
 /**
  * Classify a user message to determine which agent should handle it.
  *
@@ -32,7 +92,13 @@ export async function classifyIntent(message: string): Promise<ClassificationRes
       return await classifyWithMlx(message);
     }
   } catch (err) {
-    console.warn("[intentClassifier] MLX classification failed, using keyword fallback:", err);
+    // AbortError = timeout; log one-liner instead of full DOMException dump
+    const name = err instanceof DOMException ? err.name : "";
+    if (name === "AbortError") {
+      console.warn("[intentClassifier] MLX timed out, using keyword fallback");
+    } else {
+      console.warn("[intentClassifier] MLX classification failed, using keyword fallback:", String(err));
+    }
   }
 
   return classifyWithKeywords(message);
@@ -60,7 +126,7 @@ Rules:
 - confidence: 0.9+ for exact domain match, 0.6-0.8 for reasonable match, <0.6 if unsure
 - For general questions, small talk, or anything without a clear domain, ALWAYS use "operations-hub" with confidence 0.85`;
 
-  const raw = await callMlxGenerate(prompt, { maxTokens: 256, timeoutMs: 15_000 });
+  const raw = await callMlxGenerate(prompt, { maxTokens: 256, timeoutMs: 30_000 });
 
   // Extract JSON from response (MLX may wrap in markdown code blocks)
   const jsonMatch = raw.match(/\{[\s\S]*\}/);
@@ -79,11 +145,15 @@ Rules:
       return classifyWithKeywords(message);
     }
 
+    // OR with heuristic — MLX may under-detect compound tasks
+    const mlxCompound = Boolean(parsed.isCompound);
+    const heuristicCompound = detectCompound(message);
+
     return {
       intent: String(parsed.intent ?? "general"),
       primaryAgent: agentId,
       topicHint: parsed.topicHint ? String(parsed.topicHint) : null,
-      isCompound: Boolean(parsed.isCompound),
+      isCompound: mlxCompound || heuristicCompound,
       confidence: Math.min(1, Math.max(0, Number(parsed.confidence ?? 0.5))),
       reasoning: String(parsed.reasoning ?? "Classified by local model"),
     };
@@ -138,7 +208,7 @@ export function classifyWithKeywords(message: string): ClassificationResult {
     intent: bestCapability || "general",
     primaryAgent: bestAgent.id,
     topicHint: null,
-    isCompound: false,
+    isCompound: detectCompound(message),
     confidence,
     reasoning: bestScore > 0
       ? `Keyword match: "${bestCapability}" → ${bestAgent.name}`
