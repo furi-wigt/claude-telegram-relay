@@ -15,6 +15,7 @@ import type { ClassificationResult, DispatchPlan, SubTask, BbTaskContent } from 
 import { AGENTS } from "../agents/config.ts";
 import { callMlxGenerate, isMlxAvailable } from "../mlx/client.ts";
 import { executeBlackboardDispatch, getDispatchRunner } from "./dispatchEngine.ts";
+import { buildFinalKeyboard } from "./finalizer.ts";
 import { getDb } from "../local/db.ts";
 import { chunkMessage } from "../utils/sendToGroup.ts";
 import { markdownToHtml, splitMarkdown } from "../utils/htmlFormat.ts";
@@ -342,4 +343,16 @@ export async function handleOrchestrationComplete(
     planMsg.message_id,
     `${planText}\n\n${statusIcon} Dispatch complete (${durationSec}s)`,
   ).catch(() => {});
+
+  // Send governance keyboard for session approval/archival
+  await bot.api.sendMessage(
+    chatId,
+    "📋 Session complete — approve to archive or choose an action:",
+    {
+      reply_markup: buildFinalKeyboard(result.sessionId),
+      message_thread_id: threadId ?? undefined,
+    },
+  ).catch((err) => {
+    console.error("[interviewPipeline] failed to send governance keyboard:", (err as Error).message);
+  });
 }
