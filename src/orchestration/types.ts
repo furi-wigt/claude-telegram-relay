@@ -127,21 +127,15 @@ export interface CountdownState {
   threadId: number | null;
 }
 
-// ── Blackboard Types ────────────────────────────────────────────────────────
+// ── Blackboard Types ───────────────────────────────────────────────────────
 
-export type BbSessionStatus = "active" | "done" | "failed" | "cancelled";
+export type BbSpace = "input" | "tasks" | "evidence" | "artifacts" | "decisions" | "reviews" | "conflicts" | "final";
 
-export type BbSpace = "input" | "tasks" | "results" | "context" | "output";
+export type BbRecordType = "task" | "finding" | "artifact" | "decision" | "review" | "conflict" | "output";
 
-export type BbRecordType =
-  | "task"
-  | "result"
-  | "context"
-  | "plan"
-  | "error"
-  | string;
+export type BbSessionStatus = "active" | "finalizing" | "done" | "failed" | "cancelled";
 
-export type BbRecordStatus = "pending" | "in_progress" | "done" | "failed" | "cancelled";
+export type BbRecordStatus = "pending" | "active" | "done" | "failed" | "superseded" | "archived";
 
 export interface BbSession {
   id: string;
@@ -165,10 +159,35 @@ export interface BbRecord {
   owner: string | null;
   status: BbRecordStatus;
   confidence: number | null;
-  content: string; // JSON-serialised
+  content: string; // JSON
   parent_id: string | null;
   supersedes: string | null;
   round: number | null;
   created_at: string;
   updated_at: string | null;
+}
+
+/** Content shape for task records in the tasks space */
+export interface BbTaskContent {
+  taskDescription: string;
+  agentId: string;
+  seq: number;
+  dependsOn: number[];
+  topicHint: string | null;
+  retryCount?: number;
+}
+
+/** Content shape for artifact/evidence records */
+export interface BbArtifactContent {
+  summary: string;
+  fullResponse?: string;
+  artifactPath?: string;
+}
+
+/** Returned by controlPlane.selectNextAgents() */
+export interface AgentTrigger {
+  rule: "INIT" | "EXECUTE" | "REVIEW" | "CONFLICT" | "FINALIZE" | "ESCALATE";
+  agentId: string;
+  taskRecordId?: string; // bb_records id of the task to execute
+  reason: string;
 }
