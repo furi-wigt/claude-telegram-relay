@@ -1,5 +1,20 @@
 # Changelog
 
+## [Unreleased] / 2026-04-04 — Constrained Mesh + Blackboard Orchestration
+
+### Added
+- **orchestration/blackboardSchema**: SQLite-backed blackboard with sessions (`bb_sessions`), records (`bb_records`), and mesh links (`bb_mesh_links`). Full CRUD: `createSession`, `writeRecord`, `getRecords`, `updateRecordStatus`.
+- **orchestration/controlPlane**: `selectNextAgents()` — pure function evaluating 6 trigger rules (INIT, EXECUTE, REVIEW, CONFLICT, FINALIZE, ESCALATE) against blackboard state. O(n) complexity.
+- **orchestration/meshPolicy**: Constrained mesh with whitelisted agent pairs. `canCommunicateDirect(from, to)` — O(1) Set lookup.
+- **orchestration/taskDecomposer**: Claude Haiku-based compound task decomposition. Falls back to single-task on any failure.
+- **orchestration/responseAggregator**: Collects completed task artifacts from blackboard into structured CC summary.
+- **orchestration/dispatchEngine**: `executeBlackboardDispatch()` — wraps existing dispatch runner in a blackboard session loop. Backward compatible with single-agent dispatch.
+- **promptBuilder**: `<blackboard_context>` injection — active session evidence and decisions injected into agent prompts.
+
+### Changed
+- **orchestration/schema**: `initOrchestrationSchema()` now also calls `initBlackboardSchema()` for bb_* tables.
+- **orchestration/commandCenter**: `executeAndReport()` now uses `executeBlackboardDispatch` instead of `executeSingleDispatch`.
+
 ## [Unreleased] / 2026-04-03 — fix(mlx): switch to streaming SSE with per-chunk timeout
 
 ### Fixed
