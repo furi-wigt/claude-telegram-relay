@@ -153,7 +153,7 @@ export async function executeBlackboardDispatch(
   db: Database,
   plan: DispatchPlan,
   runner: DispatchRunner,
-): Promise<{ success: boolean; response: string; durationMs: number; aggregated?: AggregatedResult }> {
+): Promise<{ success: boolean; response: string; durationMs: number; sessionId: string; aggregated?: AggregatedResult }> {
   const startTime = Date.now();
 
   // 1. Create session + input record
@@ -203,6 +203,7 @@ export async function executeBlackboardDispatch(
         success: false,
         response: `⚠️ ${triggers[0].reason}\n\n${aggregated.summaryText}`,
         durationMs: Date.now() - startTime,
+        sessionId: session.id,
         aggregated,
       };
     }
@@ -216,6 +217,7 @@ export async function executeBlackboardDispatch(
         success: aggregated.failedCount === 0,
         response: synthesis?.summary ?? aggregated.summaryText,
         durationMs: Date.now() - startTime,
+        sessionId: session.id,
         aggregated,
       };
     }
@@ -330,6 +332,7 @@ export async function executeBlackboardDispatch(
     success: aggregated.failedCount === 0,
     response: synthesis?.summary ?? (aggregated.taskCount > 0 ? aggregated.summaryText : lastResponse),
     durationMs: Date.now() - startTime,
+    sessionId: session.id,
     aggregated,
   };
 }
