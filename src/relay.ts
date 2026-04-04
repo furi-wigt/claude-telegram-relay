@@ -3360,6 +3360,10 @@ if (_isEntry) {
       if (typeof process.send === "function") {
         process.send("ready");
       }
+      // Notify owner that the bot is (back) online
+      if (ALLOWED_USER_ID) {
+        bot.api.sendMessage(ALLOWED_USER_ID, "✅ Jarvis is back online.").catch(() => {});
+      }
     },
   }).catch((error) => {
     console.error("ERROR starting bot:", error);
