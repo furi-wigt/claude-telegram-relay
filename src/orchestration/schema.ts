@@ -6,6 +6,7 @@
  */
 
 import type { Database } from "bun:sqlite";
+import { initBlackboardSchema } from "./blackboardSchema.ts";
 
 export function initOrchestrationSchema(db: Database): void {
   db.exec(`
@@ -45,4 +46,6 @@ export function initOrchestrationSchema(db: Database): void {
     CREATE INDEX IF NOT EXISTS idx_dispatch_tasks_dispatch ON dispatch_tasks(dispatch_id);
     CREATE INDEX IF NOT EXISTS idx_dispatch_tasks_status ON dispatch_tasks(status);
   `);
+
+  initBlackboardSchema(db);
 }

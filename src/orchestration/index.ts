@@ -4,8 +4,14 @@
 
 export { classifyIntent, classifyWithKeywords, AUTO_DISPATCH_THRESHOLD } from "./intentClassifier.ts";
 export { isCommandCenter, orchestrateMessage, registerOrchestrationCallbacks } from "./commandCenter.ts";
-export { executeSingleDispatch, getRecentDispatches, getYesterdayActivity, setDispatchRunner } from "./dispatchEngine.ts";
+export { executeSingleDispatch, executeBlackboardDispatch, getRecentDispatches, getYesterdayActivity, setDispatchRunner, getDispatchRunner } from "./dispatchEngine.ts";
 export { initOrchestrationSchema } from "./schema.ts";
+export { initBlackboardSchema } from "./blackboardSchema.ts";
+export { createSession, getSession, updateSessionStatus, incrementRound, writeRecord, getRecords, getRecordsBySpace, updateRecordStatus } from "./blackboard.ts";
+export { selectNextAgents } from "./controlPlane.ts";
+export { decomposeTask } from "./taskDecomposer.ts";
+export { aggregateResults } from "./responseAggregator.ts";
+export { canCommunicateDirect, MESH_LINKS } from "./meshPolicy.ts";
 export {
   startCountdown,
   handleInterrupt,

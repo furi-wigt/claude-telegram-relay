@@ -8,9 +8,13 @@
  */
 
 import type { Bot } from "grammy";
+import type { Database } from "bun:sqlite";
 import { getDb } from "../local/db.ts";
 import { AGENTS } from "../agents/config.ts";
-import type { DispatchPlan, DispatchEvent, DispatchRow, DispatchTaskRow, TaskStatus } from "./types.ts";
+import type { DispatchPlan, DispatchEvent, DispatchRow, DispatchTaskRow, TaskStatus, BbTaskContent, BbArtifactContent, AgentTrigger } from "./types.ts";
+import { createSession, writeRecord, getRecordsBySpace, updateRecordStatus, updateSessionStatus, incrementRound } from "./blackboard.ts";
+import { selectNextAgents } from "./controlPlane.ts";
+import { aggregateResults, type AggregatedResult } from "./responseAggregator.ts";
 
 /** Max time to wait for an agent response before timing out */
 const AGENT_RESPONSE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
@@ -126,6 +130,142 @@ let _dispatchRunner: DispatchRunner | null = null;
 
 export function setDispatchRunner(fn: DispatchRunner): void {
   _dispatchRunner = fn;
+}
+
+export function getDispatchRunner(): DispatchRunner | null {
+  return _dispatchRunner;
+}
+
+/**
+ * Execute a dispatch using the blackboard loop.
+ *
+ * 1. Create bb_session + input record
+ * 2. Write task records from plan.tasks
+ * 3. Loop: selectNextAgents → dispatch → write artifacts → increment round
+ * 4. Finalize: aggregate results
+ *
+ * Compatible with single-agent (1 round) and multi-agent (N rounds) dispatches.
+ * Does NOT touch Telegram — caller is responsible for CC progress updates.
+ */
+export async function executeBlackboardDispatch(
+  db: Database,
+  plan: DispatchPlan,
+  runner: DispatchRunner,
+): Promise<{ success: boolean; response: string; durationMs: number; aggregated?: AggregatedResult }> {
+  const startTime = Date.now();
+
+  // 1. Create session + input record
+  const session = createSession(db, { dispatchId: plan.dispatchId });
+
+  writeRecord(db, {
+    sessionId: session.id,
+    space: "input",
+    recordType: "task",
+    producer: "command-center",
+    content: { message: plan.userMessage, intent: plan.classification.intent },
+    round: 0,
+  });
+
+  // 2. Write task records
+  for (const task of plan.tasks) {
+    writeRecord(db, {
+      sessionId: session.id,
+      space: "tasks",
+      recordType: "task",
+      owner: task.agentId,
+      content: {
+        taskDescription: task.taskDescription,
+        agentId: task.agentId,
+        seq: task.seq,
+        dependsOn: task.dependsOn ?? [],
+        topicHint: task.topicHint,
+      } satisfies BbTaskContent,
+      round: 0,
+    });
+  }
+
+  // 3. Blackboard loop
+  let lastResponse = "";
+  const maxRounds = session.max_rounds;
+
+  for (let round = 0; round < maxRounds; round++) {
+    const triggers = selectNextAgents(db, session.id);
+
+    if (triggers.length === 0) break;
+
+    // ESCALATE — stop the loop
+    if (triggers[0].rule === "ESCALATE") {
+      updateSessionStatus(db, session.id, "failed");
+      const aggregated = aggregateResults(db, session.id);
+      return {
+        success: false,
+        response: `⚠️ ${triggers[0].reason}\n\n${aggregated.summaryText}`,
+        durationMs: Date.now() - startTime,
+        aggregated,
+      };
+    }
+
+    // FINALIZE — aggregate and return
+    if (triggers[0].rule === "FINALIZE") {
+      updateSessionStatus(db, session.id, "done");
+      const aggregated = aggregateResults(db, session.id);
+      return {
+        success: aggregated.failedCount === 0,
+        response: aggregated.summaryText,
+        durationMs: Date.now() - startTime,
+        aggregated,
+      };
+    }
+
+    // EXECUTE — dispatch each triggered agent
+    for (const trigger of triggers) {
+      if (trigger.rule !== "EXECUTE" || !trigger.taskRecordId) continue;
+
+      // Mark task as active
+      updateRecordStatus(db, trigger.taskRecordId, "active");
+
+      // Get chatId/topicId from AGENTS config (may be null for tests — runner handles routing)
+      const agentConfig = AGENTS[trigger.agentId];
+      const chatId = agentConfig?.chatId ?? 0;
+      const topicId = agentConfig?.topicId ?? null;
+
+      // Get the task description from the record
+      const taskRec = db.query("SELECT content FROM bb_records WHERE id = ?").get(trigger.taskRecordId) as { content: string } | null;
+      const taskContent = taskRec ? JSON.parse(taskRec.content) as BbTaskContent : null;
+      const taskText = taskContent?.taskDescription ?? plan.userMessage;
+
+      // Dispatch to agent
+      const response = await runner(chatId, topicId, taskText);
+
+      if (response) {
+        updateRecordStatus(db, trigger.taskRecordId, "done");
+        writeRecord(db, {
+          sessionId: session.id,
+          space: "artifacts",
+          recordType: "artifact",
+          producer: trigger.agentId,
+          content: { summary: response.slice(0, 500), fullResponse: response } satisfies BbArtifactContent,
+          parentId: trigger.taskRecordId,
+          round: round + 1,
+        });
+        lastResponse = response;
+      } else {
+        updateRecordStatus(db, trigger.taskRecordId, "failed");
+      }
+    }
+
+    incrementRound(db, session.id);
+  }
+
+  // Loop exited without FINALIZE — check final state
+  updateSessionStatus(db, session.id, "done");
+  const aggregated = aggregateResults(db, session.id);
+  return {
+    success: aggregated.failedCount === 0,
+    response: aggregated.taskCount > 0 ? aggregated.summaryText : lastResponse,
+    durationMs: Date.now() - startTime,
+    aggregated,
+  };
 }
 
 // ── DB Persistence ──────────────────────────────────────────────────────────

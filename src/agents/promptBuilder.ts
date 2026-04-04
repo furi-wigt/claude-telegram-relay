@@ -28,6 +28,8 @@ export interface PromptContext {
    * Injected when --resume is active and the last assistant turn the user saw was a routine.
    */
   routineContext?: string;
+  /** Blackboard evidence and decisions from the active orchestration session */
+  blackboardContext?: string;
 }
 
 /**
@@ -101,6 +103,11 @@ export function buildAgentPrompt(
     parts.push(`\n<diagnostic_image>\n${context.diagnosticContext}\n</diagnostic_image>`);
   }
 
+  // Blackboard context — evidence and decisions from active orchestration session
+  if (context.blackboardContext) {
+    parts.push(`\n<blackboard_context>\n${context.blackboardContext}\n</blackboard_context>`);
+  }
+
   // Memory management instructions
   parts.push(
     "\n<memory_management>" +
@@ -141,6 +148,15 @@ function trimContextParts(parts: string[], maxChars: number): void {
       parts[i].includes("<document_context>") ||
       parts[i].includes("<kb_footer_instruction>")
     ) {
+      running -= parts[i].length;
+      parts.splice(i, 1);
+    }
+  }
+  if (running <= maxChars) return;
+
+  // Priority 1.5: remove blackboard context
+  for (let i = parts.length - 1; i >= 0; i--) {
+    if (parts[i].includes("<blackboard_context>")) {
       running -= parts[i].length;
       parts.splice(i, 1);
     }
