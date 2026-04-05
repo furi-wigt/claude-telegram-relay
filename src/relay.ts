@@ -3244,9 +3244,13 @@ if (_isEntry) {
   // loadAllSessions() must run before any /new command handler can touch the Map —
   // without it, resetSession() silently no-ops (sessions.get() returns undefined)
   // and /new fails to clear sessionId or messageCount.
-  // Initialize local storage (SQLite + Qdrant)
+  // Initialize model registry (loads ~/.claude-relay/models.json, throws if invalid)
+  const { initRegistry } = await import("./models/index.ts");
+  const registry = initRegistry();
+
+  // Initialize local storage (SQLite + Qdrant) using registry-derived embed config
   const { initLocalStorage } = await import("./local/storageBackend.ts");
-  await initLocalStorage("bge-m3_1024", 1024);
+  await initLocalStorage(registry.embedCollectionSuffix(), registry.getEmbedDimensions());
 
   await initSessions();
   const loadedCount = await loadAllSessions();
