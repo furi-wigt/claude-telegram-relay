@@ -4,11 +4,17 @@
  * Enforces mesh policy on direct messages between agents.
  * All direct messages are rate-limited per dispatch and produce
  * a public summary record on the blackboard for auditability.
+ *
+ * When a MeshNotifier is registered (by relay.ts at startup), each
+ * successful send also posts a notification to the target agent's
+ * dedicated mesh forum topic (meshTopicId) — isolating cross-agent
+ * traffic from user-facing dispatch topics.
  */
 
 import type { Database } from "bun:sqlite";
 import { canCommunicateDirect } from "./meshPolicy.ts";
 import { writeRecord } from "./blackboard.ts";
+import { AGENTS } from "../agents/config.ts";
 
 // ── Rate limiting ──────────────────────────────────────────────────────────
 
@@ -27,6 +33,20 @@ export function clearRateCounts(dispatchId: string): void {
       _rateCounts.delete(key);
     }
   }
+}
+
+// ── Mesh Notifier (dependency injection) ──────────────────────────────────
+
+/** Posts a mesh message notification to a Telegram group/topic (fire-and-forget). */
+export type MeshNotifier = (chatId: number, topicId: number | null, text: string) => Promise<void>;
+let _meshNotifier: MeshNotifier | null = null;
+
+export function setMeshNotifier(fn: MeshNotifier): void {
+  _meshNotifier = fn;
+}
+
+export function getMeshNotifier(): MeshNotifier | null {
+  return _meshNotifier;
 }
 
 // ── Errors ─────────────────────────────────────────────────────────────────
@@ -71,6 +91,7 @@ export interface SendResult {
  * Creates:
  *   - An evidence record in the "evidence" space (the message itself)
  *   - A summary record on the board for visibility
+ *   - A Telegram notification in the target agent's mesh topic (if notifier registered)
  *
  * Throws MeshViolationError or RateLimitError on violation.
  */
@@ -120,6 +141,23 @@ export function sendAgentMessage(db: Database, msg: AgentMessage): SendResult {
     },
     round: msg.round,
   });
+
+  // 5. Post Telegram notification to target agent's mesh topic (fire-and-forget)
+  if (_meshNotifier) {
+    const targetAgent = AGENTS[msg.to];
+    const chatId = targetAgent?.chatId;
+    if (chatId) {
+      const topicId = targetAgent.meshTopicId ?? null;
+      const fromName = AGENTS[msg.from]?.shortName ?? msg.from;
+      const preview = msg.message.length > 300
+        ? msg.message.slice(0, 297) + "..."
+        : msg.message;
+      const text = `\u{1F517} *Mesh message from ${fromName}*\n\n${preview}`;
+      _meshNotifier(chatId, topicId, text).catch((err) => {
+        console.warn(`[agentComms] Mesh notification failed for ${msg.from} → ${msg.to}:`, err instanceof Error ? err.message : err);
+      });
+    }
+  }
 
   return { recordId: record.id, summaryRecordId: summaryRecord.id };
 }

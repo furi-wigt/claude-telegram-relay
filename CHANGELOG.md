@@ -1,5 +1,14 @@
 # Changelog
 
+## [Unreleased] / 2026-04-05 — P3: Mesh Topic Routing
+
+### Added
+- **agentComms**: `meshTopicId` field on `AgentDefinition` and `AgentConfig` — dedicated forum topic ID per agent for receiving direct mesh messages. Isolates agent-to-agent traffic from user-facing dispatch topics.
+- **agentComms**: `MeshNotifier` DI slot (`setMeshNotifier()`) — fire-and-forget Telegram notification to target agent's `(chatId, meshTopicId)` on every successful `sendAgentMessage()`. Notification failures are logged but never block the send.
+- **relay.ts**: Registers mesh notifier at startup using `bot.api.sendMessage()` with Markdown parse mode.
+- **agents.example.json**: All 9 agents now include `meshTopicId: null` (set per-group in `~/.claude-relay/agents.json`).
+- **tests**: 4 new tests — notification fires on send, skipped when notifier unset, failure doesn't block send, meshTopicId config validation.
+
 ## [Unreleased] / 2026-04-05 — Dynamic Dispatch Topics
 
 ### Added

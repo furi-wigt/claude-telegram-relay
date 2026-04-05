@@ -55,6 +55,8 @@ interface AgentDefinition {
   riskLevel?: "low" | "medium" | "high" | "critical";
   /** Whether artifacts from this agent require reviewer approval */
   reviewRequired?: boolean;
+  /** Dedicated forum topic ID for receiving direct mesh messages from other agents */
+  meshTopicId?: number | null;
 }
 
 /** Runtime agent config (prompt resolved, ready to use) */
@@ -77,6 +79,8 @@ export interface AgentConfig {
   preconditions?: string[];
   riskLevel?: "low" | "medium" | "high" | "critical";
   reviewRequired?: boolean;
+  /** Dedicated forum topic ID for receiving direct mesh messages from other agents */
+  meshTopicId?: number | null;
 }
 
 // ─── Loaders ─────────────────────────────────────────────────────────────────
@@ -152,6 +156,7 @@ for (const def of agentDefs) {
     preconditions: def.preconditions,
     riskLevel: def.riskLevel,
     reviewRequired: def.reviewRequired,
+    meshTopicId: def.meshTopicId,
   };
 }
 

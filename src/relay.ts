@@ -44,7 +44,7 @@ import { learnTopicName, learnChatName, getTopicName } from "./utils/chatNames.t
 import { isMlxAvailable } from "./mlx/index.ts";
 import { callRoutineModel } from "./routines/routineModel.ts";
 import { getAgentForChat, autoDiscoverGroup, loadGroupMappings } from "./routing/groupRouter.ts";
-import { isCommandCenter, orchestrateMessage, registerOrchestrationCallbacks, setDispatchRunner, setTopicCreator, setDispatchNotifier, setInterviewStateMachine, handleOrchestrationComplete, parseFinalCallback, handleFinalAction } from "./orchestration/index.ts";
+import { isCommandCenter, orchestrateMessage, registerOrchestrationCallbacks, setDispatchRunner, setTopicCreator, setDispatchNotifier, setMeshNotifier, setInterviewStateMachine, handleOrchestrationComplete, parseFinalCallback, handleFinalAction } from "./orchestration/index.ts";
 // Router removed: always use Sonnet for simplicity and predictable latency
 import { loadSession as loadGroupSession, updateSessionIdGuarded, initSessions, loadAllSessions, saveSession, isResumeReliable, didResumeFail, lockActiveCwd, resetSession, getSessionSince } from "./session/groupSessions.ts";
 import { buildAgentPrompt } from "./agents/promptBuilder.ts";
@@ -711,6 +711,16 @@ setDispatchNotifier(async (chatId: number, topicId: number | null, text: string)
     message_thread_id: topicId ?? undefined,
   }).catch((err) => {
     console.warn(`[relay] dispatch notifier failed for chat ${chatId}:`, err instanceof Error ? err.message : err);
+  });
+});
+
+// Register mesh notifier — posts agent-to-agent messages to dedicated mesh topics
+setMeshNotifier(async (chatId: number, topicId: number | null, text: string): Promise<void> => {
+  await bot.api.sendMessage(chatId, text, {
+    message_thread_id: topicId ?? undefined,
+    parse_mode: "Markdown",
+  }).catch((err) => {
+    console.warn(`[relay] mesh notifier failed for chat ${chatId}:`, err instanceof Error ? err.message : err);
   });
 });
 

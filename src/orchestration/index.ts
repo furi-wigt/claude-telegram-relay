@@ -16,7 +16,8 @@ export { aggregateResults } from "./responseAggregator.ts";
 export { canCommunicateDirect, MESH_LINKS } from "./meshPolicy.ts";
 export { parseTags } from "./tagParser.ts";
 export type { ParsedTag, BoardTag, AskAgentTag, BoardSummaryTag, ConfidenceTag, DoneTaskTag } from "./tagParser.ts";
-export { sendAgentMessage, MeshViolationError, RateLimitError, clearRateCounts } from "./agentComms.ts";
+export { sendAgentMessage, MeshViolationError, RateLimitError, clearRateCounts, setMeshNotifier } from "./agentComms.ts";
+export type { MeshNotifier } from "./agentComms.ts";
 export { initBoardDispatch, processAgentResponse, clearCircuitBreaker } from "./boardDispatch.ts";
 export {
   startCountdown,

@@ -59,6 +59,13 @@ describe("agents.example.json mesh contract fields", () => {
     }
   });
 
+  test("all agents have meshTopicId field (null or number)", () => {
+    for (const agent of agents) {
+      expect(agent).toHaveProperty("meshTopicId");
+      expect(agent.meshTopicId === null || typeof agent.meshTopicId === "number").toBe(true);
+    }
+  });
+
   test("backward compat: agents without mesh fields still load (optional)", () => {
     // Simulate an agent definition without mesh fields
     const legacyAgent = { id: "test", name: "Test", groupName: "Test", capabilities: ["test"] };

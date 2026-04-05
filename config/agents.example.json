@@ -8,10 +8,25 @@
     "chatId": null,
     "topicId": null,
     "defaultModel": "sonnet",
-    "capabilities": ["orchestration", "task-decomposition", "dispatch", "meeting-prep", "status-tracking"],
-    "meshPeers": ["research-analyst", "engineering", "cloud-architect", "security-compliance", "operations-hub", "strategy-comms", "documentation-specialist"],
+    "capabilities": [
+      "orchestration",
+      "task-decomposition",
+      "dispatch",
+      "meeting-prep",
+      "status-tracking"
+    ],
+    "meshPeers": [
+      "research-analyst",
+      "engineering",
+      "cloud-architect",
+      "security-compliance",
+      "operations-hub",
+      "strategy-comms",
+      "documentation-specialist"
+    ],
     "riskLevel": "low",
-    "reviewRequired": false
+    "reviewRequired": false,
+    "meshTopicId": null
   },
   {
     "id": "cloud-architect",
@@ -22,11 +37,28 @@
     "chatId": null,
     "topicId": null,
     "defaultModel": "sonnet",
-    "capabilities": ["aws", "infrastructure-design", "cost-optimization", "well-architected", "cdk", "cloudformation", "architecture-diagrams", "gcc", "cloud-migration"],
-    "diagnostics": { "enabled": true },
-    "meshPeers": ["command-center", "code-quality-coach", "security-compliance"],
+    "capabilities": [
+      "aws",
+      "infrastructure-design",
+      "cost-optimization",
+      "well-architected",
+      "cdk",
+      "cloudformation",
+      "architecture-diagrams",
+      "gcc",
+      "cloud-migration"
+    ],
+    "diagnostics": {
+      "enabled": true
+    },
+    "meshPeers": [
+      "command-center",
+      "code-quality-coach",
+      "security-compliance"
+    ],
     "riskLevel": "high",
-    "reviewRequired": true
+    "reviewRequired": true,
+    "meshTopicId": null
   },
   {
     "id": "security-compliance",
@@ -37,11 +69,28 @@
     "chatId": null,
     "topicId": null,
     "defaultModel": "sonnet",
-    "capabilities": ["im8-compliance", "pdpa", "security-audit", "threat-modeling", "vulnerability-assessment", "iam-review", "security-runbook", "incident-response"],
-    "diagnostics": { "enabled": true },
-    "meshPeers": ["command-center", "engineering", "cloud-architect", "strategy-comms"],
+    "capabilities": [
+      "im8-compliance",
+      "pdpa",
+      "security-audit",
+      "threat-modeling",
+      "vulnerability-assessment",
+      "iam-review",
+      "security-runbook",
+      "incident-response"
+    ],
+    "diagnostics": {
+      "enabled": true
+    },
+    "meshPeers": [
+      "command-center",
+      "engineering",
+      "cloud-architect",
+      "strategy-comms"
+    ],
     "riskLevel": "high",
-    "reviewRequired": true
+    "reviewRequired": true,
+    "meshTopicId": null
   },
   {
     "id": "engineering",
@@ -52,11 +101,28 @@
     "chatId": null,
     "topicId": null,
     "defaultModel": "sonnet",
-    "capabilities": ["code-review", "tdd", "refactoring", "implementation", "debugging", "testing", "git-workflow", "typescript", "bun"],
-    "diagnostics": { "enabled": true },
-    "meshPeers": ["command-center", "code-quality-coach", "security-compliance"],
+    "capabilities": [
+      "code-review",
+      "tdd",
+      "refactoring",
+      "implementation",
+      "debugging",
+      "testing",
+      "git-workflow",
+      "typescript",
+      "bun"
+    ],
+    "diagnostics": {
+      "enabled": true
+    },
+    "meshPeers": [
+      "command-center",
+      "code-quality-coach",
+      "security-compliance"
+    ],
     "riskLevel": "medium",
-    "reviewRequired": true
+    "reviewRequired": true,
+    "meshTopicId": null
   },
   {
     "id": "code-quality-coach",
@@ -66,11 +132,25 @@
     "groupKey": "CODE_QUALITY",
     "chatId": null,
     "topicId": null,
-    "capabilities": ["code-review", "test-generation", "quality-gates", "tdd-enforcement", "refactoring", "architecture-review"],
-    "diagnostics": { "enabled": true },
-    "meshPeers": ["engineering", "cloud-architect", "strategy-comms"],
+    "capabilities": [
+      "code-review",
+      "test-generation",
+      "quality-gates",
+      "tdd-enforcement",
+      "refactoring",
+      "architecture-review"
+    ],
+    "diagnostics": {
+      "enabled": true
+    },
+    "meshPeers": [
+      "engineering",
+      "cloud-architect",
+      "strategy-comms"
+    ],
     "riskLevel": "low",
-    "reviewRequired": false
+    "reviewRequired": false,
+    "meshTopicId": null
   },
   {
     "id": "strategy-comms",
@@ -81,10 +161,30 @@
     "chatId": null,
     "topicId": null,
     "defaultModel": "sonnet",
-    "capabilities": ["technical-proposal", "slide-deck", "adr", "system-design-doc", "executive-summary", "stakeholder-comms", "report-generation", "pricing-model", "rfp-response", "technology-evaluation", "market-research", "competitive-analysis", "vendor-assessment", "strategic-planning"],
-    "meshPeers": ["command-center", "code-quality-coach", "security-compliance"],
+    "capabilities": [
+      "technical-proposal",
+      "slide-deck",
+      "adr",
+      "system-design-doc",
+      "executive-summary",
+      "stakeholder-comms",
+      "report-generation",
+      "pricing-model",
+      "rfp-response",
+      "technology-evaluation",
+      "market-research",
+      "competitive-analysis",
+      "vendor-assessment",
+      "strategic-planning"
+    ],
+    "meshPeers": [
+      "command-center",
+      "code-quality-coach",
+      "security-compliance"
+    ],
     "riskLevel": "medium",
-    "reviewRequired": false
+    "reviewRequired": false,
+    "meshTopicId": null
   },
   {
     "id": "research-analyst",
@@ -94,10 +194,20 @@
     "groupKey": "RESEARCH",
     "chatId": null,
     "topicId": null,
-    "capabilities": ["technical-research", "architecture-analysis", "technology-evaluation", "comparative-analysis", "evidence-gathering", "literature-review"],
-    "meshPeers": ["command-center"],
+    "capabilities": [
+      "technical-research",
+      "architecture-analysis",
+      "technology-evaluation",
+      "comparative-analysis",
+      "evidence-gathering",
+      "literature-review"
+    ],
+    "meshPeers": [
+      "command-center"
+    ],
     "riskLevel": "low",
-    "reviewRequired": false
+    "reviewRequired": false,
+    "meshTopicId": null
   },
   {
     "id": "documentation-specialist",
@@ -107,10 +217,20 @@
     "groupKey": "DOCUMENTATION",
     "chatId": null,
     "topicId": null,
-    "capabilities": ["adr-creation", "system-docs", "runbooks", "technical-writing", "synthesis", "final-artifacts"],
-    "meshPeers": ["command-center"],
+    "capabilities": [
+      "adr-creation",
+      "system-docs",
+      "runbooks",
+      "technical-writing",
+      "synthesis",
+      "final-artifacts"
+    ],
+    "meshPeers": [
+      "command-center"
+    ],
     "riskLevel": "low",
-    "reviewRequired": false
+    "reviewRequired": false,
+    "meshTopicId": null
   },
   {
     "id": "operations-hub",
@@ -122,9 +242,20 @@
     "topicId": null,
     "isDefault": true,
     "defaultModel": "haiku",
-    "capabilities": ["general", "meeting-prep", "task-management", "team-coordination", "planning", "analysis", "scheduling"],
-    "meshPeers": ["command-center"],
+    "capabilities": [
+      "general",
+      "meeting-prep",
+      "task-management",
+      "team-coordination",
+      "planning",
+      "analysis",
+      "scheduling"
+    ],
+    "meshPeers": [
+      "command-center"
+    ],
     "riskLevel": "low",
-    "reviewRequired": false
+    "reviewRequired": false,
+    "meshTopicId": null
   }
 ]
