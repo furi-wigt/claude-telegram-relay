@@ -294,6 +294,14 @@ describe("handleDocCommand — ingest subcommand", () => {
     expect(result).toContain("/no/such/file.md");
   });
 
+  test("tilde path — expands to homedir before read", async () => {
+    const { homedir } = await import("os");
+    let capturedPath = "";
+    const capturingRead = (p: string): string => { capturedPath = p; return "content"; };
+    await handleDocCommand("ingest ~/docs/notes.md", mockListFn, mockDeleteFn, mockSearchFn, undefined, noopIngest, noopResolve, capturingRead);
+    expect(capturedPath).toBe(homedir() + "/docs/notes.md");
+  });
+
   test("empty file — returns error", async () => {
     const emptyRead = (_p: string): string => "   ";
     const result = await handleDocCommand("ingest /path/empty.md", mockListFn, mockDeleteFn, mockSearchFn, undefined, noopIngest, noopResolve, emptyRead);
