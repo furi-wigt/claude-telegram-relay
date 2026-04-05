@@ -19,7 +19,6 @@ const mockCallRoutineModel = mock(
 
 mock.module("./routineModel.ts", () => ({
   callRoutineModel: mockCallRoutineModel,
-  getLastProvider: () => "mlx",
 }));
 
 mock.module("../claude-process.ts", () => ({

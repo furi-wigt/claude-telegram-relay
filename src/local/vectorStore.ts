@@ -5,7 +5,7 @@
 import { QdrantClient } from "@qdrant/js-client-rest";
 
 const QDRANT_URL = process.env.QDRANT_URL || "http://localhost:6333";
-const VECTOR_DIM = 1024; // BGE-M3 output dimension
+const BLACKBOARD_BLACKBOARD_VECTOR_DIM = 1024; // placeholder for blackboard (stores tags, not real embeddings)
 
 export type CollectionName = "memory" | "messages" | "documents" | "summaries" | "blackboard";
 
@@ -28,7 +28,7 @@ export async function ensureCollection(name: CollectionName): Promise<void> {
     // Only create if collection doesn't exist; re-throw other errors (e.g. network)
     try {
       await client.createCollection(name, {
-        vectors: { size: VECTOR_DIM, distance: "Cosine" },
+        vectors: { size: BLACKBOARD_VECTOR_DIM, distance: "Cosine" },
       });
     } catch (createErr) {
       throw new Error(`Failed to ensure Qdrant collection "${name}": ${createErr}`);
@@ -47,10 +47,7 @@ export async function initCollections(): Promise<void> {
     "summaries",
     "blackboard",
   ];
-  for (const name of collections) {
-    await ensureCollection(name);
-  }
-  // Blackboard-specific payload indexes for efficient filtered search
+  await Promise.all(collections.map(name => ensureCollection(name)));
   await ensureBlackboardIndexes();
 }
 
@@ -83,9 +80,7 @@ export async function ensureEmbedCollection(name: string, dimensions: number): P
  */
 export async function initEmbedCollections(suffix: string, dimensions: number): Promise<void> {
   const bases: EmbedCollectionBase[] = ["memory", "messages", "documents", "summaries"];
-  for (const base of bases) {
-    await ensureEmbedCollection(embedCollectionName(base, suffix), dimensions);
-  }
+  await Promise.all(bases.map(base => ensureEmbedCollection(embedCollectionName(base, suffix), dimensions)));
 }
 
 /**

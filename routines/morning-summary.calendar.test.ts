@@ -69,7 +69,6 @@ mock.module("../src/utils/routineMessage.ts", () => ({
 // Without this mock, buildEnhancedBriefing tests hang waiting for local LLM.
 mock.module("../src/routines/routineModel.ts", () => ({
   callRoutineModel: async () => "No activity to summarize.",
-  getLastProvider: () => "local",
 }));
 
 // -- Things 3 mock (fetchThingsTasks calls real CLI without this) --

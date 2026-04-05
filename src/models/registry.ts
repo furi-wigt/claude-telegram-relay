@@ -18,6 +18,8 @@ import { claudeText } from "../claude-process.ts";
 export class ModelRegistry {
   private providerMap: Map<string, ProviderConfig>;
   private breakers: Map<string, CircuitBreaker>;
+  private healthCache: Map<string, { ok: boolean; expiresAt: number }> = new Map();
+  private static readonly HEALTH_TTL_MS = 20_000;
 
   private constructor(private config: ModelsConfig) {
     this.providerMap = new Map(config.providers.map((p) => [p.id, p]));
@@ -106,8 +108,12 @@ export class ModelRegistry {
   }
 
   private async checkProviderHealth(provider: ProviderConfig): Promise<boolean> {
-    if (provider.type === "claude") return true; // Claude CLI assumed present
-    return oaiClient.health(provider.url!);
+    if (provider.type === "claude") return true;
+    const cached = this.healthCache.get(provider.id);
+    if (cached && Date.now() < cached.expiresAt) return cached.ok;
+    const ok = await oaiClient.health(provider.url!);
+    this.healthCache.set(provider.id, { ok, expiresAt: Date.now() + ModelRegistry.HEALTH_TTL_MS });
+    return ok;
   }
 
   private async callProvider(
@@ -116,11 +122,9 @@ export class ModelRegistry {
     opts: ChatOptions
   ): Promise<string> {
     const mergedOpts: ChatOptions = {
-      timeoutMs: provider.timeoutMs,
-      chunkTimeoutMs: provider.chunkTimeoutMs,
-      maxTokens: opts.maxTokens,
-      label: opts.label,
       ...opts,
+      timeoutMs: opts.timeoutMs ?? provider.timeoutMs,
+      chunkTimeoutMs: opts.chunkTimeoutMs ?? provider.chunkTimeoutMs,
     };
 
     if (provider.type === "openai-compat") {
@@ -169,7 +173,7 @@ export class ModelRegistry {
       try {
         const buffer: string[] = [];
         if (provider.type === "openai-compat") {
-          const mergedOpts: ChatOptions = { timeoutMs: provider.timeoutMs, chunkTimeoutMs: provider.chunkTimeoutMs, ...opts };
+          const mergedOpts: ChatOptions = { ...opts, timeoutMs: opts.timeoutMs ?? provider.timeoutMs, chunkTimeoutMs: opts.chunkTimeoutMs ?? provider.chunkTimeoutMs };
           for await (const chunk of oaiClient.chatStream(provider.url!, provider.model, messages, mergedOpts)) {
             buffer.push(chunk);
           }
@@ -209,8 +213,11 @@ export class ModelRegistry {
     try {
       return await oaiClient.embed(provider.url!, provider.model, texts, timeoutMs);
     } catch (err) {
-      // Retry once with 2x timeout (mirrors old embed.ts resilience)
-      console.warn(`[registry] embed failed, retrying: ${err}`);
+      // Only retry on transient errors (timeouts, network failures, 5xx)
+      const msg = err instanceof Error ? err.message : String(err);
+      const isTransient = err instanceof TypeError || msg.includes("timeout") || msg.includes("aborted") || /Embed HTTP 5\d\d/.test(msg);
+      if (!isTransient) throw err;
+      console.warn(`[registry] embed failed (transient), retrying with 2x timeout: ${msg}`);
       return oaiClient.embed(provider.url!, provider.model, texts, timeoutMs * 2);
     }
   }

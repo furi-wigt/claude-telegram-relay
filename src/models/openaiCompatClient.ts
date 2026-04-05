@@ -154,17 +154,16 @@ export async function embed(
 }
 
 /**
- * Health check via GET /health (200 + { status: "ok" }) or GET /v1/models (200).
- * Returns true if server is reachable and responding.
+ * Health check via GET /health or GET /v1/models — races both, returns true if either succeeds.
  */
 export async function health(url: string): Promise<boolean> {
+  const tryEndpoint = async (path: string): Promise<boolean> => {
+    const r = await fetch(`${url}${path}`, { signal: AbortSignal.timeout(3_000) });
+    if (!r.ok) throw new Error(`${r.status}`);
+    return true;
+  };
   try {
-    const r = await fetch(`${url}/health`, { signal: AbortSignal.timeout(3_000) });
-    if (r.ok) return true;
-  } catch { /* fall through to /v1/models */ }
-  try {
-    const r = await fetch(`${url}/v1/models`, { signal: AbortSignal.timeout(3_000) });
-    return r.ok;
+    return await Promise.any([tryEndpoint("/health"), tryEndpoint("/v1/models")]);
   } catch {
     return false;
   }
