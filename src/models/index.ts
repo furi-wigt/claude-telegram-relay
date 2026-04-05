@@ -23,5 +23,13 @@ export function getRegistry(): ModelRegistry {
   return _registry;
 }
 
+/**
+ * FOR TESTS ONLY — inject a pre-built registry instance as the singleton.
+ * Do not use in production code.
+ */
+export function _testSetRegistry(r: ModelRegistry): void {
+  _registry = r;
+}
+
 export { ModelRegistry } from "./registry.ts";
 export type { ChatSlot, ChatMessage, ChatOptions } from "./types.ts";
