@@ -37,5 +37,7 @@ Thumbs.db
 .vscode/
 *.swp
 
-worktrees/
-.claude/
+# Claude Code — ignore personal/session state, but commit settings and decisions
+.claude/*
+!.claude/settings.json
+!.claude/DECISIONS.md
