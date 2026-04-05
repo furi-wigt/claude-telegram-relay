@@ -14,6 +14,8 @@ export function initRegistry(configPath?: string): ModelRegistry {
   _registry = ModelRegistry.load(path);
   const suffix = _registry.embedCollectionSuffix();
   console.log(`[ModelRegistry] loaded — embed suffix: ${suffix}`);
+  // Fire-and-forget warm-up to preload BGE-M3 weights (cold start is ~6× slower)
+  _registry.embed("warmup").catch(() => {});
   return _registry;
 }
 
