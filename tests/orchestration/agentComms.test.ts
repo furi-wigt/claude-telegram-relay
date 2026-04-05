@@ -10,6 +10,7 @@ import {
   setMeshNotifier,
   getMeshNotifier,
 } from "../../src/orchestration/agentComms";
+import { AGENTS } from "../../src/agents/config";
 
 describe("agentComms.sendAgentMessage", () => {
   let db: Database;
@@ -223,10 +224,9 @@ describe("agentComms.sendAgentMessage", () => {
 
     await new Promise((r) => setTimeout(r, 10));
 
-    // The notifier should have been called — chatId comes from AGENTS["engineering"]
-    // meshTopicId will be null since test config doesn't set it, but the call was made
+    // The notifier should have been called — chatId and meshTopicId come from AGENTS["engineering"]
     if (calls.length > 0) {
-      expect(calls[0].topicId).toBeNull(); // meshTopicId defaults to null
+      expect(calls[0].topicId).toBe(AGENTS["engineering"]?.meshTopicId ?? null);
     }
   });
 });
