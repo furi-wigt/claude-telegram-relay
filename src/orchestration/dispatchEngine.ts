@@ -74,7 +74,7 @@ export async function executeSingleDispatch(
   let agentMsgId: number | undefined;
   try {
     const sent = await bot.api.sendMessage(agent.chatId, dispatchText, {
-      message_thread_id: agent.topicId ?? undefined,
+      message_thread_id: (agent.meshTopicId ?? agent.topicId) ?? undefined,
     });
     agentMsgId = sent.message_id;
     updateTaskMessageId(plan.dispatchId, task.agentId, sent.message_id);
@@ -103,7 +103,7 @@ export async function executeSingleDispatch(
 
   let response: string | null = null;
   if (_dispatchRunner) {
-    response = await _dispatchRunner(agent.chatId, agent.topicId ?? null, plan.userMessage);
+    response = await _dispatchRunner(agent.chatId, (agent.meshTopicId ?? agent.topicId) ?? null, plan.userMessage);
   } else {
     console.error("[dispatchEngine] No dispatch runner registered — falling back to timeout");
   }
@@ -353,9 +353,9 @@ async function _executeBlackboardDispatchInner(
       const taskContent = taskRec ? JSON.parse(taskRec.content) as BbTaskContent : null;
       const taskText = taskContent?.taskDescription ?? plan.userMessage;
 
-      // Dynamic topic: create a forum topic per (session, agent group) for visual separation
+      // Prefer static meshTopicId (dedicated mesh channel); fall back to dynamic per-session topic
       const topicTitle = `${truncate(plan.userMessage, 60)} — ${agentConfig?.shortName ?? trigger.agentId}`;
-      const topicId = chatId ? await getOrCreateTopic(session.id, chatId, topicTitle) : null;
+      const topicId = agentConfig?.meshTopicId ?? (chatId ? await getOrCreateTopic(session.id, chatId, topicTitle) : null);
 
       // Dispatch header — visible in agent group so user can trace the session
       if (chatId && _dispatchNotifier) {
