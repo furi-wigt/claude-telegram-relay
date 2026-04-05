@@ -48,7 +48,7 @@
       "model": "qwen2.5:7b",
       "timeoutMs": 120000
     },
-    { "id": "claude-haiku",  "type": "claude", "model": "haiku"  },
+    { "id": "claude-haiku",  "type": "claude", "model": "haiku", "timeoutMs": 45000 },
     { "id": "claude-sonnet", "type": "claude", "model": "sonnet" }
   ],
   "slots": {
