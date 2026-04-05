@@ -648,6 +648,46 @@ bot.command("doc", async (ctx, next) => {
   await ctx.reply("📋 Ready. Paste your content now. (/cancel to abort)");
 });
 
+// /doc delete keyboard: handle doc_del: callbacks
+bot.on("callback_query:data", async (ctx, next) => {
+  const data = ctx.callbackQuery.data;
+  if (!data.startsWith("doc_del:")) return next();
+
+  await ctx.answerCallbackQuery().catch(() => {});
+  await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
+
+  const parts = data.slice("doc_del:".length).split(":");
+  // Cancel: doc_del:cancel:<chatId>:<tid>
+  if (parts[0] === "cancel") {
+    await ctx.editMessageText("Cancelled.").catch(() => {});
+    return;
+  }
+
+  // Confirm: doc_del:<chatId>:<tid>:<idx>
+  const [rawChatId, rawTid, rawIdx] = parts;
+  const chatId = parseInt(rawChatId, 10);
+  const mapKey = `${chatId}:${rawTid === "0" ? "" : rawTid}`;
+  const idx = parseInt(rawIdx, 10);
+  const titles = pendingDocDeleteChoices.get(mapKey);
+  const title = titles?.[idx];
+
+  if (!title) {
+    await ctx.reply("❌ Selection expired. Run /doc delete again.").catch(() => {});
+    return;
+  }
+  pendingDocDeleteChoices.delete(mapKey);
+
+  const result = await deleteDocument(title);
+  if (result.deleted === 0) {
+    await ctx.reply(`No document found matching "${title}".`).catch(() => {});
+    return;
+  }
+  const deletedTitle = result.matchedTitle ?? title;
+  await ctx.reply(
+    `🗑️ Deleted "${deletedTitle}" — ${result.deleted} chunk${result.deleted === 1 ? "" : "s"} removed.`
+  ).catch(() => {});
+});
+
 // Register orchestration callback handlers (Pause/Edit/Cancel + agent picker)
 registerOrchestrationCallbacks(bot);
 
@@ -743,10 +783,14 @@ setMeshNotifier(async (chatId: number, topicId: number | null, text: string): Pr
   });
 });
 
+// Shared state for /doc delete keyboard picker flow
+const pendingDocDeleteChoices = new Map<string, string[]>();
+
 registerCommands(bot, {
   userId: allowedUserId,
   projectDir: PROJECT_DIR || undefined,
   agentResolver: (chatId) => getAgentForChat(chatId).id,
+  pendingDocDeleteChoices,
   // Allow /new <prompt> to immediately process the follow-up text as a user message
   onMessage: async (chatId: number, text: string, ctx: Context) => {
     const threadId = ctx.message?.message_thread_id ?? null;

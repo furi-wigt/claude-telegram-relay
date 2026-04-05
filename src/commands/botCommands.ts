@@ -91,6 +91,12 @@ export interface CommandOptions {
    * cache (e.g., when /cwd is issued before any regular message in a topic).
    */
   agentResolver?: (chatId: number) => string;
+  /**
+   * Shared map for /doc delete keyboard flow.
+   * Key = `${chatId}:${threadId ?? ""}`, value = ordered list of document titles shown.
+   * Populated by the doc command handler; consumed by the doc_del: callback handler.
+   */
+  pendingDocDeleteChoices?: Map<string, string[]>;
 }
 
 // ── Memory formatting helpers ────────────────────────────────────────────────
@@ -621,6 +627,39 @@ export function registerCommands(bot: Bot, options: CommandOptions): void {
     if (!chatId) return;
 
     const args = (ctx.match ?? "").trim();
+    const [subcmd, ...rest] = args.split(/\s+/);
+
+    // delete/forget: show inline keyboard so user picks the exact document to delete
+    if (subcmd === "delete" || subcmd === "forget") {
+      const filter = rest.join(" ").trim().toLowerCase();
+      const docs = await listDocuments();
+      const matching = filter
+        ? docs.filter((d) => d.title.toLowerCase().includes(filter))
+        : docs;
+
+      if (!matching.length) {
+        await ctx.reply(
+          filter ? `No document found matching "${filter}".` : "No documents saved yet."
+        );
+        return;
+      }
+
+      const threadId = ctx.message?.message_thread_id ?? null;
+      const mapKey = `${chatId}:${threadId ?? ""}`;
+      options.pendingDocDeleteChoices?.set(mapKey, matching.map((d) => d.title));
+
+      const kb = new InlineKeyboard();
+      const tid = threadId ?? 0;
+      matching.slice(0, 10).forEach((doc, idx) => {
+        kb.text(`🗑 ${doc.title}`, `doc_del:${chatId}:${tid}:${idx}`).row();
+      });
+      kb.text("❌ Cancel", `doc_del:cancel:${chatId}:${tid}`);
+
+      const scope = filter ? ` matching "${filter}"` : ` (${matching.length} total)`;
+      await ctx.reply(`Which document to delete?${scope}`, { reply_markup: kb });
+      return;
+    }
+
     const lastPaste = options.getLastPaste?.(chatId);
     const result = await handleDocCommand(args, listDocuments, deleteDocument, searchDocumentsByTitles, lastPaste);
     await sendLongMessage(ctx, result);
