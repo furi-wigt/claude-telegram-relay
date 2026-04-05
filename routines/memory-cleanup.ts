@@ -31,6 +31,7 @@ import {
 import { sendAndRecord } from "../src/utils/routineMessage.ts";
 import { sendToGroup } from "../src/utils/sendToGroup.ts";
 import { GROUPS, validateGroup } from "../src/config/groups.ts";
+import { initRegistry } from "../src/models/index.ts";
 
 function resolveMemoryCleanupGroupKey(): string | undefined {
   for (const key of [
@@ -842,6 +843,7 @@ export function runDemotionPass(
 // ============================================================
 
 async function main(): Promise<void> {
+  initRegistry();
   const result = await runCleanup();
 
   if (result.duplicatesFound > 0 && MEMORY_CLEANUP_GROUP_KEY && validateGroup(MEMORY_CLEANUP_GROUP_KEY)) {
