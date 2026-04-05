@@ -27,13 +27,25 @@ export function getQdrantClient(): QdrantClient {
 
 /**
  * Ensure a collection exists with the correct vector config.
+ * Re-throws network/connectivity errors so callers can detect Qdrant being offline.
+ * Only attempts creation when the collection is genuinely missing (404).
  */
 export async function ensureCollection(name: CollectionName): Promise<void> {
   const client = getQdrantClient();
   try {
     await client.getCollection(name);
   } catch (err: any) {
-    // Only create if collection doesn't exist; re-throw other errors (e.g. network)
+    // Network / connectivity failures — re-throw so callers can degrade gracefully
+    const msg = String(err?.message ?? err ?? "");
+    if (
+      msg.includes("Unable to connect") ||
+      msg.includes("ECONNREFUSED") ||
+      msg.includes("fetch failed") ||
+      msg.includes("NetworkError")
+    ) {
+      throw err;
+    }
+    // Collection not found — create it
     try {
       await client.createCollection(name, {
         vectors: { size: COLLECTION_DIMENSIONS[name], distance: "Cosine" },
