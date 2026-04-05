@@ -54,11 +54,45 @@ export async function initCollections(): Promise<void> {
   await ensureBlackboardIndexes();
 }
 
+/** Base names for embed-backed collections (versioned with suffix). */
+export type EmbedCollectionBase = "memory" | "messages" | "documents" | "summaries";
+
+/** Returns versioned collection name: e.g. "memory_bge-m3_1024" */
+export function embedCollectionName(base: EmbedCollectionBase, suffix: string): string {
+  return `${base}_${suffix}`;
+}
+
+/**
+ * Ensure an embed-versioned collection exists with the given dimensions.
+ * Used for memory/messages/documents/summaries with embed model suffix.
+ */
+export async function ensureEmbedCollection(name: string, dimensions: number): Promise<void> {
+  const client = getQdrantClient();
+  try {
+    await client.getCollection(name);
+  } catch {
+    await client.createCollection(name, {
+      vectors: { size: dimensions, distance: "Cosine" },
+    });
+  }
+}
+
+/**
+ * Initialize all embed-versioned collections.
+ * Call at startup with the suffix from ModelRegistry.embedCollectionSuffix().
+ */
+export async function initEmbedCollections(suffix: string, dimensions: number): Promise<void> {
+  const bases: EmbedCollectionBase[] = ["memory", "messages", "documents", "summaries"];
+  for (const base of bases) {
+    await ensureEmbedCollection(embedCollectionName(base, suffix), dimensions);
+  }
+}
+
 /**
  * Upsert a single vector with payload.
  */
 export async function upsert(
-  collection: CollectionName,
+  collection: CollectionName | string,
   id: string,
   vector: number[],
   payload: Record<string, unknown>
@@ -74,7 +108,7 @@ export async function upsert(
  * Upsert multiple vectors in a single batch.
  */
 export async function upsertBatch(
-  collection: CollectionName,
+  collection: CollectionName | string,
   points: Array<{
     id: string;
     vector: number[];
@@ -96,7 +130,7 @@ export interface SearchResult {
  * Search for similar vectors in a collection.
  */
 export async function search(
-  collection: CollectionName,
+  collection: CollectionName | string,
   vector: number[],
   opts?: {
     limit?: number;
@@ -124,7 +158,7 @@ export async function search(
  * Delete points by IDs.
  */
 export async function deletePoints(
-  collection: CollectionName,
+  collection: CollectionName | string,
   ids: string[]
 ): Promise<void> {
   if (ids.length === 0) return;
