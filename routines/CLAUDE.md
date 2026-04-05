@@ -336,7 +336,7 @@ npx pm2 save
 ## LLM provider order
 
 For text-only tasks (summarization, extraction, classification), use `callRoutineModel()`
-which calls the **MLX server** (`mlx serve`). Logging is handled automatically.
+which routes through the **ModelRegistry** (`routine` slot). Logging is handled automatically.
 
 ```ts
 import { callRoutineModel } from "../src/routines/routineModel.ts";
@@ -347,7 +347,9 @@ const result = await callRoutineModel(prompt, {
 });
 ```
 
-**Provider:** MLX serve (`/v1/chat/completions`) — Qwen3.5-9B, Apple Silicon native (port 8800)
+**Provider:** Configured in `~/.claude-relay/models.json` under the `routine` slot.
+Cascade order is user-defined — typically Claude → LM Studio / Ollama → error.
+The ModelRegistry handles health checks and failover automatically.
 
 **Note:** Local models do **not** support tool use. If a routine needs
 Claude tools/agentic capabilities, use `claudeText`/`claudeStream` directly.
