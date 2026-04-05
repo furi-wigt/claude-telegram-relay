@@ -17,7 +17,7 @@ import {
   getSummaries as sqliteGetSummaries,
 } from "./db";
 import { localEmbed, localEmbedBatch } from "./embed";
-import { upsert, upsertBatch, deletePoints, initCollections, search as qdrantSearch } from "./vectorStore";
+import { upsert, upsertBatch, deletePoints, initCollections, search as qdrantSearch, initEmbedCollections, embedCollectionName, type EmbedCollectionBase } from "./vectorStore";
 import { searchMemory, searchMessages, searchDocuments, searchSummaries, type HybridSearchResult } from "./searchService";
 import type { MemoryRow } from "./db";
 import { enqueue as enqueueTopicGeneration } from "../memory/topicQueue.ts";
@@ -25,11 +25,16 @@ import { enqueue as enqueueTopicGeneration } from "../memory/topicQueue.ts";
 // ── Initialization ────────────────────────────────────────────────────────────
 
 let _initialized = false;
+let _embedSuffix = "bge-m3_1024";   // default — overridden by initLocalStorage
+let _embedDimensions = 1024;
 
-export async function initLocalStorage(): Promise<void> {
+export async function initLocalStorage(embedSuffix: string, embedDimensions: number): Promise<void> {
   if (_initialized) return;
+  _embedSuffix = embedSuffix;
+  _embedDimensions = embedDimensions;
   getDb(); // triggers schema init
-  await initCollections();
+  await initCollections();               // keeps blackboard (unversioned)
+  await initEmbedCollections(embedSuffix, embedDimensions);  // versioned embed collections
   _initialized = true;
   console.log("[storage] Local backend initialized (SQLite + Qdrant)");
 }
@@ -66,7 +71,7 @@ export async function insertMemoryRecord(
 
     // Embed and upsert to Qdrant
     const vector = await localEmbed(record.content);
-    await upsert("memory", localId, vector, {
+    await upsert(embedCollectionName("memory", _embedSuffix), localId, vector, {
       type: record.type,
       status: "active",
       content: record.content,
@@ -87,7 +92,7 @@ export async function deleteMemoryRecord(
 ): Promise<void> {
   try {
     sqliteUpdateStatus(id, "deleted");
-    await deletePoints("memory", [id]);
+    await deletePoints(embedCollectionName("memory", _embedSuffix), [id]);
   } catch (err) {
     console.error("[storage] Local memory delete failed:", err);
   }
@@ -130,7 +135,7 @@ export async function updateMemoryRecord(
     const existing = db.prepare("SELECT content FROM memory WHERE id = ?").get(id) as { content: string } | null;
     const contentForEmbed = String(updates.content ?? existing?.content ?? "");
     const vec = await localEmbed(contentForEmbed);
-    await upsert("memory", id, vec, {
+    await upsert(embedCollectionName("memory", _embedSuffix), id, vec, {
       ...updates,
       status: updates.type === "completed_goal" ? "completed" : "active",
     });
@@ -265,7 +270,7 @@ export async function deleteAllMemoriesForChat(
   const ids = rows.map((r) => r.id);
   if (ids.length) {
     db.run(`UPDATE memory SET status = 'deleted' WHERE chat_id = ?`, [chatId.toString()]);
-    await deletePoints("memory", ids);
+    await deletePoints(embedCollectionName("memory", _embedSuffix), ids);
   }
 }
 
@@ -381,7 +386,7 @@ export async function insertMessageRecord(
   // Phase 2: Embed + Qdrant upsert — best-effort, does not block message delivery
   try {
     const vector = await localEmbed(record.content);
-    await upsert("messages", id, vector, {
+    await upsert(embedCollectionName("messages", _embedSuffix), id, vector, {
       role: record.role,
       chat_id: record.chat_id?.toString() ?? null,
       thread_id: record.thread_id?.toString() ?? null,
@@ -438,7 +443,7 @@ export async function insertDocumentRecords(
     }
 
     // Single batch upsert to Qdrant
-    await upsertBatch("documents", points);
+    await upsertBatch(embedCollectionName("documents", _embedSuffix), points);
   } catch (err) {
     console.warn("[storage] Local document insert failed:", err);
   }
@@ -463,7 +468,7 @@ export async function deleteDocumentRecords(
     if (ids.length) {
       const placeholders = ids.map(() => "?").join(",");
       db.run(`DELETE FROM documents WHERE id IN (${placeholders})`, ids);
-      await deletePoints("documents", ids);
+      await deletePoints(embedCollectionName("documents", _embedSuffix), ids);
       localDeleted = ids.length;
     }
   } catch (err) {
@@ -567,7 +572,7 @@ export async function insertSummaryRecord(
     });
 
     const vector = await localEmbed(record.summary);
-    await upsert("summaries", id, vector, {
+    await upsert(embedCollectionName("summaries", _embedSuffix), id, vector, {
       chat_id: record.chat_id.toString(),
       thread_id: record.thread_id?.toString() ?? null,
     });

@@ -3246,7 +3246,7 @@ if (_isEntry) {
   // and /new fails to clear sessionId or messageCount.
   // Initialize local storage (SQLite + Qdrant)
   const { initLocalStorage } = await import("./local/storageBackend.ts");
-  await initLocalStorage();
+  await initLocalStorage("bge-m3_1024", 1024);
 
   await initSessions();
   const loadedCount = await loadAllSessions();
