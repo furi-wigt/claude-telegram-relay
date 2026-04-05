@@ -15,6 +15,8 @@ const ENV = {
 
 const QDRANT_BIN = process.env.QDRANT_BIN || HOME + "/.qdrant/bin/qdrant";
 const MLX_BIN    = process.env.MLX_BIN    || HOME + "/.local/share/uv/tools/mlx-local/bin/mlx";
+// Note: MLX generation server (port 8800) removed — replaced by LM Studio via ModelRegistry.
+// MLX is now used exclusively for embeddings (mlx-embed, bge-m3, port 8801).
 
 module.exports = {
   apps: [
@@ -37,27 +39,9 @@ module.exports = {
       log_date_format: "YYYY-MM-DD HH:mm:ss Z",
     },
 
-    // ── Local LLM servers (mlx-local tool) ────────────────────────────────────
-    // mlx: text generation via Qwen3.5-9B-MLX-4bit (16 tok/s), port 8800
+    // ── Embedding server (mlx-local tool) ─────────────────────────────────────
     // mlx-embed: embeddings via bge-m3-mlx-fp16, port 8801
-    // Both run as always-on PM2 services — no manual start required.
-    {
-      name: "mlx",
-      script: MLX_BIN,
-      args: "serve -m mlx-community/Qwen3.5-9B-MLX-4bit",
-      interpreter: "none",
-      exec_mode: "fork",
-      cwd: CWD,
-      instances: 1,
-      autorestart: true,
-      watch: false,
-      kill_timeout: 5000,
-      env: ENV,
-      error_file: LOGS_DIR + "/mlx-error.log",
-      out_file: LOGS_DIR + "/mlx-out.log",
-      log_date_format: "YYYY-MM-DD HH:mm:ss Z",
-    },
-
+    // Text generation handled by LM Studio (or any OpenAI-compatible server) via ModelRegistry.
     {
       name: "mlx-embed",
       script: MLX_BIN,

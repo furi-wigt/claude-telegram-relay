@@ -54,7 +54,7 @@ All user data lives outside the project directory in `~/.claude-relay/`:
 **Storage stack:**
 - **SQLite** (`~/.claude-relay/data/local.sqlite`) — messages, memory entries, goals, conversation summaries, logs
 - **Qdrant** (local vector DB) — semantic search over messages and memory
-- **MLX** — two separate processes: `mlx serve` for text generation (Qwen3.5-9B, port 8800) and `mlx serve-embed` for embeddings (bge-m3, port 8801). Split prevents GPU lock contention.
+- **MLX** — `mlx serve-embed` for embeddings (bge-m3, port 8801). Text generation is handled by LM Studio (or any OpenAI-compatible server) via ModelRegistry — see `~/.claude-relay/models.json`.
 
 ## Prerequisites
 
@@ -110,9 +110,9 @@ Do not rush all phases at once. Start with Phase 1. When it works, move to Phase
 
 Your bot's memory runs entirely locally — no cloud APIs needed. It uses SQLite for structured data, Qdrant for vector search, and MLX (bge-m3) for generating embeddings.
 
-### Step 1: Install MLX Qwen (Apple Silicon — primary routine model)
+### Step 1: Install MLX embed (Apple Silicon — embeddings only)
 
-MLX provides native Apple Silicon inference at ~2x Ollama speed. Used as the primary model for all scheduled routines (morning summary, smart check-in, night summary).
+MLX is used exclusively for generating embeddings (bge-m3, port 8801). Text generation for routines is handled by LM Studio or any OpenAI-compatible server configured in `~/.claude-relay/models.json`.
 
 **What to tell them (macOS only):**
 1. Ensure Python 3.12+ is installed: `brew install python@3.12`
@@ -120,46 +120,32 @@ MLX provides native Apple Silicon inference at ~2x Ollama speed. Used as the pri
    ```bash
    uv tool install --editable tools/mlx-local --python python3.12
    ```
-3. Download model weights (~5.6 GB):
-   ```bash
-   mlx pull
-   ```
-4. Verify: `mlx generate "Say hello" -t 50`
 
 > **Cloudflare/corporate proxy:** The tool auto-injects `/etc/ssl/Cloudflare_CA.pem` if present. No manual cert config needed.
 
 **Commands:**
 | Command | What it does |
 |---------|-------------|
-| `mlx generate "prompt"` | One-shot generation (thinking auto-disabled) |
-| `mlx serve` | Generation API on `localhost:8800` |
 | `mlx serve-embed` | Embedding-only API on `localhost:8801` |
-| `mlx pull` | Download/update model weights |
 | `mlx info` | Show cached models and sizes |
 
-### Step 2: Start MLX servers (generation + embeddings — two separate processes)
-
-Two processes eliminate GPU lock contention: generation (Qwen3.5-9B, port 8800) and embeddings (bge-m3, port 8801) each get their own Metal command queue.
+### Step 2: Start MLX embed server
 
 **What to tell them:**
-1. Start both servers (model weights load on first request — allow ~30s each):
+1. Start the embed server (model weights load on first request — allow ~30s):
    ```bash
-   mlx serve        # generation — port 8800
-   mlx serve-embed  # embeddings — port 8801 (separate terminal)
+   mlx serve-embed  # embeddings — port 8801
    ```
-2. Verify both are running:
+2. Verify it's running:
    ```bash
-   curl http://localhost:8800/health   # → {"status":"ok","models":{...}}
    curl http://localhost:8801/health   # → {"status":"ok","model":"...bge-m3..."}
    ```
 
 **What you do:**
-1. The env vars are pre-configured. Optionally override in `~/.claude-relay/.env`:
-   - `MLX_URL=http://localhost:8800`
-   - `MLX_MODEL=mlx-community/Qwen3.5-9B-MLX-4bit`
+1. The env var is pre-configured. Optionally override in `~/.claude-relay/.env`:
    - `EMBED_URL=http://localhost:8801`
 
-> **Apple Silicon only.** MLX requires Apple Silicon (M1/M2/M3/M4). The relay uses MLX exclusively for all local inference.
+> **Apple Silicon only.** MLX requires Apple Silicon (M1/M2/M3/M4).
 
 ### Step 3: Install Qdrant
 
@@ -183,12 +169,11 @@ docker run -d --name qdrant -p 6333:6333 -v ~/.qdrant/storage:/qdrant/storage qd
 
 ### Step 4: Verify
 
-1. Confirm MLX generation server: `curl http://localhost:8800/health` → `{"status":"ok",...}`
-2. Confirm MLX embed server: `curl http://localhost:8801/health` → `{"status":"ok",...}`
-3. Confirm Qdrant is reachable: `curl http://localhost:6333/healthz`
+1. Confirm MLX embed server: `curl http://localhost:8801/health` → `{"status":"ok","model":"...bge-m3..."}`
+2. Confirm Qdrant is reachable: `curl http://localhost:6333/healthz`
 3. Confirm SQLite database path exists: `ls ~/.claude-relay/data/`
 
-**Done when:** MLX generation server responds on port 8800, embed server responds on port 8801, Qdrant responds on port 6333, and `~/.claude-relay/data/` exists.
+**Done when:** Embed server responds on port 8801, Qdrant responds on port 6333, and `~/.claude-relay/data/` exists.
 
 ---
 
@@ -387,22 +372,20 @@ Lets the bot understand voice messages sent on Telegram.
 
 ---
 
-## Phase 8: Fallback AI — MLX (~2 min)
+## Phase 8: Local AI Fallback (~5 min)
 
-When Claude is unavailable, the bot auto-switches to the local MLX model (Qwen3.5-9B). MLX also handles all memory embeddings (bge-m3).
-
-> If you already set up MLX in Phase 2, this phase just verifies the fallback works.
+When Claude is unavailable, the bot cascades to a local OpenAI-compatible server (LM Studio, Ollama, or any compatible provider). Providers and cascade order are configured in `~/.claude-relay/models.json`.
 
 **Steps:**
 
-1. Ensure both MLX servers are running (Phase 2): `mlx serve` (8800) and `mlx serve-embed` (8801)
-2. Save in `.env` (if not already done):
-   - `MLX_URL=http://localhost:8800`
-   - `MLX_MODEL=mlx-community/Qwen3.5-9B-MLX-4bit`
-   - `EMBED_URL=http://localhost:8801`
-3. Restart the relay and send a message
+1. Install and start an OpenAI-compatible local server, e.g. [LM Studio](https://lmstudio.ai) (port 1234) or Ollama (port 11434)
+2. Load a model (e.g. Gemma 4B, Qwen 2.5, Mistral)
+3. Edit `~/.claude-relay/models.json` — add the server under the `local` provider and set it in the cascade for the `chat` and `routine` slots
+4. Restart the relay and send a message — if Claude is unreachable it will fall back automatically
 
-**Done when:** Relay startup log shows `Fallback model available: MLX (Qwen3.5-9B)`.
+> A template is at `config/models.example.json`. The ModelRegistry handles health checks and cascade ordering automatically.
+
+**Done when:** Relay startup log shows the local provider is registered and responds to a test query.
 
 ---
 
@@ -455,8 +438,8 @@ This relay already includes significant capabilities beyond basic chat:
 - **Production Routines** — the `routines/` directory has ready-to-use scheduled tasks. Read `routines/CLAUDE.md` (code patterns and PM2 safety rules) then `routines/user_journey.md` (full lifecycle guide) before creating your own.
 - **Document RAG** — upload PDFs to Telegram, query them with natural language via `/doc query`
 - **Forum Topic Support** — route messages to specific topics within supergroups for clean separation
-- **Fallback AI** — auto-switch to local MLX (Qwen3.5-9B) when Claude is unavailable
-- **Fully Local** — all data stays on your machine (SQLite + Qdrant + MLX)
+- **Fallback AI** — auto-cascade to local LM Studio / Ollama when Claude is unavailable, via ModelRegistry (`~/.claude-relay/models.json`)
+- **Fully Local** — all data stays on your machine (SQLite + Qdrant + MLX embed)
 
 **Want to personalise further?**
 - Edit `~/.claude-relay/prompts/*.md` to change each agent's persona, domain focus, or save paths
