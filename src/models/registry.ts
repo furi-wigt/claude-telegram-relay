@@ -195,5 +195,40 @@ export class ModelRegistry {
     throw new CascadeExhaustedError(slot, attempts);
   }
 
-  // embed(), embedBatch(), health() added in Task 7
+  /** Embed a single text using the configured embed provider. */
+  async embed(text: string): Promise<number[]> {
+    return (await this.embedBatch([text]))[0];
+  }
+
+  /** Embed multiple texts in one batch call. */
+  async embedBatch(texts: string[]): Promise<number[][]> {
+    if (texts.length === 0) return [];
+    const embedId = this.config.slots.embed[0];
+    const provider = this.providerMap.get(embedId)!;
+    const timeoutMs = provider.timeoutMs ?? 15_000;
+    try {
+      return await oaiClient.embed(provider.url!, provider.model, texts, timeoutMs);
+    } catch (err) {
+      // Retry once with 2x timeout (mirrors old embed.ts resilience)
+      console.warn(`[registry] embed failed, retrying: ${err}`);
+      return oaiClient.embed(provider.url!, provider.model, texts, timeoutMs * 2);
+    }
+  }
+
+  /** Health check all configured providers. */
+  async health(): Promise<Record<string, { healthy: boolean; latencyMs?: number }>> {
+    const results: Record<string, { healthy: boolean; latencyMs?: number }> = {};
+    await Promise.all(
+      this.config.providers.map(async p => {
+        const start = Date.now();
+        if (p.type === "claude") {
+          results[p.id] = { healthy: true }; // Claude assumed present
+        } else {
+          const healthy = await oaiClient.health(p.url!);
+          results[p.id] = { healthy, latencyMs: Date.now() - start };
+        }
+      })
+    );
+    return results;
+  }
 }
