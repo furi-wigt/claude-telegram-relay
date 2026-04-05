@@ -2067,7 +2067,7 @@ async function processTextMessage(
     const callStart = Date.now();
     trace({ event: "claude_start", traceId, chatId, promptLength: enrichedPrompt.length, resume: !!session.sessionId, sessionId: session.sessionId });
 
-    // [Q] prefix or agent defaultModel="local" → skip Claude CLI, call local Qwen directly.
+    // [L] prefix or agent defaultModel="local" → skip Claude CLI, call local LM Studio directly.
     if (resolvedModel === LOCAL_MODEL_TOKEN) {
       try {
         void indicator.update("Using Qwen (local)…", { immediate: true });
@@ -2578,9 +2578,9 @@ function enqueuePhotoJob(
         const agent = getAgentForChat(chatId);
         const traceId = generateTraceId();
 
-        // Honour [O]/[H]/[Q] prefix in caption for Phase 2 (agent response).
+        // Honour [O]/[H]/[L] prefix in caption for Phase 2 (agent response).
         // Phase 1 (vision description) always uses Sonnet — it requires vision capability.
-        // [Q] is silently downgraded to Sonnet: local Qwen has no vision capability.
+        // [L] is silently downgraded to Sonnet: local LM Studio has no vision capability.
         const { model: rawPhotoModel, label: rawPhotoLabel, text: cleanCaption } = resolveModelPrefix(caption, agent.defaultModel);
         const resolvedModel = rawPhotoModel === LOCAL_MODEL_TOKEN ? SONNET_MODEL : rawPhotoModel;
         const resolvedLabel = rawPhotoModel === LOCAL_MODEL_TOKEN ? "Sonnet" : rawPhotoLabel;

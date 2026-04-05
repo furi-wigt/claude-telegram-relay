@@ -24,16 +24,16 @@ describe("resolveModelPrefix", () => {
     expect(r.text).toBe("quick summary");
   });
 
-  test("[Q] prefix → local Qwen, strips tag", () => {
-    const r = resolveModelPrefix("[Q] offline query");
+  test("[L] prefix → local Qwen, strips tag", () => {
+    const r = resolveModelPrefix("[L] offline query");
     expect(r.model).toBe(LOCAL_MODEL_TOKEN);
-    expect(r.label).toBe("Qwen");
+    expect(r.label).toBe("Local");
     expect(r.text).toBe("offline query");
   });
 
-  test("case insensitive prefix: [o] and [q]", () => {
+  test("case insensitive prefix: [o] and [l]", () => {
     expect(resolveModelPrefix("[o] hello").model).toBe(OPUS_MODEL);
-    expect(resolveModelPrefix("[q] hello").model).toBe(LOCAL_MODEL_TOKEN);
+    expect(resolveModelPrefix("[l] hello").model).toBe(LOCAL_MODEL_TOKEN);
   });
 
   test("prefix with multiple spaces still strips cleanly", () => {
@@ -59,7 +59,7 @@ describe("resolveModelPrefix", () => {
   test("no prefix + agentDefault='local' → local token", () => {
     const r = resolveModelPrefix("hello", "local");
     expect(r.model).toBe(LOCAL_MODEL_TOKEN);
-    expect(r.label).toBe("Qwen");
+    expect(r.label).toBe("Local");
   });
 
   test("no prefix + agentDefault='sonnet' → Sonnet", () => {
@@ -94,8 +94,8 @@ describe("resolveModelPrefix", () => {
     expect(r.text).toBe("arch review");
   });
 
-  test("[Q] prefix overrides sonnet agentDefault", () => {
-    const r = resolveModelPrefix("[Q] private query", "sonnet");
+  test("[L] prefix overrides sonnet agentDefault", () => {
+    const r = resolveModelPrefix("[L] private query", "sonnet");
     expect(r.model).toBe(LOCAL_MODEL_TOKEN);
   });
 

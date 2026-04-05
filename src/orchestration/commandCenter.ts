@@ -76,7 +76,7 @@ export async function orchestrateMessage(
   chatId: number,
   threadId: number | null,
 ): Promise<void> {
-  // Strip model prefix before classification so [O]/[H]/[Q] doesn't confuse intent routing.
+  // Strip model prefix before classification so [O]/[H]/[L] doesn't confuse intent routing.
   // The FULL original text (including prefix) flows to the dispatch runner so the target
   // agent's processTextMessage() can call resolveModelPrefix() and honour the choice.
   const { label: modelLabel, text: classifyText } = resolveModelPrefix(text);

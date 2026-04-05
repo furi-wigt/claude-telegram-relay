@@ -17,7 +17,7 @@ const AGENT_DEFAULT_MODEL_MAP: Record<string, { model: string; label: string }> 
   opus:   { model: OPUS_MODEL,        label: "Opus"   },
   sonnet: { model: SONNET_MODEL,      label: "Sonnet" },
   haiku:  { model: HAIKU_MODEL,       label: "Haiku"  },
-  local:  { model: LOCAL_MODEL_TOKEN, label: "Qwen"   },
+  local:  { model: LOCAL_MODEL_TOKEN, label: "Local"  },
 };
 
 export interface ResolvedModel {
@@ -29,20 +29,20 @@ export interface ResolvedModel {
 /**
  * Parse an optional model-selection prefix from user text.
  *
- * Prefixes: `[O]` → Opus, `[H]` → Haiku, `[Q]` → local Qwen.
+ * Prefixes: `[O]` → Opus, `[H]` → Haiku, `[L]` → local LM Studio.
  * No prefix: use `agentDefault` shorthand, else Sonnet.
  *
  * @param text         - Raw user message text.
  * @param agentDefault - Agent's defaultModel: "opus"|"sonnet"|"haiku"|"local".
  */
 export function resolveModelPrefix(text: string, agentDefault?: string): ResolvedModel {
-  const m = text.match(/^\[([OHQ])\]\s*/i);
+  const m = text.match(/^\[([OHL])\]\s*/i);
   if (m) {
     const tag = m[1].toUpperCase();
     const stripped = text.slice(m[0].length);
     if (tag === "O") return { model: OPUS_MODEL,        label: "Opus",   text: stripped };
     if (tag === "H") return { model: HAIKU_MODEL,       label: "Haiku",  text: stripped };
-    if (tag === "Q") return { model: LOCAL_MODEL_TOKEN, label: "Qwen",   text: stripped };
+    if (tag === "L") return { model: LOCAL_MODEL_TOKEN, label: "Local",  text: stripped };
   }
   const def = agentDefault ? AGENT_DEFAULT_MODEL_MAP[agentDefault.toLowerCase()] : undefined;
   return def
