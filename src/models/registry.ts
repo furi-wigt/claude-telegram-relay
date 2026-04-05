@@ -141,5 +141,59 @@ export class ModelRegistry {
     });
   }
 
-  // chatStream(), embed(), embedBatch(), health() added in Tasks 6-7
+  /**
+   * Streaming chat with buffered cascade.
+   * Buffers each provider's full response; yields only after clean commit.
+   * On mid-stream failure: discards buffer, falls back to next provider.
+   */
+  async *chatStream(slot: ChatSlot, messages: ChatMessage[], opts: ChatOptions = {}): AsyncGenerator<string> {
+    const providerIds = this.config.slots[slot];
+    const attempts: CascadeAttempt[] = [];
+
+    for (const id of providerIds) {
+      const provider = this.providerMap.get(id)!;
+      const breaker = this.getBreaker(id);
+
+      if (breaker?.isOpen()) {
+        attempts.push({ providerId: id, error: "circuit open" });
+        continue;
+      }
+
+      const healthy = await this.checkProviderHealth(provider);
+      if (!healthy) {
+        attempts.push({ providerId: id, error: "health check failed" });
+        console.log(`[registry] chatStream skip ${id} (unhealthy) for slot ${slot}`);
+        continue;
+      }
+
+      try {
+        const buffer: string[] = [];
+        if (provider.type === "openai-compat") {
+          const mergedOpts: ChatOptions = { timeoutMs: provider.timeoutMs, chunkTimeoutMs: provider.chunkTimeoutMs, ...opts };
+          for await (const chunk of oaiClient.chatStream(provider.url!, provider.model, messages, mergedOpts)) {
+            buffer.push(chunk);
+          }
+        } else {
+          // Claude: claudeText is non-streaming, buffer the full result
+          const prompt = messages.map(m => `${m.role}: ${m.content}`).join("\n\n");
+          const result = await claudeText(prompt, { model: provider.model, timeoutMs: provider.timeoutMs });
+          buffer.push(result);
+        }
+
+        // Provider committed cleanly — yield buffer to caller
+        breaker?.recordSuccess();
+        for (const chunk of buffer) yield chunk;
+        return;
+      } catch (err) {
+        const error = err instanceof Error ? err.message : String(err);
+        breaker?.recordFailure();
+        attempts.push({ providerId: id, error });
+        console.log(`[registry] chatStream ${id} failed mid-stream (${error}), trying next for slot ${slot}`);
+      }
+    }
+
+    throw new CascadeExhaustedError(slot, attempts);
+  }
+
+  // embed(), embedBatch(), health() added in Task 7
 }
