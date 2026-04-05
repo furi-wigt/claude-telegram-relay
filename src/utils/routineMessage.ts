@@ -78,15 +78,36 @@ export async function sendAndRecord(
   // Converting first then chunking via chunkMessage() can split inside an HTML tag
   // (e.g. mid-<b>), causing Telegram to 400-reject the chunk and silently fall back to
   // plain text — which exposes raw HTML entities like &lt;slug&gt; literally.
+  //
+  // OVERFLOW GUARD: markdown → HTML expansion (### → <b><u>…</u></b>, **→<b>…</b>) can
+  // push a 3800-char markdown chunk past Telegram's 4096-char HTML limit. When that
+  // happens, sendToGroup→chunkMessage splits the HTML at newline boundaries which may
+  // land inside a tag, producing malformed HTML that Telegram rejects. The rejected
+  // message falls back to plain text and shows raw <b>…</b> tags literally.
+  // Fix: after conversion, detect overflow and fall back to tag-stripped plain text
+  // (identical to relay.ts sendResponse behaviour).
   const MARKDOWN_SPLIT_LEN = 3800;
+  const TELEGRAM_MAX = 4096;
 
   // 1. Send to Telegram first (don't block on storage)
   if (!options.parseMode) {
     const chunks = splitMarkdown(message, MARKDOWN_SPLIT_LEN);
     for (let i = 0; i < chunks.length; i++) {
-      // Attach reply_markup only to the last chunk
       const markup = i === chunks.length - 1 ? options.reply_markup : undefined;
-      await sendToGroup(chatId, markdownToHtml(chunks[i]), { parseMode: "HTML", topicId: options.topicId, reply_markup: markup });
+      const html = markdownToHtml(chunks[i]);
+
+      if (html.length > TELEGRAM_MAX) {
+        // HTML expanded past 4096 — strip tags and send as plain-text sub-chunks.
+        const plain = html.replace(/<[^>]+>/g, "");
+        const subChunks: string[] = [];
+        for (let j = 0; j < plain.length; j += TELEGRAM_MAX) subChunks.push(plain.slice(j, j + TELEGRAM_MAX));
+        for (let k = 0; k < subChunks.length; k++) {
+          const isLastSub = k === subChunks.length - 1;
+          await sendToGroup(chatId, subChunks[k], { topicId: options.topicId, reply_markup: isLastSub ? markup : undefined });
+        }
+      } else {
+        await sendToGroup(chatId, html, { parseMode: "HTML", topicId: options.topicId, reply_markup: markup });
+      }
     }
   } else {
     await sendToGroup(chatId, message, { parseMode: options.parseMode, topicId: options.topicId, reply_markup: options.reply_markup });
