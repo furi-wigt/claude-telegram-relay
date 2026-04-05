@@ -649,7 +649,15 @@ export async function runCleanup(
     `Starting memory cleanup (dryRun=${config.dryRun}, threshold=${config.similarityThreshold}, maxDeletes=${config.maxDeletes})`
   );
 
-  await ensureCollection("memory");
+  // Probe Qdrant — if offline, skip semantic dedup but still run SQLite-only passes.
+  let qdrantAvailable = true;
+  try {
+    await ensureCollection("memory");
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[memory-cleanup] Qdrant unavailable — skipping semantic dedup: ${msg}`);
+    qdrantAvailable = false;
+  }
 
   const completedGoalsArchived = archiveCompletedGoals(config.dryRun);
   console.log(`Completed goals archived: ${completedGoalsArchived}`);
@@ -669,13 +677,17 @@ export async function runCleanup(
     }
   }
 
-  const grouped = groupItems(items);
   const allClusters: DuplicateCluster[] = [];
 
-  for (const [groupKey, groupItems_] of grouped) {
-    console.log(`Clustering group "${groupKey}" (${groupItems_.length} items)`);
-    const clusters = await clusterDuplicates(groupItems_, config);
-    allClusters.push(...clusters);
+  if (qdrantAvailable) {
+    const grouped = groupItems(items);
+    for (const [groupKey, groupItems_] of grouped) {
+      console.log(`Clustering group "${groupKey}" (${groupItems_.length} items)`);
+      const clusters = await clusterDuplicates(groupItems_, config);
+      allClusters.push(...clusters);
+    }
+  } else {
+    console.log("[memory-cleanup] Semantic dedup skipped (Qdrant offline)");
   }
 
   const deletions: DeletionRecord[] = [];
