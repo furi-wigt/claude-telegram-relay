@@ -1,5 +1,19 @@
 # Changelog
 
+## [Unreleased] / 2026-04-05 — Dynamic Dispatch Topics
+
+### Added
+- **dispatchEngine**: Dynamic forum topic creation per dispatch session. Each agent group gets a dedicated Telegram forum topic per session, providing visual separation and traceability. Topics are cached per `(sessionId, chatId)` — no duplicate creation within a session.
+- **dispatchEngine**: `setTopicCreator()` and `setDispatchNotifier()` DI slots — registered at startup by relay.ts using `bot.api.createForumTopic()` and `bot.api.sendMessage()`.
+- **dispatchEngine**: Dispatch header messages (`📨 Dispatched from Command Center`) now posted to agent groups in the blackboard dispatch path (previously only in single-agent dispatch).
+- **dispatchEngine**: Review and security gate dispatches now create their own topic in the reviewer's group with descriptive titles.
+- **relay.ts**: Registers topic creator and notifier at startup.
+- **tests**: 6 new tests covering topic caching, graceful fallback, call ordering, and cache cleanup.
+
+### Changed
+- **dispatchEngine**: `executeBlackboardDispatch()` wraps inner logic in try-finally to guarantee topic cache cleanup even on unexpected errors.
+- **dispatchEngine**: Runner now receives dynamically created `topicId` instead of static `agent.topicId` from config.
+
 ## [Unreleased] / 2026-04-05 — Mesh Gaps Tier 1+2: Correctness, Observability, Resilience
 
 ### Added

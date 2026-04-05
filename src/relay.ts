@@ -44,7 +44,7 @@ import { learnTopicName, learnChatName, getTopicName } from "./utils/chatNames.t
 import { isMlxAvailable } from "./mlx/index.ts";
 import { callRoutineModel } from "./routines/routineModel.ts";
 import { getAgentForChat, autoDiscoverGroup, loadGroupMappings } from "./routing/groupRouter.ts";
-import { isCommandCenter, orchestrateMessage, registerOrchestrationCallbacks, setDispatchRunner, setInterviewStateMachine, handleOrchestrationComplete, parseFinalCallback, handleFinalAction } from "./orchestration/index.ts";
+import { isCommandCenter, orchestrateMessage, registerOrchestrationCallbacks, setDispatchRunner, setTopicCreator, setDispatchNotifier, setInterviewStateMachine, handleOrchestrationComplete, parseFinalCallback, handleFinalAction } from "./orchestration/index.ts";
 // Router removed: always use Sonnet for simplicity and predictable latency
 import { loadSession as loadGroupSession, updateSessionIdGuarded, initSessions, loadAllSessions, saveSession, isResumeReliable, didResumeFail, lockActiveCwd, resetSession, getSessionSince } from "./session/groupSessions.ts";
 import { buildAgentPrompt } from "./agents/promptBuilder.ts";
@@ -691,6 +691,27 @@ setDispatchRunner(async (chatId: number, topicId: number | null, text: string) =
 
   await processTextMessage(chatId, topicId, text, syntheticCtx);
   return lastAssistantResponses.get(streamKey(chatId, topicId))?.join("") ?? null;
+});
+
+// Register topic creator — dispatch engine creates forum topics for session visibility
+setTopicCreator(async (chatId: number, title: string): Promise<number | null> => {
+  try {
+    const topic = await bot.api.createForumTopic(chatId, title);
+    return topic.message_thread_id;
+  } catch (err) {
+    // Non-forum groups will throw — expected, fall back to root chat
+    console.warn(`[relay] createForumTopic failed for chat ${chatId}:`, err instanceof Error ? err.message : err);
+    return null;
+  }
+});
+
+// Register dispatch notifier — sends header messages to agent groups
+setDispatchNotifier(async (chatId: number, topicId: number | null, text: string): Promise<void> => {
+  await bot.api.sendMessage(chatId, text, {
+    message_thread_id: topicId ?? undefined,
+  }).catch((err) => {
+    console.warn(`[relay] dispatch notifier failed for chat ${chatId}:`, err instanceof Error ? err.message : err);
+  });
 });
 
 registerCommands(bot, {

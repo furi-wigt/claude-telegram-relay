@@ -144,6 +144,70 @@ export function getDispatchRunner(): DispatchRunner | null {
   return _dispatchRunner;
 }
 
+// ── Topic Creator & Notifier (dependency injection) ─────────────────────────
+
+/** Creates a forum topic in a Telegram group. Returns the topic thread ID, or null on failure. */
+export type TopicCreator = (chatId: number, title: string) => Promise<number | null>;
+let _topicCreator: TopicCreator | null = null;
+
+export function setTopicCreator(fn: TopicCreator): void {
+  _topicCreator = fn;
+}
+
+/** Sends a notification message to a Telegram group/topic (fire-and-forget). */
+export type DispatchNotifier = (chatId: number, topicId: number | null, text: string) => Promise<void>;
+let _dispatchNotifier: DispatchNotifier | null = null;
+
+export function setDispatchNotifier(fn: DispatchNotifier): void {
+  _dispatchNotifier = fn;
+}
+
+// ── Session Topic Cache ─────────────────────────────────────────────────────
+
+/** Cache: `${sessionId}:${chatId}` → topicId. Prevents duplicate topic creation within a session. */
+const _sessionTopicCache = new Map<string, number>();
+
+/** Exported for testing */
+export function _getSessionTopicCache(): Map<string, number> {
+  return _sessionTopicCache;
+}
+
+/**
+ * Get or create a forum topic for an agent in a dispatch session.
+ * - Returns cached topicId if already created for this (session, chatId)
+ * - Falls back to null (root chat) if creator not set or creation fails
+ */
+async function getOrCreateTopic(
+  sessionId: string,
+  chatId: number,
+  title: string,
+): Promise<number | null> {
+  if (!chatId || !_topicCreator) return null;
+
+  const cacheKey = `${sessionId}:${chatId}`;
+  const cached = _sessionTopicCache.get(cacheKey);
+  if (cached !== undefined) return cached;
+
+  try {
+    const topicId = await _topicCreator(chatId, title);
+    if (topicId != null) {
+      _sessionTopicCache.set(cacheKey, topicId);
+    }
+    return topicId;
+  } catch (err) {
+    console.warn(`[dispatchEngine] Failed to create topic in chat ${chatId}:`, err instanceof Error ? err.message : err);
+    return null;
+  }
+}
+
+/** Clear cached topics for a session (call on session completion). */
+function clearSessionTopics(sessionId: string): void {
+  const prefix = `${sessionId}:`;
+  for (const key of _sessionTopicCache.keys()) {
+    if (key.startsWith(prefix)) _sessionTopicCache.delete(key);
+  }
+}
+
 /**
  * Execute a dispatch using the blackboard loop.
  *
@@ -164,6 +228,19 @@ export async function executeBlackboardDispatch(
 
   // 1. Create session + input record
   const session = createSession(db, { dispatchId: plan.dispatchId });
+
+  // Safety: guarantee topic cache cleanup even on unexpected throws
+  try { return await _executeBlackboardDispatchInner(db, plan, runner, session, startTime); }
+  finally { clearSessionTopics(session.id); }
+}
+
+async function _executeBlackboardDispatchInner(
+  db: Database,
+  plan: DispatchPlan,
+  runner: DispatchRunner,
+  session: ReturnType<typeof createSession>,
+  startTime: number,
+): Promise<{ success: boolean; response: string; durationMs: number; sessionId: string; aggregated?: AggregatedResult }> {
 
   writeRecord(db, {
     sessionId: session.id,
@@ -267,15 +344,23 @@ export async function executeBlackboardDispatch(
       // Mark task as active
       updateRecordStatus(db, trigger.taskRecordId, "active");
 
-      // Get chatId/topicId from AGENTS config (may be null for tests — runner handles routing)
+      // Get chatId from AGENTS config (may be null for tests — runner handles routing)
       const agentConfig = AGENTS[trigger.agentId];
       const chatId = agentConfig?.chatId ?? 0;
-      const topicId = agentConfig?.topicId ?? null;
 
       // Get the task description from the record
       const taskRec = db.query("SELECT content FROM bb_records WHERE id = ?").get(trigger.taskRecordId) as { content: string } | null;
       const taskContent = taskRec ? JSON.parse(taskRec.content) as BbTaskContent : null;
       const taskText = taskContent?.taskDescription ?? plan.userMessage;
+
+      // Dynamic topic: create a forum topic per (session, agent group) for visual separation
+      const topicTitle = `${truncate(plan.userMessage, 60)} — ${agentConfig?.shortName ?? trigger.agentId}`;
+      const topicId = chatId ? await getOrCreateTopic(session.id, chatId, topicTitle) : null;
+
+      // Dispatch header — visible in agent group so user can trace the session
+      if (chatId && _dispatchNotifier) {
+        await _dispatchNotifier(chatId, topicId, `\u{1F4E8} *Dispatched from Command Center*\n\n${truncate(taskText, 500)}`).catch(() => {});
+      }
 
       // Dispatch to agent — catch throws so the loop continues to FINALIZE
       let response: string | null = null;
@@ -303,10 +388,16 @@ export async function executeBlackboardDispatch(
         // Review loop — catch throws so artifact dispatch is not interrupted
         const reviewReq = buildReviewRequest(db, session.id, artifactRecord.id, round + 1);
         if (reviewReq) {
-          const agentConfig = AGENTS[REVIEWER_AGENT];
-          if (agentConfig?.chatId && runner) {
+          const reviewerConfig = AGENTS[REVIEWER_AGENT];
+          if (reviewerConfig?.chatId && runner) {
+            const reviewChatId = reviewerConfig.chatId;
+            const reviewTopicTitle = `${truncate(plan.userMessage, 60)} — Review`;
+            const reviewTopicId = await getOrCreateTopic(session.id, reviewChatId, reviewTopicTitle);
+            if (_dispatchNotifier) {
+              await _dispatchNotifier(reviewChatId, reviewTopicId, `\u{1F50D} *Review requested*\n\nArtifact from ${trigger.agentId}`).catch(() => {});
+            }
             try {
-              const reviewResponse = await runner(agentConfig.chatId, agentConfig.topicId ?? null, reviewReq.prompt);
+              const reviewResponse = await runner(reviewChatId, reviewTopicId, reviewReq.prompt);
               if (reviewResponse) {
                 const verdict = parseReviewVerdict(reviewResponse);
                 recordReviewVerdict(db, {
@@ -330,8 +421,14 @@ export async function executeBlackboardDispatch(
         if (securityReq) {
           const secAgentConfig = AGENTS[SECURITY_AGENT];
           if (secAgentConfig?.chatId && runner) {
+            const secChatId = secAgentConfig.chatId;
+            const secTopicTitle = `${truncate(plan.userMessage, 60)} — Security Review`;
+            const secTopicId = await getOrCreateTopic(session.id, secChatId, secTopicTitle);
+            if (_dispatchNotifier) {
+              await _dispatchNotifier(secChatId, secTopicId, `\u{1F6E1}\uFE0F *Security review requested*\n\nArtifact from ${trigger.agentId}`).catch(() => {});
+            }
             try {
-              const securityResponse = await runner(secAgentConfig.chatId, secAgentConfig.topicId ?? null, securityReq.prompt);
+              const securityResponse = await runner(secChatId, secTopicId, securityReq.prompt);
               if (securityResponse) {
                 const verdict = parseReviewVerdict(securityResponse);
                 recordReviewVerdict(db, {
