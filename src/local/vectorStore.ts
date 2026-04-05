@@ -5,9 +5,17 @@
 import { QdrantClient } from "@qdrant/js-client-rest";
 
 const QDRANT_URL = process.env.QDRANT_URL || "http://localhost:6333";
-const BLACKBOARD_BLACKBOARD_VECTOR_DIM = 1024; // placeholder for blackboard (stores tags, not real embeddings)
 
 export type CollectionName = "memory" | "messages" | "documents" | "summaries" | "blackboard";
+
+/** Explicit vector dimensions per collection — prevents silent undefined-ref bugs on new additions. */
+const COLLECTION_DIMENSIONS: Record<CollectionName, number> = {
+  memory: 1024,
+  messages: 1024,
+  documents: 1024,
+  summaries: 1024,
+  blackboard: 1024, // keyword/tag space — no real embeddings, but Qdrant requires a vector config
+};
 
 let _client: QdrantClient | null = null;
 
@@ -28,7 +36,7 @@ export async function ensureCollection(name: CollectionName): Promise<void> {
     // Only create if collection doesn't exist; re-throw other errors (e.g. network)
     try {
       await client.createCollection(name, {
-        vectors: { size: BLACKBOARD_VECTOR_DIM, distance: "Cosine" },
+        vectors: { size: COLLECTION_DIMENSIONS[name], distance: "Cosine" },
       });
     } catch (createErr) {
       throw new Error(`Failed to ensure Qdrant collection "${name}": ${createErr}`);
