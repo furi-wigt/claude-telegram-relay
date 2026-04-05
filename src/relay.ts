@@ -684,11 +684,21 @@ setDispatchRunner(async (chatId: number, topicId: number | null, text: string) =
       bot.api.sendChatAction(chatId, action as Parameters<typeof bot.api.sendChatAction>[1], {
         message_thread_id: topicId ?? undefined,
       }).catch(() => {}),
-    reply: (replyText: string, other?: Record<string, unknown>) =>
-      bot.api.sendMessage(chatId, replyText, {
-        message_thread_id: topicId ?? undefined,
-        ...(other ?? {}),
-      }),
+    reply: async (replyText: string, other?: Record<string, unknown>) => {
+      try {
+        return await bot.api.sendMessage(chatId, replyText, {
+          message_thread_id: topicId ?? undefined,
+          ...(other ?? {}),
+        });
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        if (errMsg.includes("message thread not found") && topicId != null) {
+          console.warn(`[relay] dispatchRunner reply: thread ${topicId} not found — retrying without thread`);
+          return bot.api.sendMessage(chatId, replyText, { ...(other ?? {}) });
+        }
+        throw err;
+      }
+    },
     chat: { id: chatId },
     message: { message_thread_id: topicId ?? undefined },
     from: { id: allowedUserId },

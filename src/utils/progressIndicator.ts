@@ -249,8 +249,29 @@ export class ProgressIndicator {
         });
       }
     } catch (err) {
-      // Failed to send — maybe chat is unavailable. Give up silently.
-      console.debug(`[indicator] sendInitialMessage failed: ${err instanceof Error ? err.message : String(err)}`);
+      const errMsg = err instanceof Error ? err.message : String(err);
+      console.warn(`[indicator] sendInitialMessage failed: ${errMsg}`);
+      // Dead thread — retry without thread_id so the indicator lands in root chat
+      if (errMsg.includes("message thread not found") && this.threadId != null) {
+        console.warn(`[indicator] thread ${this.threadId} not found — retrying without thread`);
+        this.threadId = null;
+        try {
+          const msg2 = await sendBot.api.sendMessage(sendChatId, this.buildText(), {
+            ...(this.cancelKey != null && {
+              reply_markup: {
+                inline_keyboard: [[
+                  { text: "\u2716 Cancel", callback_data: `cancel:${this.cancelKey}` },
+                ]],
+              },
+            }),
+          });
+          this.messageId = msg2.message_id;
+          console.debug(`[indicator] messageId set (fallback root): ${this.messageId}`);
+          this.onMessageId?.(msg2.message_id);
+        } catch (retryErr) {
+          console.warn(`[indicator] sendInitialMessage fallback also failed: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`);
+        }
+      }
     }
   }
 
