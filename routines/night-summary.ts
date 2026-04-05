@@ -44,7 +44,7 @@ const NIGHT_GROUP_KEY = resolveNightGroupKey();
 import { USER_NAME, USER_TIMEZONE } from "../src/config/userConfig.ts";
 import { shouldSkipRecently, markRanToday } from "../src/routines/runOnceGuard.ts";
 import { getPm2LogsDir } from "../config/observability.ts";
-import { getMlxModel } from "../src/mlx/client.ts";
+import { initRegistry } from "../src/models/index.ts";
 import { getTodaySessionsWithMessages } from "../src/memory/sessionGrouper.ts";
 import { detectCorrections } from "../src/memory/correctionDetector.ts";
 import {
@@ -331,9 +331,7 @@ export function formatSummary(
   lines.push("");
   lines.push("---");
 
-  const providerLabel = provider === "local"
-    ? getMlxModel().split("/").pop() ?? "MLX"
-    : "Unknown";
+  const providerLabel = provider === "local" ? "Local LLM" : "Unknown";
   lines.push(`*Powered by ${providerLabel}. Reply to reflect further.*`);
 
   return lines.join("\n");
@@ -619,7 +617,10 @@ async function buildSummary(): Promise<{ summary: string; provider: "local" | nu
 // ============================================================
 
 async function main() {
-  console.log("Running Night Summary (Local LLM — MLX)...");
+  console.log("Running Night Summary (Model Registry)...");
+
+  // Initialize model registry for standalone routine execution
+  initRegistry();
 
   if (shouldSkipRecently(LAST_RUN_FILE, 2)) {
     console.log("[night-summary] Already ran within the last 2 hours, skipping.");

@@ -17,7 +17,7 @@ const RECENT_THRESHOLD_MS = 30 * 60 * 1000;      // 30 minutes = "recent"
 const STALE_THRESHOLD_MS = 4 * 60 * 60 * 1000;   // 4 hours = definitely stale
 const RELEVANCE_THRESHOLD = 0.25;                  // below this = suggest new context
 
-import { callMlxGenerate, getMlxBaseUrl } from "../mlx/index.ts";
+import { getRegistry } from "../models/index.ts";
 const LLM_RELEVANCE_TIMEOUT_MS = 4000; // hard cutoff — fallback if exceeded
 
 // Stop words to ignore during keyword extraction
@@ -165,7 +165,7 @@ export async function checkContextRelevanceWithMLX(
   const prompt = buildRelevancePrompt(newMessage, sessionContext);
 
   try {
-    const raw = (await callMlxGenerate(prompt, {
+    const raw = (await getRegistry().chat("classify", [{ role: "user", content: prompt }], {
       timeoutMs: LLM_RELEVANCE_TIMEOUT_MS,
       maxTokens: 5,
     })).trim().toUpperCase();

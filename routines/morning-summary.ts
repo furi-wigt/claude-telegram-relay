@@ -45,6 +45,7 @@ function resolveMorningGroupKey(): string | undefined {
 const MORNING_GROUP_KEY = resolveMorningGroupKey();
 import { claudeText } from "../src/claude-process.ts";
 import { callRoutineModel } from "../src/routines/routineModel.ts";
+import { initRegistry } from "../src/models/index.ts";
 import { createWeatherClient } from "../integrations/weather/index.ts";
 import {
   createAppleCalendarClient,
@@ -527,6 +528,7 @@ export const _deps = {
 
 async function main() {
   console.log("Running Enhanced Morning Summary...");
+  initRegistry();
 
   if (shouldSkipToday(LAST_RUN_FILE)) {
     console.log("[morning-summary] Already ran today, skipping.");

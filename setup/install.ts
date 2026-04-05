@@ -142,6 +142,28 @@ function seedDefaultAgents(): void {
 }
 
 /**
+ * Copy models.example.json to ~/.claude-relay/models.json on first run.
+ * No-clobber — existing user file is never overwritten.
+ */
+function seedDefaultModels(): void {
+  const src = join(PROJECT_ROOT, "config", "models.example.json");
+  const dest = join(RELAY_USER_DIR, "models.json");
+
+  if (!existsSync(src)) {
+    console.log(`  ${WARN} config/models.example.json not found — skipping`);
+    return;
+  }
+
+  if (existsSync(dest)) {
+    console.log(`  ${PASS} ~/.claude-relay/models.json ${dim("(user copy exists, skipped)")}`);
+  } else {
+    copyFileSync(src, dest);
+    console.log(`  ${PASS} Copied models.json → ~/.claude-relay/models.json`);
+    console.log(`      ${dim("Edit ~/.claude-relay/models.json to configure your model providers")}`);
+  }
+}
+
+/**
  * Copy default prompts from config/prompts/ to ~/.claude-relay/prompts/
  * using no-clobber semantics — existing user files are never overwritten.
  */
@@ -230,9 +252,10 @@ async function main() {
   console.log(`\n${cyan("  [3/5] Directories")}`);
   createDirs();
 
-  // 4. Default config files (agents + prompts)
+  // 4. Default config files (agents + models + prompts)
   console.log(`\n${cyan("  [4/5] Default Config")}`);
   seedDefaultAgents();
+  seedDefaultModels();
   seedDefaultPrompts();
 
   // 5. Environment

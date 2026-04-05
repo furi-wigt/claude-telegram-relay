@@ -10,6 +10,7 @@ import { describe, it, expect, beforeAll, afterAll, setDefaultTimeout } from "bu
 // Ollama first-call loads model — can take 30s+
 setDefaultTimeout(30_000);
 import { localEmbed, localEmbedBatch, checkEmbedHealth } from "../../src/local/embed";
+import { ModelRegistry } from "../../src/models/registry";
 import {
   initCollections,
   upsert,
@@ -63,6 +64,22 @@ try {
 
 const describeOllama = ollamaAvailable ? describe : describe.skip;
 const describeQdrant = qdrantAvailable && ollamaAvailable ? describe : describe.skip;
+
+// Initialize the ModelRegistry singleton so embed.ts delegates correctly.
+// Uses whatever embed server was found available above.
+if (ollamaAvailable) {
+  const embedUrl = process.env.EMBED_URL ?? "http://localhost:11434";
+  const testRegistry = ModelRegistry.fromConfig({
+    providers: [
+      { id: "test-embed", type: "openai-compat", url: embedUrl, model: "bge-m3", dimensions: 1024, timeoutMs: 30000 },
+      { id: "claude-haiku", type: "claude", model: "haiku" },
+    ],
+    slots: { routine: ["claude-haiku"], stm: ["claude-haiku"], ltm: ["claude-haiku"], classify: ["claude-haiku"], embed: ["test-embed"] },
+  });
+  // Inject into singleton for this test process
+  const registryModule = await import("../../src/models/index.ts");
+  (registryModule as any)._testSetRegistry(testRegistry);
+}
 
 describeOllama("Ollama BGE-M3 Embeddings", () => {
   it("should generate a 1024-dim vector", async () => {

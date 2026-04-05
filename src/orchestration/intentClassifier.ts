@@ -8,7 +8,8 @@
  * Complexity: O(1) MLX call (~200-400ms) + O(n) keyword fallback (n = agents x capabilities)
  */
 
-import { callMlxGenerate, isMlxAvailable } from "../mlx/client.ts";
+import { getRegistry } from "../models/index.ts";
+import type { ChatMessage } from "../models/types.ts";
 import { AGENTS, DEFAULT_AGENT, type AgentConfig } from "../agents/config.ts";
 import type { ClassificationResult } from "./types.ts";
 
@@ -83,30 +84,27 @@ export function detectCompound(message: string): boolean {
 /**
  * Classify a user message to determine which agent should handle it.
  *
- * Tries MLX first, falls back to keyword matching if MLX is unavailable or errors.
+ * Tries registry classify slot first, falls back to keyword matching on error.
  */
 export async function classifyIntent(message: string): Promise<ClassificationResult> {
   try {
-    const mlxAvailable = await isMlxAvailable();
-    if (mlxAvailable) {
-      return await classifyWithMlx(message);
-    }
+    return await classifyWithRegistry(message);
   } catch (err) {
     // AbortError = timeout; log one-liner instead of full DOMException dump
     const name = err instanceof DOMException ? err.name : "";
     if (name === "AbortError") {
-      console.warn("[intentClassifier] MLX timed out, using keyword fallback");
+      console.warn("[intentClassifier] classify model timed out, using keyword fallback");
     } else {
-      console.warn("[intentClassifier] MLX classification failed, using keyword fallback:", String(err));
+      console.warn("[intentClassifier] classify model failed, using keyword fallback:", String(err));
     }
   }
 
   return classifyWithKeywords(message);
 }
 
-// ── MLX Classification ──────────────────────────────────────────────────────
+// ── Registry Classification ─────────────────────────────────────────────────
 
-async function classifyWithMlx(message: string): Promise<ClassificationResult> {
+async function classifyWithRegistry(message: string): Promise<ClassificationResult> {
   const agents = getRoutableAgents();
   const agentList = agents
     .map((a) => `- ${a.id}: ${a.capabilities.join(", ")}`)
@@ -126,12 +124,13 @@ Rules:
 - confidence: 0.9+ for exact domain match, 0.6-0.8 for reasonable match, <0.6 if unsure
 - For general questions, small talk, or anything without a clear domain, ALWAYS use "operations-hub" with confidence 0.85`;
 
-  const raw = await callMlxGenerate(prompt, { maxTokens: 256, timeoutMs: 30_000 });
+  const messages: ChatMessage[] = [{ role: "user", content: prompt }];
+  const raw = await getRegistry().chat("classify", messages, { maxTokens: 256, label: "classify" });
 
-  // Extract JSON from response (MLX may wrap in markdown code blocks)
+  // Extract JSON from response (model may wrap in markdown code blocks)
   const jsonMatch = raw.match(/\{[\s\S]*\}/);
   if (!jsonMatch) {
-    console.warn("[intentClassifier] MLX returned non-JSON, falling back to keywords:", raw.slice(0, 200));
+    console.warn("[intentClassifier] classify model returned non-JSON, falling back to keywords:", raw.slice(0, 200));
     return classifyWithKeywords(message);
   }
 
@@ -141,24 +140,24 @@ Rules:
     // Validate primaryAgent exists
     const agentId = String(parsed.primaryAgent ?? "");
     if (!agents.some((a) => a.id === agentId)) {
-      console.warn(`[intentClassifier] MLX returned unknown agent "${agentId}", falling back`);
+      console.warn(`[intentClassifier] classify model returned unknown agent "${agentId}", falling back`);
       return classifyWithKeywords(message);
     }
 
-    // OR with heuristic — MLX may under-detect compound tasks
-    const mlxCompound = Boolean(parsed.isCompound);
+    // OR with heuristic — model may under-detect compound tasks
+    const modelCompound = Boolean(parsed.isCompound);
     const heuristicCompound = detectCompound(message);
 
     return {
       intent: String(parsed.intent ?? "general"),
       primaryAgent: agentId,
       topicHint: parsed.topicHint ? String(parsed.topicHint) : null,
-      isCompound: mlxCompound || heuristicCompound,
+      isCompound: modelCompound || heuristicCompound,
       confidence: Math.min(1, Math.max(0, Number(parsed.confidence ?? 0.5))),
-      reasoning: String(parsed.reasoning ?? "Classified by local model"),
+      reasoning: String(parsed.reasoning ?? "Classified by registry model"),
     };
   } catch (err) {
-    console.warn("[intentClassifier] Failed to parse MLX JSON:", err);
+    console.warn("[intentClassifier] Failed to parse classify model JSON:", err);
     return classifyWithKeywords(message);
   }
 }

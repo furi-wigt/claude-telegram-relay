@@ -14,6 +14,8 @@
 
 import { insertSummaryRecord, getRecentMessagesLocal, getConversationSummariesLocal, getMessageCountLocal } from "../local/storageBackend";
 import { getDb } from "../local/db";
+import { getRegistry } from "../models/index.ts";
+import type { ChatMessage } from "../models/types.ts";
 
 const VERBATIM_LIMIT = 20;
 const SUMMARIZE_CHUNK_SIZE = 20;
@@ -205,11 +207,8 @@ export async function summarizeOldMessages(
 
   let summary = "";
   try {
-    const { callRoutineModel } = await import("../routines/routineModel.ts");
-    summary = await callRoutineModel(summaryPrompt, {
-      label: "stm-summary",
-      timeoutMs: 30_000,
-    });
+    const messages: ChatMessage[] = [{ role: "user", content: summaryPrompt }];
+    summary = await getRegistry().chat("stm", messages, { label: "stm:summarize", maxTokens: 512, timeoutMs: 30_000 });
   } catch {
     // Fallback: simple concatenation
     summary = (messages as ConversationMessage[])

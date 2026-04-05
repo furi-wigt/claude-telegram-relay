@@ -53,6 +53,7 @@ import {
 import { fetchThingsTasks, type T3Task } from "../src/utils/t3Helper.ts";
 import { breakdownTasks, scanPendingTodos, formatAtomicTaskBlock, type AtomicTask } from "../src/utils/atomicBreakdown.ts";
 import { callRoutineModel } from "../src/routines/routineModel.ts";
+import { initRegistry } from "../src/models/index.ts";
 import { storeTaskSession, buildTaskKeyboardJSON } from "../src/callbacks/taskSuggestionHandler.ts";
 
 const STATE_FILE = process.env.CHECKIN_STATE_FILE || "/tmp/group-checkin-state.json";
@@ -387,6 +388,7 @@ async function buildTaskSuggestions(
 
 async function main() {
   console.log("[smart-checkin] Running...");
+  initRegistry();
 
   // Schedule guard — exit early if outside allowed hours
   if (!isWithinSchedule()) {

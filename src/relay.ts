@@ -41,7 +41,7 @@ import {
   getUserProfile,
 } from "./memory/longTermExtractor.ts";
 import { learnTopicName, learnChatName, getTopicName } from "./utils/chatNames.ts";
-import { isMlxAvailable } from "./mlx/index.ts";
+import { getRegistry } from "./models/index.ts";
 import { callRoutineModel } from "./routines/routineModel.ts";
 import { getAgentForChat, autoDiscoverGroup, loadGroupMappings } from "./routing/groupRouter.ts";
 import { isCommandCenter, orchestrateMessage, registerOrchestrationCallbacks, setDispatchRunner, setTopicCreator, setDispatchNotifier, setMeshNotifier, setInterviewStateMachine, handleOrchestrationComplete, parseFinalCallback, handleFinalAction } from "./orchestration/index.ts";
@@ -514,13 +514,18 @@ async function saveMessage(
   }
 }
 
-// Check fallback availability at startup
+// Check fallback availability at startup via model registry health
 let fallbackAvailable = false;
 {
-  fallbackAvailable = await isMlxAvailable();
-  if (fallbackAvailable) {
-    console.log("Fallback model available: MLX (Qwen3.5-9B)");
-  } else {
+  try {
+    const healthResults = await getRegistry().health();
+    fallbackAvailable = Object.values(healthResults).some(h => h.healthy);
+    if (fallbackAvailable) {
+      const healthyProviders = Object.entries(healthResults).filter(([, h]) => h.healthy).map(([id]) => id);
+      console.log(`Fallback model available: ${healthyProviders.join(", ")}`);
+    }
+  } catch { fallbackAvailable = false; }
+  if (!fallbackAvailable) {
     console.warn("MLX server not reachable. Claude will be used exclusively.");
   }
 }
@@ -2062,7 +2067,7 @@ async function processTextMessage(
     const callStart = Date.now();
     trace({ event: "claude_start", traceId, chatId, promptLength: enrichedPrompt.length, resume: !!session.sessionId, sessionId: session.sessionId });
 
-    // [Q] prefix or agent defaultModel="local" → skip Claude CLI, call local Qwen directly.
+    // [L] prefix or agent defaultModel="local" → skip Claude CLI, call local LM Studio directly.
     if (resolvedModel === LOCAL_MODEL_TOKEN) {
       try {
         void indicator.update("Using Qwen (local)…", { immediate: true });
@@ -2573,9 +2578,9 @@ function enqueuePhotoJob(
         const agent = getAgentForChat(chatId);
         const traceId = generateTraceId();
 
-        // Honour [O]/[H]/[Q] prefix in caption for Phase 2 (agent response).
+        // Honour [O]/[H]/[L] prefix in caption for Phase 2 (agent response).
         // Phase 1 (vision description) always uses Sonnet — it requires vision capability.
-        // [Q] is silently downgraded to Sonnet: local Qwen has no vision capability.
+        // [L] is silently downgraded to Sonnet: local LM Studio has no vision capability.
         const { model: rawPhotoModel, label: rawPhotoLabel, text: cleanCaption } = resolveModelPrefix(caption, agent.defaultModel);
         const resolvedModel = rawPhotoModel === LOCAL_MODEL_TOKEN ? SONNET_MODEL : rawPhotoModel;
         const resolvedLabel = rawPhotoModel === LOCAL_MODEL_TOKEN ? "Sonnet" : rawPhotoLabel;
@@ -3244,9 +3249,13 @@ if (_isEntry) {
   // loadAllSessions() must run before any /new command handler can touch the Map —
   // without it, resetSession() silently no-ops (sessions.get() returns undefined)
   // and /new fails to clear sessionId or messageCount.
-  // Initialize local storage (SQLite + Qdrant)
+  // Initialize model registry (loads ~/.claude-relay/models.json, throws if invalid)
+  const { initRegistry } = await import("./models/index.ts");
+  const registry = initRegistry();
+
+  // Initialize local storage (SQLite + Qdrant) using registry-derived embed config
   const { initLocalStorage } = await import("./local/storageBackend.ts");
-  await initLocalStorage();
+  await initLocalStorage(registry.embedCollectionSuffix(), registry.getEmbedDimensions());
 
   await initSessions();
   const loadedCount = await loadAllSessions();
