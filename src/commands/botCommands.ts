@@ -18,6 +18,7 @@
  */
 
 import { readFileSync } from "fs";
+import { homedir } from "os";
 import { basename } from "path";
 import { execFile, spawn } from "child_process";
 import { extractDocTitle } from "../utils/docTitle.ts";
@@ -270,9 +271,10 @@ export async function handleDocCommand(
       explicitTitle = combined.slice(pipeIdx + 3).trim();
     }
 
+    const resolvedPath = filePath.startsWith("~") ? homedir() + filePath.slice(1) : filePath;
     let content: string;
     try {
-      content = readFileFn(filePath);
+      content = readFileFn(resolvedPath);
     } catch {
       return `❌ Cannot read file: ${filePath}\n\nMake sure the path is absolute and the file exists.`;
     }

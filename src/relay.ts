@@ -630,13 +630,17 @@ bot.command("doc", async (ctx, next) => {
   const firstWord = args.split(" ")[0];
   if (firstWord !== "ingest") return next();
 
+  const titleArg = args.slice("ingest".length).trim(); // everything after "ingest"
+  // Path B: filepath provided (absolute or ~) → let handleDocCommand handle it
+  const firstToken = titleArg.split(/\s+/)[0];
+  if (firstToken.startsWith("/") || firstToken.startsWith("~")) return next();
+
   const chatId = ctx.chat?.id;
   const threadId = ctx.message?.message_thread_id ?? null;
   if (!chatId) return;
   // Local storage always available
 
   const key = streamKey(chatId, threadId);
-  const titleArg = args.slice("ingest".length).trim(); // everything after "ingest"
 
   // Path A: no file attached (pure text command) → enter await-content
   pendingIngestStates.set(key, makeIngestState(titleArg || undefined));
