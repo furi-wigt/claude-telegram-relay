@@ -69,24 +69,37 @@ export async function executeSingleDispatch(
   persistDispatch(plan);
   updateTaskStatus(plan.dispatchId, task.agentId, "dispatched");
 
-  // Send to agent group
+  // Send to agent group — track effectiveTopicId in case we fall back to root chat
   const dispatchText = `\u{1F4E8} *Dispatched from Command Center*\n\n${plan.userMessage}`;
   let agentMsgId: number | undefined;
+  let effectiveTopicId: number | null = (agent.meshTopicId ?? agent.topicId) ?? null;
   try {
     const sent = await bot.api.sendMessage(agent.chatId, dispatchText, {
-      message_thread_id: (agent.meshTopicId ?? agent.topicId) ?? undefined,
+      message_thread_id: effectiveTopicId ?? undefined,
     });
     agentMsgId = sent.message_id;
     updateTaskMessageId(plan.dispatchId, task.agentId, sent.message_id);
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
-    updateTaskStatus(plan.dispatchId, task.agentId, "failed", errMsg);
-    updateDispatchStatus(plan.dispatchId, "failed");
-    return {
-      success: false,
-      response: `Failed to send to ${agent.name}: ${errMsg}`,
-      durationMs: Date.now() - startTime,
-    };
+    if (errMsg.includes("message thread not found") && effectiveTopicId != null) {
+      // Stale thread — retry to root chat and continue dispatch without thread
+      console.warn(`[dispatchEngine] thread ${effectiveTopicId} not found for ${agent.name} — retrying without thread`);
+      effectiveTopicId = null;
+      try {
+        const sent = await bot.api.sendMessage(agent.chatId, dispatchText);
+        agentMsgId = sent.message_id;
+        updateTaskMessageId(plan.dispatchId, task.agentId, sent.message_id);
+      } catch (retryErr) {
+        const retryErrMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+        updateTaskStatus(plan.dispatchId, task.agentId, "failed", retryErrMsg);
+        updateDispatchStatus(plan.dispatchId, "failed");
+        return { success: false, response: `Failed to send to ${agent.name}: ${retryErrMsg}`, durationMs: Date.now() - startTime };
+      }
+    } else {
+      updateTaskStatus(plan.dispatchId, task.agentId, "failed", errMsg);
+      updateDispatchStatus(plan.dispatchId, "failed");
+      return { success: false, response: `Failed to send to ${agent.name}: ${errMsg}`, durationMs: Date.now() - startTime };
+    }
   }
 
   // Post "dispatched" status to CC
@@ -96,14 +109,13 @@ export async function executeSingleDispatch(
   }).catch(() => {});
 
   // Directly invoke the agent's processing pipeline — bypasses Telegram API roundtrip.
-  // The runner (registered at startup by relay.ts) calls processTextMessage and returns
-  // the agent's response text. The agent's reply is still visible in the agent group.
+  // Use effectiveTopicId (may have been corrected to null on dead-thread fallback).
   updateTaskStatus(plan.dispatchId, task.agentId, "in_progress");
   updateDispatchStatus(plan.dispatchId, "in_progress");
 
   let response: string | null = null;
   if (_dispatchRunner) {
-    response = await _dispatchRunner(agent.chatId, (agent.meshTopicId ?? agent.topicId) ?? null, plan.userMessage);
+    response = await _dispatchRunner(agent.chatId, effectiveTopicId, plan.userMessage);
   } else {
     console.error("[dispatchEngine] No dispatch runner registered — falling back to timeout");
   }
