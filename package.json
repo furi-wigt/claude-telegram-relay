@@ -7,7 +7,6 @@
     "dev": "bun run --watch src/relay.ts",
     "setup": "bun run setup/install.ts",
     "test:telegram": "bun run setup/test-telegram.ts",
-
     "test:voice": "bun run setup/test-voice.ts",
     "test:fallback": "bun run setup/test-fallback.ts",
     "test:groups": "bun run setup/test-groups.ts",
@@ -28,7 +27,6 @@
     "@azure/msal-node": "^5.0.4",
     "@microsoft/microsoft-graph-client": "^3.0.7",
     "@qdrant/js-client-rest": "^1.17.0",
-
     "grammy": "^1.21.1",
     "groq-sdk": "^0.8.0",
     "isomorphic-fetch": "^3.0.0",
@@ -37,6 +35,7 @@
     "yahoo-finance2": "^3.13.0"
   },
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "pptxgenjs": "^4.0.1"
   }
 }
