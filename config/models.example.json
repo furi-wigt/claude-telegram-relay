@@ -1,0 +1,62 @@
+{
+  "_comment": "Copy this to ~/.claude-relay/models.json and configure for your setup.",
+  "providers": [
+    {
+      "_comment": "LM Studio chat model — change 'model' to match your loaded model name",
+      "id": "lms-chat",
+      "type": "openai-compat",
+      "url": "http://localhost:1234",
+      "model": "qwen2.5-7b-instruct",
+      "timeoutMs": 120000,
+      "chunkTimeoutMs": 30000,
+      "maxConcurrent": 1,
+      "circuitBreaker": { "enabled": true, "failureThreshold": 3, "resetAfterMs": 60000 }
+    },
+    {
+      "_comment": "LM Studio embed model — must be simultaneously loaded in LM Studio UI",
+      "id": "lms-embed",
+      "type": "openai-compat",
+      "url": "http://localhost:1234",
+      "model": "text-embedding-nomic-embed-text-v1.5",
+      "dimensions": 768,
+      "timeoutMs": 15000
+    },
+    {
+      "_comment": "MLX chat (Apple Silicon) — run: mlx serve",
+      "id": "mlx-chat",
+      "type": "openai-compat",
+      "url": "http://localhost:8800",
+      "model": "mlx-community/Qwen3.5-9B-MLX-4bit",
+      "timeoutMs": 120000,
+      "chunkTimeoutMs": 30000,
+      "maxConcurrent": 1
+    },
+    {
+      "_comment": "MLX embed (Apple Silicon) — run: mlx serve-embed",
+      "id": "mlx-embed",
+      "type": "openai-compat",
+      "url": "http://localhost:8801",
+      "model": "bge-m3",
+      "dimensions": 1024,
+      "timeoutMs": 15000
+    },
+    {
+      "_comment": "Ollama chat — run: ollama serve",
+      "id": "ollama-chat",
+      "type": "openai-compat",
+      "url": "http://localhost:11434",
+      "model": "qwen2.5:7b",
+      "timeoutMs": 120000
+    },
+    { "id": "claude-haiku",  "type": "claude", "model": "haiku"  },
+    { "id": "claude-sonnet", "type": "claude", "model": "sonnet" }
+  ],
+  "slots": {
+    "_comment": "Each slot is an ordered list of provider ids. First healthy provider wins.",
+    "routine":  ["mlx-chat", "ollama-chat", "claude-haiku"],
+    "stm":      ["claude-haiku"],
+    "ltm":      ["claude-haiku"],
+    "classify": ["mlx-chat", "claude-haiku"],
+    "embed":    ["mlx-embed"]
+  }
+}
