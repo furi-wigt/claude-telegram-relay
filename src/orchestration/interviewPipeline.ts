@@ -13,7 +13,7 @@ import type { Database } from "bun:sqlite";
 import type { InteractiveSession } from "../interactive/types.ts";
 import type { ClassificationResult, DispatchPlan, SubTask, BbTaskContent } from "./types.ts";
 import { AGENTS } from "../agents/config.ts";
-import { callMlxGenerate, isMlxAvailable } from "../mlx/client.ts";
+import { getRegistry } from "../models/index.ts";
 import { executeBlackboardDispatch, getDispatchRunner } from "./dispatchEngine.ts";
 import { buildFinalKeyboard } from "./finalizer.ts";
 import { getDb } from "../local/db.ts";
@@ -71,21 +71,18 @@ export async function decomposeFromInterview(ctx: InterviewContext): Promise<Dec
     };
   }
 
-  // Compound task — try MLX decomposition
+  // Compound task — try LLM decomposition via model registry
   try {
-    const mlxAvailable = await isMlxAvailable();
-    if (mlxAvailable) {
-      return await decomposeWithMlx(ctx);
-    }
+    return await decomposeWithLlm(ctx);
   } catch (err) {
-    console.warn("[interviewPipeline] MLX decomposition failed, using heuristic:", err);
+    console.warn("[interviewPipeline] LLM decomposition failed, using heuristic:", err);
   }
 
   return decomposeHeuristic(ctx);
 }
 
-/** MLX-based decomposition for compound tasks */
-async function decomposeWithMlx(ctx: InterviewContext): Promise<DecomposedPlan> {
+/** LLM decomposition for compound tasks via model registry classify slot */
+async function decomposeWithLlm(ctx: InterviewContext): Promise<DecomposedPlan> {
   const { task, completedQA, classification } = ctx;
   const agents = Object.values(AGENTS)
     .filter((a) => a.id !== "command-center")
@@ -120,7 +117,7 @@ Rules:
 - taskDescription should include relevant interview context
 - Order by dependency (independent tasks first)`;
 
-  const raw = await callMlxGenerate(prompt, { maxTokens: 512, timeoutMs: 15_000 });
+  const raw = await getRegistry().chat("classify", [{ role: "user", content: prompt }], { maxTokens: 512, timeoutMs: 15_000 });
   const jsonMatch = raw.match(/\{[\s\S]*\}/);
   if (!jsonMatch) throw new Error("No JSON in MLX response");
 

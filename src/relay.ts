@@ -41,7 +41,7 @@ import {
   getUserProfile,
 } from "./memory/longTermExtractor.ts";
 import { learnTopicName, learnChatName, getTopicName } from "./utils/chatNames.ts";
-import { isMlxAvailable } from "./mlx/index.ts";
+import { getRegistry } from "./models/index.ts";
 import { callRoutineModel } from "./routines/routineModel.ts";
 import { getAgentForChat, autoDiscoverGroup, loadGroupMappings } from "./routing/groupRouter.ts";
 import { isCommandCenter, orchestrateMessage, registerOrchestrationCallbacks, setDispatchRunner, setTopicCreator, setDispatchNotifier, setMeshNotifier, setInterviewStateMachine, handleOrchestrationComplete, parseFinalCallback, handleFinalAction } from "./orchestration/index.ts";
@@ -514,13 +514,18 @@ async function saveMessage(
   }
 }
 
-// Check fallback availability at startup
+// Check fallback availability at startup via model registry health
 let fallbackAvailable = false;
 {
-  fallbackAvailable = await isMlxAvailable();
-  if (fallbackAvailable) {
-    console.log("Fallback model available: MLX (Qwen3.5-9B)");
-  } else {
+  try {
+    const healthResults = await getRegistry().health();
+    fallbackAvailable = Object.values(healthResults).some(h => h.healthy);
+    if (fallbackAvailable) {
+      const healthyProviders = Object.entries(healthResults).filter(([, h]) => h.healthy).map(([id]) => id);
+      console.log(`Fallback model available: ${healthyProviders.join(", ")}`);
+    }
+  } catch { fallbackAvailable = false; }
+  if (!fallbackAvailable) {
     console.warn("MLX server not reachable. Claude will be used exclusively.");
   }
 }
