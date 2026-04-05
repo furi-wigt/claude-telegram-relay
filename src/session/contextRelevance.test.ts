@@ -1,4 +1,16 @@
 import { describe, test, expect, afterEach, mock } from "bun:test";
+
+// ── Mock ModelRegistry before importing contextRelevance ─────────────────────
+// checkContextRelevanceWithMLX delegates to getRegistry().chat() after the
+// ModelRegistry refactor. We control responses via _mockChatImpl.
+let _mockChatImpl: () => Promise<string> = async () => { throw new Error("not mocked"); };
+
+await mock.module("../models/index.ts", () => ({
+  getRegistry: () => ({ chat: () => _mockChatImpl() }),
+  initRegistry: () => {},
+  _testSetRegistry: () => {},
+}));
+
 import {
   extractKeywords,
   computeOverlapScore,
@@ -236,10 +248,9 @@ describe("checkContextRelevanceSmart", () => {
 });
 
 describe("checkContextRelevanceWithMLX", () => {
-  const origFetch = globalThis.fetch;
-
   afterEach(() => {
-    globalThis.fetch = origFetch;
+    // Reset to default throwing impl after each test
+    _mockChatImpl = async () => { throw new Error("not mocked"); };
   });
 
   const sampleContext: SessionContext = {
@@ -248,16 +259,9 @@ describe("checkContextRelevanceWithMLX", () => {
     lastActivity: new Date(Date.now() - 5 * 60 * 1000).toISOString(), // 5 min ago
   };
 
-  // Helper to mock fetch with OpenAI-format response
+  // Helper: make getRegistry().chat() return content as the raw model text
   function mockMlxResponse(content: string) {
-    globalThis.fetch = mock(() =>
-      Promise.resolve({
-        ok: true,
-        json: () => Promise.resolve({
-          choices: [{ message: { content } }],
-        }),
-      })
-    ) as any;
+    _mockChatImpl = async () => content;
   }
 
   test("returns relevant result for YES response", async () => {
@@ -304,30 +308,27 @@ describe("checkContextRelevanceWithMLX", () => {
     mockMlxResponse("");
 
     const result = await checkContextRelevanceWithMLX("Some message", sampleContext);
-    // callMlxGenerate throws on empty response, so checkContextRelevanceWithMLX returns null
     expect(result).toBeNull();
   });
 
-  test("returns null on non-200 HTTP status", async () => {
-    globalThis.fetch = mock(() =>
-      Promise.resolve({ ok: false, status: 503, text: () => Promise.resolve("Service Unavailable") })
-    ) as any;
+  test("returns null when chat throws (service unavailable)", async () => {
+    _mockChatImpl = async () => { throw new Error("Service Unavailable"); };
 
     const result = await checkContextRelevanceWithMLX("Some message", sampleContext);
     expect(result).toBeNull();
   });
 
-  test("returns null when fetch throws (network error)", async () => {
-    globalThis.fetch = mock(() => Promise.reject(new Error("Network unreachable"))) as any;
+  test("returns null when chat throws (network error)", async () => {
+    _mockChatImpl = async () => { throw new Error("Network unreachable"); };
 
     const result = await checkContextRelevanceWithMLX("Some message", sampleContext);
     expect(result).toBeNull();
   });
 
   test("returns null on AbortError (timeout)", async () => {
-    globalThis.fetch = mock(() =>
-      Promise.reject(Object.assign(new Error("signal is aborted"), { name: "AbortError" }))
-    ) as any;
+    _mockChatImpl = async () => {
+      throw Object.assign(new Error("signal is aborted"), { name: "AbortError" });
+    };
 
     const result = await checkContextRelevanceWithMLX("Some message", sampleContext);
     expect(result).toBeNull();

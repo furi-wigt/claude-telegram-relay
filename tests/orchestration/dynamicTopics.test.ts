@@ -1,5 +1,41 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach, mock } from "bun:test";
 import { Database } from "bun:sqlite";
+
+// ── Mock AGENTS config before importing dispatchEngine ───────────────────────
+// The live ~/.claude-relay/agents.json has real meshTopicId values that short-circuit
+// dynamic topic creation. For these tests, meshTopicId must be null so the
+// topicCreator DI slot is exercised.
+await mock.module("../../src/agents/config.ts", () => ({
+  AGENTS: {
+    "security-compliance": {
+      id: "security-compliance",
+      name: "Security & Compliance",
+      shortName: "Security",
+      chatId: -5241717512,
+      meshTopicId: null,   // ← forces dynamic topic creation via topicCreator
+      capabilities: [],
+      riskLevel: "high",
+      reviewRequired: true,
+    },
+    "code-quality-coach": {
+      id: "code-quality-coach",
+      name: "Code Quality Coach",
+      shortName: "Code Quality",
+      chatId: 0,           // ← chatId=0 prevents reviewer dispatch sub-loop
+      meshTopicId: null,
+      capabilities: [],
+    },
+    "engineering": {
+      id: "engineering",
+      name: "Engineering & Quality",
+      shortName: "Engineering",
+      chatId: -5241717513,
+      meshTopicId: null,
+      capabilities: [],
+    },
+  },
+}));
+
 import { initOrchestrationSchema } from "../../src/orchestration/schema";
 import {
   executeBlackboardDispatch,

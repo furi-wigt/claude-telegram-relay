@@ -6,6 +6,17 @@
 
 import { describe, test, expect, mock, beforeEach, afterEach } from "bun:test";
 
+// ── Mock ModelRegistry before importing shortTermMemory ──────────────────────
+// summarizeOldMessages delegates to getRegistry().chat() after the ModelRegistry
+// refactor. We control per-test responses via _stmChatImpl.
+let _stmChatImpl: () => Promise<string> = async () => { throw new Error("not mocked"); };
+
+await mock.module("../models/index.ts", () => ({
+  getRegistry: () => ({ chat: () => _stmChatImpl() }),
+  initRegistry: () => {},
+  _testSetRegistry: () => {},
+}));
+
 // ── Mock storageBackend so tests don't hit SQLite/Qdrant/Ollama ────────────
 
 const mockGetRecentMessagesLocal = mock(async () => []);
@@ -400,10 +411,8 @@ describe("getRecentMessages", () => {
 // ============================================================
 
 describe("summarizeOldMessages", () => {
-  const origFetch = globalThis.fetch;
-
   afterEach(() => {
-    globalThis.fetch = origFetch;
+    _stmChatImpl = async () => { throw new Error("not mocked"); };
     mockQuery.mockReset();
   });
 
@@ -428,14 +437,7 @@ describe("summarizeOldMessages", () => {
   });
 
   test("inserts MLX summary when MLX succeeds", async () => {
-    globalThis.fetch = mock(() =>
-      Promise.resolve({
-        ok: true,
-        json: () => Promise.resolve({
-          choices: [{ message: { content: "A concise summary of the conversation." } }],
-        }),
-      })
-    ) as any;
+    _stmChatImpl = async () => "A concise summary of the conversation.";
 
     mockInsertSummaryRecord.mockClear();
     const msgs = makeMessages(3);
@@ -456,7 +458,7 @@ describe("summarizeOldMessages", () => {
   });
 
   test("uses concatenation fallback when MLX throws", async () => {
-    globalThis.fetch = mock(() => Promise.reject(new Error("MLX down"))) as any;
+    _stmChatImpl = async () => { throw new Error("MLX down"); };
 
     mockInsertSummaryRecord.mockClear();
     const msgs = makeMessages(3);

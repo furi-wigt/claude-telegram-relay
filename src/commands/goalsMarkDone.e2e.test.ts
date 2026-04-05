@@ -151,6 +151,8 @@ mock.module("../local/vectorStore", () => ({
   upsertBatch: async () => {},
   deletePoints: async () => {},
   initCollections: async () => {},
+  initEmbedCollections: async () => {},
+  embedCollectionName: (base: string, suffix: string) => `${base}_${suffix}`,
   search: async () => [],
 }));
 mock.module("../local/searchService", () => ({
