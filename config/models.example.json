@@ -22,16 +22,6 @@
       "timeoutMs": 15000
     },
     {
-      "_comment": "MLX chat (Apple Silicon) — run: mlx serve",
-      "id": "mlx-chat",
-      "type": "openai-compat",
-      "url": "http://localhost:8800",
-      "model": "mlx-community/Qwen3.5-9B-MLX-4bit",
-      "timeoutMs": 120000,
-      "chunkTimeoutMs": 30000,
-      "maxConcurrent": 1
-    },
-    {
       "_comment": "MLX embed (Apple Silicon) — run: mlx serve-embed",
       "id": "mlx-embed",
       "type": "openai-compat",
@@ -53,10 +43,10 @@
   ],
   "slots": {
     "_comment": "Each slot is an ordered list of provider ids. First healthy provider wins.",
-    "routine":  ["mlx-chat", "ollama-chat", "claude-haiku"],
+    "routine":  ["lms-chat", "ollama-chat", "claude-haiku"],
     "stm":      ["claude-haiku"],
     "ltm":      ["claude-haiku"],
-    "classify": ["mlx-chat", "claude-haiku"],
+    "classify": ["lms-chat", "claude-haiku"],
     "embed":    ["mlx-embed"]
   }
 }
