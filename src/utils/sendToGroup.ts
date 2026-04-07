@@ -8,6 +8,7 @@
  */
 
 import { loadEnv } from "../config/envLoader.ts";
+import { smartSplit } from "./smartBoundary";
 
 loadEnv();
 
@@ -17,49 +18,11 @@ const TELEGRAM_MAX_LENGTH = 4096;
 
 /**
  * Split a message into chunks that respect Telegram's 4096 character limit.
- * Tries to split on paragraph boundaries (double newline) first,
- * then line boundaries, then at the character limit as a last resort.
+ * Uses QMD-style scored break-point detection to split at natural boundaries
+ * (headings > code fences > paragraphs > lines). Code fences are never split.
  */
 export function chunkMessage(message: string, maxLength: number = TELEGRAM_MAX_LENGTH): string[] {
-  if (message.length <= maxLength) {
-    return [message];
-  }
-
-  const chunks: string[] = [];
-  let pos = 0;
-
-  while (pos < message.length) {
-    const remaining = message.substring(pos);
-
-    if (remaining.length <= maxLength) {
-      chunks.push(remaining);
-      break;
-    }
-
-    const window = remaining.substring(0, maxLength);
-
-    // Prefer paragraph boundary (double newline)
-    const lastParaBreak = window.lastIndexOf("\n\n");
-    if (lastParaBreak > 0) {
-      chunks.push(remaining.substring(0, lastParaBreak + 2));
-      pos += lastParaBreak + 2;
-      continue;
-    }
-
-    // Fall back to line boundary (single newline)
-    const lastLineBreak = window.lastIndexOf("\n");
-    if (lastLineBreak > 0) {
-      chunks.push(remaining.substring(0, lastLineBreak + 1));
-      pos += lastLineBreak + 1;
-      continue;
-    }
-
-    // No natural boundary — hard split at maxLength
-    chunks.push(window);
-    pos += maxLength;
-  }
-
-  return chunks.filter((c) => c.length > 0);
+  return smartSplit(message, maxLength);
 }
 
 /**

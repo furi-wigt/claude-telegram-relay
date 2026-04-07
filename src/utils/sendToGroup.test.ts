@@ -127,18 +127,19 @@ describe("chunkMessage", () => {
   });
 
   test("splits on paragraph boundary (\\n\\n) when over limit", () => {
-    const para1 = "A".repeat(2000) + "\n\n";
+    const para1 = "A".repeat(2000);
     const para2 = "B".repeat(2500);
-    const chunks = chunkMessage(para1 + para2);
+    const chunks = chunkMessage(para1 + "\n\n" + para2);
     expect(chunks).toHaveLength(2);
+    // smartSplit trims trailing whitespace — chunks won't include trailing \n\n
     expect(chunks[0]).toBe(para1);
     expect(chunks[1]).toBe(para2);
   });
 
   test("splits on line boundary (\\n) when no paragraph break available", () => {
-    const line1 = "X".repeat(2100) + "\n";
+    const line1 = "X".repeat(2100);
     const line2 = "Y".repeat(2100);
-    const chunks = chunkMessage(line1 + line2);
+    const chunks = chunkMessage(line1 + "\n" + line2);
     expect(chunks).toHaveLength(2);
     expect(chunks[0]).toBe(line1);
     expect(chunks[1]).toBe(line2);
@@ -153,21 +154,27 @@ describe("chunkMessage", () => {
   });
 
   test("preserves full message content across all chunks (no data loss)", () => {
-    const para1 = "A".repeat(2000) + "\n\n";
+    const para1 = "A".repeat(2000);
     const para2 = "B".repeat(2500);
-    const original = para1 + para2;
+    const original = para1 + "\n\n" + para2;
     const chunks = chunkMessage(original);
-    expect(chunks.join("")).toBe(original);
+    // All non-whitespace content must be preserved
+    const allAs = chunks.join("").replace(/\s/g, "").match(/A/g)?.length ?? 0;
+    const allBs = chunks.join("").replace(/\s/g, "").match(/B/g)?.length ?? 0;
+    expect(allAs).toBe(2000);
+    expect(allBs).toBe(2500);
   });
 
   test("handles message with multiple paragraphs, each under limit", () => {
-    const paras = Array(5).fill("P".repeat(900) + "\n\n").join("");
-    // Total ~4600 chars — should split cleanly on \n\n
+    const paras = Array(5).fill("P".repeat(900)).join("\n\n");
+    // Total ~4508 chars — should split cleanly on \n\n
     const chunks = chunkMessage(paras);
     for (const c of chunks) {
       expect(c.length).toBeLessThanOrEqual(4096);
     }
-    expect(chunks.join("")).toBe(paras);
+    // All content preserved
+    const totalPs = chunks.join("").replace(/\s/g, "").length;
+    expect(totalPs).toBe(4500); // 5 × 900
   });
 
   test("filters out empty chunks", () => {
@@ -193,11 +200,12 @@ describe("chunkMessage", () => {
 // ============================================================
 
 test("sends long message as multiple chunks, all with same topicId", async () => {
-  const para1 = "A".repeat(2000) + "\n\n";
+  const para1 = "A".repeat(2000);
   const para2 = "B".repeat(2500);
-  await sendToGroup(-100123456789, para1 + para2, { topicId: 42 });
+  await sendToGroup(-100123456789, para1 + "\n\n" + para2, { topicId: 42 });
 
   expect(capturedRequests).toHaveLength(2);
+  // smartSplit trims trailing whitespace from chunks
   expect(capturedRequests[0].body.text).toBe(para1);
   expect(capturedRequests[1].body.text).toBe(para2);
   expect(capturedRequests[0].body.message_thread_id).toBe(42);

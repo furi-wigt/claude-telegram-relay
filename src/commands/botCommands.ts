@@ -38,41 +38,17 @@ import { listDocuments, deleteDocument, ingestText, resolveUniqueTitle } from ".
 import { isTROQAActive } from "../tro/troQAState.ts";
 import { handleCwdCommand } from "./cwdCommand.ts";
 import { resolveSourceLabel } from "../utils/chatNames.ts";
+import { smartSplit } from "../utils/smartBoundary";
 
 const TELEGRAM_MAX_MESSAGE_LENGTH = 4096;
 
 /**
  * Send a potentially long message by splitting it into ≤4096-character chunks.
- * Splits on newline boundaries where possible to preserve readability.
+ * Uses QMD-style scored break-point detection for natural reading boundaries.
  */
 async function sendLongMessage(ctx: Context, text: string): Promise<void> {
-  if (text.length <= TELEGRAM_MAX_MESSAGE_LENGTH) {
-    await ctx.reply(text);
-    return;
-  }
-
-  const lines = text.split("\n");
-  let chunk = "";
-
-  for (const line of lines) {
-    const addition = chunk ? "\n" + line : line;
-    if (chunk.length + addition.length > TELEGRAM_MAX_MESSAGE_LENGTH) {
-      if (chunk) {
-        await ctx.reply(chunk);
-        chunk = line;
-      } else {
-        // Single line exceeds limit — force-split it
-        for (let i = 0; i < line.length; i += TELEGRAM_MAX_MESSAGE_LENGTH) {
-          await ctx.reply(line.substring(i, i + TELEGRAM_MAX_MESSAGE_LENGTH));
-        }
-        chunk = "";
-      }
-    } else {
-      chunk = chunk ? chunk + "\n" + line : line;
-    }
-  }
-
-  if (chunk) {
+  const chunks = smartSplit(text, TELEGRAM_MAX_MESSAGE_LENGTH);
+  for (const chunk of chunks) {
     await ctx.reply(chunk);
   }
 }
