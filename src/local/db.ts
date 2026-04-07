@@ -130,6 +130,49 @@ function initSchema(db: Database) {
   addColumnIfMissing(db, "documents", "chunk_heading", "TEXT");
   db.exec("CREATE INDEX IF NOT EXISTS idx_documents_content_hash ON documents(content_hash)");
 
+  // FTS5 virtual table for BM25 lexical search over documents
+  db.exec(`
+    CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(
+      name, content, chunk_heading,
+      content='documents', content_rowid='rowid'
+    );
+  `);
+
+  // Triggers to keep FTS5 in sync with documents table
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS documents_ai AFTER INSERT ON documents BEGIN
+      INSERT INTO documents_fts(rowid, name, content, chunk_heading)
+        VALUES (NEW.rowid, NEW.name, NEW.content, NEW.chunk_heading);
+    END;
+  `);
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS documents_ad AFTER DELETE ON documents BEGIN
+      INSERT INTO documents_fts(documents_fts, rowid, name, content, chunk_heading)
+        VALUES ('delete', OLD.rowid, OLD.name, OLD.content, OLD.chunk_heading);
+    END;
+  `);
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS documents_au AFTER UPDATE ON documents BEGIN
+      INSERT INTO documents_fts(documents_fts, rowid, name, content, chunk_heading)
+        VALUES ('delete', OLD.rowid, OLD.name, OLD.content, OLD.chunk_heading);
+      INSERT INTO documents_fts(rowid, name, content, chunk_heading)
+        VALUES (NEW.rowid, NEW.name, NEW.content, NEW.chunk_heading);
+    END;
+  `);
+
+  // Backfill FTS5 from existing documents (idempotent — skips if already populated)
+  try {
+    const ftsCount = db.query("SELECT COUNT(*) as cnt FROM documents_fts").get() as { cnt: number };
+    const docCount = db.query("SELECT COUNT(*) as cnt FROM documents").get() as { cnt: number };
+    if (ftsCount.cnt === 0 && docCount.cnt > 0) {
+      db.exec("INSERT INTO documents_fts(rowid, name, content, chunk_heading) SELECT rowid, name, content, chunk_heading FROM documents");
+      console.log(`[db] Backfilled FTS5 index with ${docCount.cnt} document rows`);
+    }
+  } catch (e) {
+    // FTS5 backfill is best-effort — don't block startup
+    console.warn("[db] FTS5 backfill skipped:", (e as Error).message);
+  }
+
   // conversation_summaries
   addColumnIfMissing(db, "conversation_summaries", "message_count", "INTEGER");
   addColumnIfMissing(db, "conversation_summaries", "from_message_id", "TEXT");

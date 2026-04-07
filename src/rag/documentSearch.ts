@@ -12,7 +12,7 @@
  */
 
 import { semanticSearchDocuments } from "../local/storageBackend";
-import { keywordSearchDocuments, extractDocKeywords } from "../local/searchService";
+import { keywordSearchDocuments, extractDocKeywords, bm25SearchDocuments } from "../local/searchService";
 
 /** Keyword hits have no vector similarity; assign a high sentinel so they surface above low-confidence embeddings. */
 const KEYWORD_HIT_SENTINEL_SIMILARITY = 0.99;
@@ -59,7 +59,45 @@ export function isInsuranceQuery(text: string): boolean {
 }
 
 /**
+ * Reciprocal Rank Fusion — merges results from multiple search signals.
+ *
+ * RRF_score(d) = Σ 1/(k + rank_i(d)) across all result lists.
+ * Documents appearing in both lists get boosted; single-signal results
+ * are naturally demoted.
+ *
+ * @param resultLists  Array of ranked result lists (each sorted by relevance, best first)
+ * @param k            RRF constant (default: 60, standard value from the original paper)
+ * @returns            Merged results sorted by RRF score (highest first)
+ */
+export function reciprocalRankFusion(
+  resultLists: DocumentChunk[][],
+  k: number = 60,
+): DocumentChunk[] {
+  const scores = new Map<string, { score: number; chunk: DocumentChunk }>();
+
+  for (const list of resultLists) {
+    for (let rank = 0; rank < list.length; rank++) {
+      const chunk = list[rank];
+      const rrfContribution = 1 / (k + rank + 1); // rank is 0-indexed, +1 to make it 1-indexed
+      const existing = scores.get(chunk.id);
+      if (existing) {
+        existing.score += rrfContribution;
+      } else {
+        scores.set(chunk.id, { score: rrfContribution, chunk });
+      }
+    }
+  }
+
+  return Array.from(scores.values())
+    .sort((a, b) => b.score - a.score)
+    .map(({ score, chunk }) => ({ ...chunk, similarity: score }));
+}
+
+/**
  * Search ingested documents for chunks relevant to the query.
+ *
+ * Uses hybrid search: vector cosine similarity (Qdrant) + BM25 lexical search (FTS5),
+ * fused with Reciprocal Rank Fusion (RRF) for better precision.
  *
  * @param query     User's question
  * @param options   Optional title filter, match count, threshold
@@ -89,14 +127,40 @@ export async function searchDocuments(
   };
 
   try {
-    const results = await semanticSearchDocuments(query, {
-      matchCount,
-      threshold: matchThreshold,
-      filterTitle,
-    });
+    // Run vector search and BM25 in parallel
+    const [vectorResults, bm25Results] = await Promise.all([
+      semanticSearchDocuments(query, {
+        matchCount,
+        threshold: matchThreshold,
+        filterTitle,
+      }),
+      // BM25 is synchronous but wrapped in Promise.resolve for parallel execution
+      Promise.resolve(
+        bm25SearchDocuments(query, {
+          limit: matchCount,
+          name: filterTitle,
+        })
+      ),
+    ]);
+
+    // Convert BM25 results to DocumentChunk format
+    const bm25Chunks: DocumentChunk[] = bm25Results.map((hit) => ({
+      id: hit.id,
+      title: hit.record.name ?? "",
+      source: hit.record.source ?? "bm25",
+      chunk_index: hit.record.chunk_index ?? 0,
+      chunk_heading: (hit.record as any).chunk_heading,
+      content: hit.record.content ?? "",
+      metadata: hit.record.metadata ? JSON.parse(hit.record.metadata) : {},
+      similarity: hit.score,
+    }));
+
+    // Fuse with RRF
+    let merged = reciprocalRankFusion(
+      [vectorResults as DocumentChunk[], bm25Chunks],
+    );
 
     // Keyword fallback: merge SQLite LIKE hits for control IDs / quoted terms
-    let merged = results as DocumentChunk[];
     if (keywordFallback) {
       const keywords = extractDocKeywords(query);
       if (keywords.length > 0) {
@@ -120,12 +184,11 @@ export async function searchDocuments(
             });
           }
         }
-        // Re-sort: keyword matches first, then by similarity
-        merged.sort((a, b) => b.similarity - a.similarity);
-        // Cap to matchCount
-        merged = merged.slice(0, matchCount);
       }
     }
+
+    // Cap to matchCount
+    merged = merged.slice(0, matchCount);
 
     if (!merged.length) return empty;
     const context = formatDocumentContext(merged);

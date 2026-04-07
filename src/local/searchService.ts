@@ -176,6 +176,71 @@ export function extractDocKeywords(query: string): string[] {
   return [...new Set(keywords)];
 }
 
+/**
+ * BM25 lexical search over documents via SQLite FTS5.
+ * Returns results with normalized BM25 scores (0-1 range).
+ * Used alongside vector search for RRF fusion.
+ */
+export function bm25SearchDocuments(
+  query: string,
+  opts?: { limit?: number; name?: string }
+): HybridSearchResult<DocumentRow>[] {
+  const db = getDb();
+  const limit = opts?.limit ?? 10;
+
+  // Sanitize query for FTS5: remove special characters that break MATCH syntax
+  const sanitized = query.replace(/['"(){}[\]*:^~!@#$%&]/g, " ").trim();
+  if (!sanitized) return [];
+
+  try {
+    let sql: string;
+    const params: (string | number)[] = [];
+
+    if (opts?.name) {
+      sql = `
+        SELECT d.*, bm25(documents_fts) AS rank
+        FROM documents_fts
+        JOIN documents d ON d.rowid = documents_fts.rowid
+        WHERE documents_fts MATCH ?
+          AND d.name = ?
+        ORDER BY rank
+        LIMIT ?
+      `;
+      params.push(sanitized, opts.name, limit);
+    } else {
+      sql = `
+        SELECT d.*, bm25(documents_fts) AS rank
+        FROM documents_fts
+        JOIN documents d ON d.rowid = documents_fts.rowid
+        WHERE documents_fts MATCH ?
+        ORDER BY rank
+        LIMIT ?
+      `;
+      params.push(sanitized, limit);
+    }
+
+    const rows = db.query(sql).all(...params) as (DocumentRow & { rank: number })[];
+    if (rows.length === 0) return [];
+
+    // Normalize BM25 scores to 0-1 range
+    // bm25() returns negative values (lower = better match), so we invert
+    const scores = rows.map((r) => -r.rank);
+    const maxScore = Math.max(...scores);
+    const minScore = Math.min(...scores);
+    const range = maxScore - minScore || 1;
+
+    return rows.map((r, i) => ({
+      id: r.id,
+      score: (scores[i] - minScore) / range, // Normalize to 0-1
+      record: r,
+    }));
+  } catch (err) {
+    // FTS5 query errors (malformed MATCH) should not crash the search
+    console.warn("[search] BM25 search failed:", (err as Error).message);
+    return [];
+  }
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function collectionToTable(collection: CollectionName): string {

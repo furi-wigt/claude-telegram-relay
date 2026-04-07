@@ -1942,7 +1942,7 @@ async function processTextMessage(
         if (!shouldSearch) return Promise.resolve({ chunks: [], context: "", hasResults: false });
         return hasDocuments().then((has) =>
           has
-            ? searchDocuments(text, { matchThreshold: 0.58 })
+            ? searchDocuments(text, { matchThreshold: 0.65 })
             : { chunks: [], context: "", hasResults: false }
         );
       })(),
