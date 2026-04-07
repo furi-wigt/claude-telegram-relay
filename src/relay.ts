@@ -2128,13 +2128,13 @@ async function processTextMessage(
     // [L] prefix or agent defaultModel="local" → skip Claude CLI, call local LM Studio directly.
     if (resolvedModel === LOCAL_MODEL_TOKEN) {
       try {
-        void indicator.update("Using Qwen (local)…", { immediate: true });
+        void indicator.update("Using local model…", { immediate: true });
         rawResponse = await callRoutineModel(enrichedPrompt, { label: "chat-local", timeoutMs: 120_000 });
         await indicator.finish(true);
       } catch (localErr) {
         await indicator.finish(false);
         console.error("[local model] callRoutineModel failed:", localErr);
-        rawResponse = "⚠️ Local Qwen model failed. Is `mlx serve` running on port 8800?";
+        rawResponse = "⚠️ Local model failed. Check your ModelRegistry configuration in ~/.claude-relay/models.json.";
       }
     } else
 

@@ -8,14 +8,14 @@
  */
 
 /**
- * Night Summary Routine (Local LLM only — MLX / Qwen3.5-9B)
+ * Night Summary Routine
  *
  * Schedule: 11:00 PM daily (SGT)
  * Target: General AI Assistant group
  *
  * Pulls the day's messages, facts, and goals from local SQLite, then uses
- * local MLX (Qwen3.5-9B) to generate a detailed, motivational day-end
- * reflection formatted in Markdown. Notifies the user if the local LLM fails.
+ * the configured routine model (via ModelRegistry) to generate a detailed,
+ * motivational day-end reflection formatted in Markdown. Notifies the user if the model fails.
  *
  * Run manually: bun run routines/night-summary.ts
  */
@@ -352,7 +352,7 @@ export async function analyzeWithLocalLLM(
   } catch (error) {
     console.error("[night-summary] Local LLM failed:", error instanceof Error ? error.message : error);
     return {
-      text: "Day review unavailable — MLX server is offline. Check that `mlx serve` is running.",
+      text: "Day review unavailable — local model is offline. Check your ModelRegistry configuration in ~/.claude-relay/models.json.",
       provider: null,
     };
   }
@@ -640,8 +640,7 @@ async function main() {
   if (provider === null) {
     const failureMessage =
       "⚠️ **Night summary unavailable**\n\n" +
-      "Local LLM (MLX) is offline.\n" +
-      "Check that `mlx serve` is running.\n\n" +
+      "Local model is offline. Check your ModelRegistry configuration in ~/.claude-relay/models.json.\n\n" +
       "Your day was still great — pick this up tomorrow! 🌟";
 
     await sendAndRecord(NIGHT_GROUP.chatId, failureMessage, {
