@@ -1,18 +1,21 @@
 /**
  * Document RAG Search
  *
- * Retrieves relevant document chunks using semantic similarity via Qdrant.
- * Used to answer questions grounded in ingested policy documents.
+ * Hybrid search pipeline: vector cosine + BM25 lexical, fused with RRF.
+ * Optional LLM query expansion for improved recall.
  *
  * Flow:
- *   1. Embed the user's query (BGE-M3 via Ollama)
- *   2. Search Qdrant for matching document chunks
- *   3. Optional keyword fallback via SQLite LIKE
- *   4. Format as context string for Claude's system prompt
+ *   1. Optionally expand query into 2-3 variants via local LLM
+ *   2. Run vector search (Qdrant) + BM25 (FTS5) in parallel for each variant
+ *   3. Fuse all result lists with Reciprocal Rank Fusion (RRF)
+ *   4. Optional keyword fallback via SQLite LIKE
+ *   5. Format as context string for Claude's system prompt
  */
 
 import { semanticSearchDocuments } from "../local/storageBackend";
 import { keywordSearchDocuments, extractDocKeywords, bm25SearchDocuments } from "../local/searchService";
+import { expandQuery } from "./queryExpander";
+import { rerankChunks } from "./reranker";
 
 /** Keyword hits have no vector similarity; assign a high sentinel so they surface above low-confidence embeddings. */
 const KEYWORD_HIT_SENTINEL_SIMILARITY = 0.99;
@@ -127,38 +130,57 @@ export async function searchDocuments(
   };
 
   try {
-    // Run vector search and BM25 in parallel
-    const [vectorResults, bm25Results] = await Promise.all([
-      semanticSearchDocuments(query, {
+    // Expand query into multiple variants for broader recall
+    const queries = await expandQuery(query);
+
+    // Run vector search and BM25 for each query variant in parallel
+    const searchPromises = queries.flatMap((q) => [
+      semanticSearchDocuments(q, {
         matchCount,
         threshold: matchThreshold,
         filterTitle,
       }),
-      // BM25 is synchronous but wrapped in Promise.resolve for parallel execution
       Promise.resolve(
-        bm25SearchDocuments(query, {
+        bm25SearchDocuments(q, {
           limit: matchCount,
           name: filterTitle,
         })
       ),
     ]);
 
-    // Convert BM25 results to DocumentChunk format
-    const bm25Chunks: DocumentChunk[] = bm25Results.map((hit) => ({
-      id: hit.id,
-      title: hit.record.name ?? "",
-      source: hit.record.source ?? "bm25",
-      chunk_index: hit.record.chunk_index ?? 0,
-      chunk_heading: (hit.record as any).chunk_heading,
-      content: hit.record.content ?? "",
-      metadata: hit.record.metadata ? JSON.parse(hit.record.metadata) : {},
-      similarity: hit.score,
-    }));
+    const allResults = await Promise.all(searchPromises);
 
-    // Fuse with RRF
-    let merged = reciprocalRankFusion(
-      [vectorResults as DocumentChunk[], bm25Chunks],
-    );
+    // Separate vector and BM25 results (interleaved: vector, bm25, vector, bm25, ...)
+    const resultLists: DocumentChunk[][] = [];
+    for (let i = 0; i < allResults.length; i++) {
+      const isVector = i % 2 === 0;
+      if (isVector) {
+        resultLists.push(allResults[i] as DocumentChunk[]);
+      } else {
+        // Convert BM25 HybridSearchResult to DocumentChunk format
+        const bm25Hits = allResults[i] as Array<{ id: string; score: number; record: any }>;
+        resultLists.push(bm25Hits.map((hit) => ({
+          id: hit.id,
+          title: hit.record.name ?? "",
+          source: hit.record.source ?? "bm25",
+          chunk_index: hit.record.chunk_index ?? 0,
+          chunk_heading: hit.record.chunk_heading,
+          content: hit.record.content ?? "",
+          metadata: hit.record.metadata ? JSON.parse(hit.record.metadata) : {},
+          similarity: hit.score,
+        })));
+      }
+    }
+
+    // Fuse all result lists with RRF
+    let merged = reciprocalRankFusion(resultLists);
+
+    // Re-rank top candidates with local LLM for precision filtering
+    // Only re-rank the top 10 to keep latency low
+    const topCandidates = merged.slice(0, 10);
+    const reranked = await rerankChunks(query, topCandidates);
+    // Replace top section with re-ranked results, keep any remaining
+    merged = [...reranked, ...merged.slice(10)];
 
     // Keyword fallback: merge SQLite LIKE hits for control IDs / quoted terms
     if (keywordFallback) {
