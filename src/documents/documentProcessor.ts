@@ -15,6 +15,12 @@ import { invalidateDocumentsCache } from "../rag/hasDocuments.ts";
 import { analyzeImage } from "../vision/visionClient.ts";
 import { trace } from "../utils/tracer.ts";
 import {
+  scanBreakPoints,
+  findCodeFences,
+  findBestCutoff,
+  isInsideCodeFence,
+} from "../utils/smartBoundary";
+import {
   insertDocumentRecords,
   deleteDocumentRecords,
   checkContentHashExists,
@@ -150,9 +156,161 @@ export function chunkText(
   return chunks.filter((c) => c.trim().length > 0);
 }
 
+// ─── smartChunk (QMD-style scored chunking with overlap) ────────────────────
+
+/**
+ * A chunk produced by QMD-style smart chunking.
+ * Includes metadata for change detection, sequencing, and heading context.
+ */
+export interface SmartChunk {
+  /** Chunk content with [Doc: title] prefix */
+  text: string;
+  /** Nearest heading above this chunk (from the source document) */
+  heading?: string;
+  /** Character position in original document where this chunk starts */
+  pos: number;
+  /** Chunk sequence number (0, 1, 2, ...) */
+  seq: number;
+  /** SHA-256 hash of the raw chunk content (before prefix) for change detection */
+  hash: string;
+}
+
+/** Default chunk size in characters (~900 tokens × 4 chars/token) */
+const SMART_CHUNK_SIZE = 3600;
+
+/** Overlap as 15% of chunk size */
+const SMART_CHUNK_OVERLAP = 540;
+
+/**
+ * Split a document into overlapping chunks using QMD-style scored break-point
+ * detection. Each chunk gets a `[Doc: title]` prefix and optional heading context.
+ *
+ * Key differences from smartSplit (message splitting):
+ *  - 15% overlap between consecutive chunks for embedding continuity
+ *  - Returns SmartChunk[] with pos, seq, hash metadata
+ *  - Tracks nearest heading above each chunk for search context
+ *  - Code fence protection: never splits inside ``` blocks
+ *
+ * @param text      Raw document text
+ * @param docTitle  Document title for prefix
+ * @param maxLen    Maximum chunk size in characters (default: 3600)
+ * @param overlap   Overlap between chunks in characters (default: 540)
+ */
+export function smartChunk(
+  text: string,
+  docTitle: string,
+  maxLen: number = SMART_CHUNK_SIZE,
+  overlap: number = SMART_CHUNK_OVERLAP,
+): SmartChunk[] {
+  const titleLabel = docTitle.length > 60 ? docTitle.slice(0, 57) + "…" : docTitle;
+
+  // Short text → single chunk, no splitting needed
+  if (text.length <= maxLen) {
+    const heading = findNearestHeading(text, 0);
+    const prefix = heading
+      ? `[Doc: ${titleLabel}] [${heading}]\n\n`
+      : `[Doc: ${titleLabel}]\n\n`;
+    return [{
+      text: prefix + text,
+      heading: heading || undefined,
+      pos: 0,
+      seq: 0,
+      hash: createHash("sha256").update(text).digest("hex"),
+    }];
+  }
+
+  const breakPoints = scanBreakPoints(text);
+  const fences = findCodeFences(text);
+  const chunks: SmartChunk[] = [];
+  let pos = 0;
+  let seq = 0;
+
+  while (pos < text.length) {
+    const remaining = text.length - pos;
+    if (remaining <= maxLen) {
+      // Last chunk — take everything remaining
+      const raw = text.slice(pos).trimEnd();
+      if (raw.trim().length > 0) {
+        const heading = findNearestHeading(text, pos);
+        const prefix = heading
+          ? `[Doc: ${titleLabel}] [${heading}]\n\n`
+          : `[Doc: ${titleLabel}]\n\n`;
+        chunks.push({
+          text: prefix + raw,
+          heading: heading || undefined,
+          pos,
+          seq: seq++,
+          hash: createHash("sha256").update(raw).digest("hex"),
+        });
+      }
+      break;
+    }
+
+    const target = pos + maxLen;
+    const windowChars = maxLen;
+    let cutoff = findBestCutoff(breakPoints, target, windowChars, fences, text);
+
+    // If cutoff lands inside a code fence, push past fence end
+    for (const fence of fences) {
+      if (cutoff >= fence.start && cutoff < fence.end) {
+        cutoff = fence.end;
+        break;
+      }
+    }
+
+    // Ensure forward progress
+    const effectiveCutoff = cutoff <= pos ? pos + maxLen : cutoff;
+    const raw = text.slice(pos, effectiveCutoff).trimEnd();
+
+    if (raw.trim().length > 0) {
+      const heading = findNearestHeading(text, pos);
+      const prefix = heading
+        ? `[Doc: ${titleLabel}] [${heading}]\n\n`
+        : `[Doc: ${titleLabel}]\n\n`;
+      chunks.push({
+        text: prefix + raw,
+        heading: heading || undefined,
+        pos,
+        seq: seq++,
+        hash: createHash("sha256").update(raw).digest("hex"),
+      });
+    }
+
+    // Apply overlap: next chunk starts `overlap` chars before the cutoff
+    const nextPos = effectiveCutoff - overlap;
+    pos = nextPos > pos ? nextPos : effectiveCutoff;
+
+    // Skip leading newlines in next chunk (but not if overlap pulls us back)
+    if (nextPos <= pos) {
+      while (pos < text.length && text[pos] === "\n") pos++;
+    }
+  }
+
+  return chunks;
+}
+
+/**
+ * Find the nearest markdown heading (# through ###) at or before a position.
+ * Includes headings that start exactly at `pos` (e.g. when a chunk begins with a heading).
+ * Returns the heading text (without the # prefix), or null if none found.
+ */
+function findNearestHeading(text: string, pos: number): string | null {
+  // Include the full line at `pos` so headings starting at this position are found
+  const lineEnd = text.indexOf("\n", pos);
+  const searchEnd = lineEnd === -1 ? text.length : lineEnd + 1;
+  const before = text.slice(0, searchEnd);
+  const headingRe = /^(#{1,3})\s+(.+)/gm;
+  let lastHeading: string | null = null;
+  let match: RegExpExecArray | null;
+  while ((match = headingRe.exec(before)) !== null) {
+    lastHeading = match[2].trim();
+  }
+  return lastHeading;
+}
+
 // ─── ingestText ───────────────────────────────────────────────────────────────
 
-export type ChunkingStrategy = "heading-aware" | "paragraph" | "page-boundary" | "hybrid";
+export type ChunkingStrategy = "heading-aware" | "paragraph" | "page-boundary" | "hybrid" | "smart";
 
 // ─── PageText type (canonical definition in pdfExtractor) ─────────────────────
 
@@ -250,7 +408,8 @@ export function chunkByPagesWithHeadings(
 /**
  * Auto-select the best chunking strategy based on content structure.
  *
- * Priority: hybrid (pages+headings) > page-boundary > heading-aware > paragraph
+ * Priority: hybrid (pages+headings) > page-boundary > heading-aware > smart
+ * "smart" uses QMD-style scored break-point detection with overlap.
  */
 export function detectChunkingStrategy(
   text: string,
@@ -262,7 +421,7 @@ export function detectChunkingStrategy(
   if (hasPages && hasHeadings) return "hybrid";
   if (hasPages) return "page-boundary";
   if (hasHeadings) return "heading-aware";
-  return "paragraph";
+  return "smart";
 }
 
 export interface IngestResult {
@@ -334,6 +493,40 @@ export async function ingestText(
   const strategy = detectChunkingStrategy(text, pages);
   opts.onProgress?.(`📊 Chunking with ${strategy} strategy…`);
 
+  // Smart chunking path — returns SmartChunk[] with pos/seq/hash metadata
+  if (strategy === "smart") {
+    const smartChunks = smartChunk(text, title, chunkSize || SMART_CHUNK_SIZE, overlap || SMART_CHUNK_OVERLAP);
+
+    if (!smartChunks.length) {
+      trace({ event: "doc_ingest_text_empty", title });
+      return { chunksInserted: 0, title };
+    }
+
+    const rows = smartChunks.map((sc) => ({
+      title,
+      source,
+      chunk_index: sc.seq,
+      chunk_heading: sc.heading,
+      content: sc.text,
+      metadata: {
+        total_chunks: smartChunks.length,
+        original_length: text.length,
+        content_hash: contentHash,
+        chunk_hash: sc.hash,
+        chunk_pos: sc.pos,
+        chunk_seq: sc.seq,
+        pasted_at: new Date().toISOString(),
+        chunking_strategy: "smart",
+      } as Record<string, unknown>,
+    }));
+
+    await insertDocumentRecords(rows);
+    trace({ event: "doc_ingest_text_complete", title, source, chunksInserted: rows.length });
+    invalidateDocumentsCache();
+    return { chunksInserted: rows.length, title };
+  }
+
+  // Legacy chunking paths (heading-aware, page-boundary, hybrid, paragraph)
   let structuredChunks: HeadingChunk[];
 
   switch (strategy) {

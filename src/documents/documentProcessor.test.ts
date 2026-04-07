@@ -65,7 +65,7 @@ mock.module("../local/storageBackend", () => ({
 // Must import after mock.module() calls.
 const { chunkText, extractTextFromFile, ingestDocument, deleteDocument, listDocuments, ingestText,
         hasMarkdownHeadings, chunkByHeadings, chunkByPages, chunkByPagesWithHeadings,
-        detectChunkingStrategy, checkTitleCollision } =
+        detectChunkingStrategy, checkTitleCollision, smartChunk } =
   await import("./documentProcessor.ts");
 
 // ─── Test fixtures ────────────────────────────────────────────────────────────
@@ -615,19 +615,18 @@ This is the second section, also with sufficient content for embedding.
     expect(rows[1].chunk_heading).toBe("## Section 2");
   });
 
-  test("uses paragraph strategy for plain prose without headings", async () => {
+  test("uses smart strategy for plain prose without headings", async () => {
     const plainText = "Plain prose. ".repeat(200); // long but no headings
     await ingestText(plainText, "Plain Doc");
     const rows = mockInsert.mock.calls[0][0] as any[];
-    expect(rows[0].metadata.chunking_strategy).toBe("paragraph");
-    expect(rows[0].chunk_heading).toBeUndefined();
+    expect(rows[0].metadata.chunking_strategy).toBe("smart");
   });
 
-  test("flat chunk rows contain [Doc: title] prefix in content", async () => {
+  test("smart chunk rows contain [Doc: title] prefix in content", async () => {
     const plainText = "Plain prose without any headings. ".repeat(50);
     await ingestText(plainText, "Knowledge Transfer Archetype");
     const rows = mockInsert.mock.calls[0][0] as any[];
-    expect(rows[0].metadata.chunking_strategy).toBe("paragraph");
+    expect(rows[0].metadata.chunking_strategy).toBe("smart");
     expect(rows[0].content).toMatch(/^\[Doc: Knowledge Transfer Archetype\]\n\n/);
   });
 
@@ -723,13 +722,13 @@ describe("detectChunkingStrategy", () => {
     expect(detectChunkingStrategy("## Section\n\nBody text")).toBe("heading-aware");
   });
 
-  test("returns paragraph when neither pages nor headings", () => {
-    expect(detectChunkingStrategy("Plain paragraph text.")).toBe("paragraph");
+  test("returns smart when neither pages nor headings", () => {
+    expect(detectChunkingStrategy("Plain paragraph text.")).toBe("smart");
   });
 
-  test("returns paragraph for single page (no useful page structure)", () => {
+  test("returns smart for single page (no useful page structure)", () => {
     const singlePage = [{ pageNum: 1, text: "all content" }];
-    expect(detectChunkingStrategy("all content", singlePage)).toBe("paragraph");
+    expect(detectChunkingStrategy("all content", singlePage)).toBe("smart");
   });
 });
 
@@ -782,6 +781,172 @@ describe("parsePageMarkers", () => {
     const h2 = hashPdfContent(buf);
     expect(h1).toBe(h2);
     expect(h1).toHaveLength(64); // SHA-256 hex
+  });
+});
+
+// ─── smartChunk (QMD-style document chunking with overlap) ──────────────────
+
+describe("smartChunk", () => {
+  test("returns single chunk for short text", () => {
+    const chunks = smartChunk("Short text", "My Doc");
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0].text).toContain("[Doc: My Doc]");
+    expect(chunks[0].text).toContain("Short text");
+    expect(chunks[0].pos).toBe(0);
+    expect(chunks[0].seq).toBe(0);
+    expect(chunks[0].hash).toHaveLength(64); // SHA-256 hex
+  });
+
+  test("splits long text into multiple chunks", () => {
+    const text = "A".repeat(5000);
+    const chunks = smartChunk(text, "Long Doc", 2000, 300);
+    expect(chunks.length).toBeGreaterThan(1);
+  });
+
+  test("each chunk has sequential seq numbers", () => {
+    const text = ("Para content. ".repeat(100) + "\n\n").repeat(5);
+    const chunks = smartChunk(text, "Seq Doc", 1000, 150);
+    for (let i = 0; i < chunks.length; i++) {
+      expect(chunks[i].seq).toBe(i);
+    }
+  });
+
+  test("each chunk has a SHA-256 hash of 64 hex chars", () => {
+    const text = "AAA".repeat(1000) + "\n\nBBB".repeat(1000) + "\n\nCCC".repeat(1000);
+    const chunks = smartChunk(text, "Hash Doc", 2000, 300);
+    for (const chunk of chunks) {
+      expect(chunk.hash).toHaveLength(64);
+      expect(chunk.hash).toMatch(/^[0-9a-f]{64}$/);
+    }
+  });
+
+  test("includes [Doc: title] prefix in every chunk", () => {
+    const text = ("Some content. ".repeat(100) + "\n\n").repeat(3);
+    const chunks = smartChunk(text, "Prefix Doc", 1000, 150);
+    for (const chunk of chunks) {
+      expect(chunk.text).toMatch(/^\[Doc: Prefix Doc\]/);
+    }
+  });
+
+  test("detects nearest heading for chunk context", () => {
+    const text = "## Introduction\n\nIntro content here.\n\n" + "Body. ".repeat(500) + "\n\n## Methods\n\nMethod content.";
+    const chunks = smartChunk(text, "Heading Doc", 200, 30);
+    // First chunk should have "Introduction" heading
+    expect(chunks[0].heading).toBe("Introduction");
+    // All chunks should have a heading (either Introduction or Methods)
+    for (const chunk of chunks) {
+      expect(chunk.heading).toBeDefined();
+      expect(["Introduction", "Methods"]).toContain(chunk.heading);
+    }
+  });
+
+  test("includes heading in prefix when present", () => {
+    const text = "## Section A\n\nContent for section A with enough to be a full chunk.";
+    const chunks = smartChunk(text, "Section Doc");
+    expect(chunks[0].text).toContain("[Section A]");
+    expect(chunks[0].text).toContain("[Doc: Section Doc]");
+  });
+
+  test("overlap: chunks cover overlapping regions of source text", () => {
+    // With overlap=100, consecutive chunks should share ~100 chars
+    const text = "A".repeat(500);
+    const chunks = smartChunk(text, "Overlap Doc", 200, 100);
+    expect(chunks.length).toBeGreaterThan(2);
+    // Check that pos values show overlap (each chunk starts before previous one ended)
+    for (let i = 1; i < chunks.length; i++) {
+      // pos[i] should be less than where chunk[i-1] ended
+      const prevEnd = chunks[i - 1].pos + 200; // approximate
+      expect(chunks[i].pos).toBeLessThan(prevEnd);
+    }
+  });
+
+  test("truncates long doc titles in prefix", () => {
+    const longTitle = "A".repeat(100);
+    const chunks = smartChunk("Content", longTitle);
+    // Title should be truncated to 57 chars + "…"
+    expect(chunks[0].text).toContain("A".repeat(57) + "…");
+  });
+
+  test("splits at paragraph boundaries", () => {
+    const para1 = "A".repeat(300);
+    const para2 = "B".repeat(300);
+    const text = para1 + "\n\n" + para2;
+    const chunks = smartChunk(text, "Para Doc", 400, 60);
+    expect(chunks.length).toBeGreaterThanOrEqual(2);
+    // First chunk should contain As, second should contain Bs
+    expect(chunks[0].text).toContain("A".repeat(100));
+    expect(chunks[chunks.length - 1].text).toContain("B".repeat(100));
+  });
+
+  test("code fence content stays intact (not split mid-block)", () => {
+    // Code block with enough content to exceed maxLen — should stay together
+    const code = "```\n" + "x = 1\n".repeat(10) + "```";
+    const text = "Before paragraph.\n\n" + code + "\n\nAfter paragraph.";
+    const chunks = smartChunk(text, "Code Doc", 80, 10);
+    // The code block should appear intact in one chunk
+    const codeChunk = chunks.find((c) => c.text.includes("x = 1"));
+    expect(codeChunk).toBeDefined();
+    expect(codeChunk!.text).toContain("```");
+    // The code chunk should contain both opening and closing fences
+    const fenceMatches = codeChunk!.text.match(/```/g) || [];
+    expect(fenceMatches.length).toBeGreaterThanOrEqual(2);
+  });
+
+  test("pos tracks character position in original document", () => {
+    const text = "Hello\n\nWorld\n\n" + "X".repeat(500);
+    const chunks = smartChunk(text, "Pos Doc", 200, 30);
+    // First chunk starts at pos 0
+    expect(chunks[0].pos).toBe(0);
+    // Later chunks start at later positions
+    for (let i = 1; i < chunks.length; i++) {
+      expect(chunks[i].pos).toBeGreaterThan(0);
+    }
+  });
+
+  test("preserves all content across chunks (no data loss)", () => {
+    const text = "Word ".repeat(1000); // ~5000 chars
+    const chunks = smartChunk(text, "Preserve Doc", 1500, 225);
+    // All words should appear in at least one chunk (overlap may cause duplicates)
+    const allText = chunks.map((c) => c.text).join(" ");
+    expect(allText).toContain("Word");
+    // Total non-prefix content should cover the original
+    const wordCount = allText.match(/Word/g)?.length ?? 0;
+    expect(wordCount).toBeGreaterThanOrEqual(1000); // at least all original words present
+  });
+});
+
+// ─── ingestText — smart chunking metadata ───────────────────────────────────
+
+describe("ingestText — smart chunking metadata", () => {
+  beforeEach(() => {
+    mockInsert.mockClear();
+    mockTrace.mockClear();
+    hashMatchResult = null;
+    titleCountResult = 0;
+  });
+
+  test("smart strategy stores chunk_hash, chunk_pos, chunk_seq in metadata", async () => {
+    const plainText = "Word sentence. ".repeat(300); // ~4500 chars, no headings
+    await ingestText(plainText, "Smart Meta Doc");
+    const rows = mockInsert.mock.calls[0][0] as any[];
+    expect(rows[0].metadata.chunking_strategy).toBe("smart");
+    expect(rows[0].metadata.chunk_hash).toBeDefined();
+    expect(rows[0].metadata.chunk_hash).toHaveLength(64);
+    expect(rows[0].metadata.chunk_pos).toBe(0);
+    expect(rows[0].metadata.chunk_seq).toBe(0);
+    // Second chunk should have seq=1
+    if (rows.length > 1) {
+      expect(rows[1].metadata.chunk_seq).toBe(1);
+      expect(rows[1].metadata.chunk_pos).toBeGreaterThan(0);
+    }
+  });
+
+  test("smart strategy preserves content_hash in metadata", async () => {
+    const plainText = "Content. ".repeat(200);
+    await ingestText(plainText, "Hash Preserve Doc");
+    const rows = mockInsert.mock.calls[0][0] as any[];
+    expect(rows[0].metadata.content_hash).toBeDefined();
+    expect(rows[0].metadata.content_hash).toHaveLength(64);
   });
 });
 
