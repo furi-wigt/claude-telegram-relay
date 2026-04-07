@@ -28,6 +28,13 @@ export interface CodeFenceRegion {
   end: number;
 }
 
+export interface BracketSpan {
+  /** Position of the opening [ */
+  start: number;
+  /** Position after the closing ] */
+  end: number;
+}
+
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 /**
@@ -51,7 +58,7 @@ const BREAK_PATTERNS: { pattern: RegExp; score: number; type: string }[] = [
 /** Decay factor for squared-distance scoring */
 const DECAY_FACTOR = 0.8;
 
-// ─── Code Fence Detection ────────────────────────────────────────────────────
+// ─── Code Fence Detection ─────────────────────────────────────────────────────
 
 /**
  * Find all code fence regions (``` ... ```) in the text.
@@ -84,6 +91,48 @@ export function findCodeFences(text: string): CodeFenceRegion[] {
  */
 export function isInsideCodeFence(pos: number, fences: CodeFenceRegion[]): boolean {
   return fences.some((f) => pos >= f.start && pos < f.end);
+}
+
+// ─── Bracket Span Detection ───────────────────────────────────────────────────
+
+/**
+ * Find all bracket spans ([...]) in the text.
+ *
+ * Used to prevent splitting inside multi-line bracket constructs such as
+ * `[TBC\n fields in EDENPlan.md]`, where splitting at the inner newline
+ * produces broken fragments. Nesting is supported (inner brackets tracked
+ * by depth so only outermost spans are returned).
+ */
+export function findBracketSpans(text: string): BracketSpan[] {
+  const spans: BracketSpan[] = [];
+  let depth = 0;
+  let openPos = -1;
+
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === "[") {
+      if (depth === 0) openPos = i;
+      depth++;
+    } else if (text[i] === "]") {
+      if (depth > 0) {
+        depth--;
+        if (depth === 0 && openPos !== -1) {
+          spans.push({ start: openPos, end: i + 1 });
+          openPos = -1;
+        }
+      }
+    }
+  }
+
+  return spans;
+}
+
+/**
+ * Check if a position falls strictly inside any bracket span
+ * (i.e. after [ and before the matching ], exclusive of both brackets).
+ * s.end is one past the closing ], so the closing ] is at s.end - 1.
+ */
+export function isInsideBracketSpan(pos: number, spans: BracketSpan[]): boolean {
+  return spans.some((s) => pos > s.start && pos < s.end - 1);
 }
 
 // ─── Break-Point Scanner ─────────────────────────────────────────────────────
@@ -147,18 +196,21 @@ export function scanBreakPoints(text: string): BreakPoint[] {
 /**
  * Find the best break point near a target position using squared-distance decay.
  *
- * @param breakPoints  All available break points
- * @param target       Ideal split position (e.g. maxChars from chunk start)
- * @param windowChars  How far from target to search for breaks
- * @param fences       Code fence regions to avoid splitting inside
- * @returns            Best break position, or target if no viable break found
+ * @param breakPoints   All available break points
+ * @param target        Ideal split position (e.g. maxChars from chunk start)
+ * @param windowChars   How far from target to search for breaks
+ * @param fences        Code fence regions to avoid splitting inside
+ * @param text          Full text (used for word-boundary fallback)
+ * @param bracketSpans  Bracket spans to avoid splitting inside (e.g. [TBC\nfield])
+ * @returns             Best break position, or target if no viable break found
  */
 export function findBestCutoff(
   breakPoints: BreakPoint[],
   target: number,
   windowChars: number,
   fences: CodeFenceRegion[],
-  text: string = ""
+  text: string = "",
+  bracketSpans: BracketSpan[] = []
 ): number {
   const windowStart = Math.max(0, target - windowChars);
   const windowEnd = target; // Never overshoot — caller handles maxLen clamping
@@ -169,6 +221,7 @@ export function findBestCutoff(
   for (const bp of breakPoints) {
     if (bp.pos < windowStart || bp.pos > windowEnd) continue;
     if (isInsideCodeFence(bp.pos, fences)) continue;
+    if (isInsideBracketSpan(bp.pos, bracketSpans)) continue;
 
     const distance = Math.abs(bp.pos - target);
     const normalizedDist = distance / windowChars;
@@ -222,6 +275,7 @@ export function smartSplit(text: string, maxLen: number = 3800): string[] {
 
   const breakPoints = scanBreakPoints(text);
   const fences = findCodeFences(text);
+  const bracketSpans = findBracketSpans(text);
   const chunks: string[] = [];
   let pos = 0;
 
@@ -236,7 +290,7 @@ export function smartSplit(text: string, maxLen: number = 3800): string[] {
     // Search the full chunk range for break points — the decay factor
     // will naturally prefer breaks closer to target
     const windowChars = maxLen;
-    let cutoff = findBestCutoff(breakPoints, target, windowChars, fences, text);
+    let cutoff = findBestCutoff(breakPoints, target, windowChars, fences, text, bracketSpans);
 
     // If cutoff lands inside a code fence, push to after the fence ends
     // (code fences are allowed to exceed maxLen to stay intact)

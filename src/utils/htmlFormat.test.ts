@@ -5,7 +5,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { markdownToHtml, splitMarkdown } from "./htmlFormat.ts";
+import { markdownToHtml, splitMarkdown, decodeHtmlEntities } from "./htmlFormat.ts";
 
 // ────────────────────────────────────────────────────────────────────────────
 // Blockquotes
@@ -278,5 +278,51 @@ describe("splitMarkdown", () => {
     const chunks = splitMarkdown(`${p1}\n\n${p2}`, 60);
     const lastChunk = chunks[chunks.length - 1];
     expect(markdownToHtml(lastChunk)).toContain("<code>myFunc()</code>");
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// decodeHtmlEntities
+// ────────────────────────────────────────────────────────────────────────────
+
+describe("decodeHtmlEntities", () => {
+  test("decodes &lt; and &gt; back to angle brackets", () => {
+    expect(decodeHtmlEntities("EDEN_BCP_Audit_&lt;timestamp&gt;.md")).toBe(
+      "EDEN_BCP_Audit_<timestamp>.md"
+    );
+  });
+
+  test("decodes &amp; back to ampersand", () => {
+    expect(decodeHtmlEntities("AT&amp;T")).toBe("AT&T");
+  });
+
+  test("decodes &quot; back to double quote", () => {
+    expect(decodeHtmlEntities("say &quot;hello&quot;")).toBe('say "hello"');
+  });
+
+  test("decodes &#39; back to single quote", () => {
+    expect(decodeHtmlEntities("it&#39;s fine")).toBe("it's fine");
+  });
+
+  test("no-op on plain text with no entities", () => {
+    expect(decodeHtmlEntities("hello world")).toBe("hello world");
+  });
+
+  test("decodes &amp; LAST to avoid double-decoding &amp;lt; → &lt; → <", () => {
+    // &amp;lt; should decode to &lt;, NOT to <
+    expect(decodeHtmlEntities("&amp;lt;")).toBe("&lt;");
+  });
+
+  test("round-trips markdownToHtml output for angle-bracket content", () => {
+    // Input with angle brackets (no underscores to avoid italic conversion)
+    // markdownToHtml escapes < > so Telegram renders them in HTML mode.
+    // When HTML is rejected and we fall back to plain text, decodeHtmlEntities
+    // recovers the original readable text.
+    const input = "output-<timestamp>.md";
+    const htmlFromMd = markdownToHtml(input);
+    expect(htmlFromMd).toBe("output-&lt;timestamp&gt;.md");
+    // Stripping tags (none here) then decoding entities gives back the original
+    const stripped = htmlFromMd.replace(/<[^>]+>/g, "");
+    expect(decodeHtmlEntities(stripped)).toBe("output-<timestamp>.md");
   });
 });

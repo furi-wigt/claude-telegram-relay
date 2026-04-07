@@ -90,6 +90,27 @@ export function splitMarkdown(text: string, maxLen: number): string[] {
   return smartSplit(text, maxLen);
 }
 
+/**
+ * Decode HTML entities back to their plain-text equivalents.
+ *
+ * Used when falling back from HTML parse_mode to plain text:
+ * markdownToHtml escapes < → &lt;, > → &gt;, & → &amp; so that
+ * Telegram renders them correctly in HTML mode. When the HTML is
+ * rejected and we fall back to plain text (no parse_mode), those
+ * entities would appear literally unless decoded first.
+ *
+ * Order matters: &amp; must be decoded LAST to avoid double-decoding
+ * (e.g. &amp;lt; → &lt; → < instead of the correct &lt;).
+ */
+export function decodeHtmlEntities(text: string): string {
+  return text
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, "&");
+}
+
 export function markdownToHtml(text: string): string {
   // ── Step 0a: extract fenced code blocks FIRST ─────────────────────────────
   // Must happen before blockquote extraction so "> " lines inside fences are
