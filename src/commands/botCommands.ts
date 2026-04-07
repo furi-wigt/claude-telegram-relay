@@ -38,41 +38,18 @@ import { listDocuments, deleteDocument, ingestText, resolveUniqueTitle } from ".
 import { isTROQAActive } from "../tro/troQAState.ts";
 import { handleCwdCommand } from "./cwdCommand.ts";
 import { resolveSourceLabel } from "../utils/chatNames.ts";
+import { smartSplit } from "../utils/smartBoundary";
+import { indexCwdDocuments, getIndexStatus } from "../rag/filesystemIndex";
 
 const TELEGRAM_MAX_MESSAGE_LENGTH = 4096;
 
 /**
  * Send a potentially long message by splitting it into ≤4096-character chunks.
- * Splits on newline boundaries where possible to preserve readability.
+ * Uses QMD-style scored break-point detection for natural reading boundaries.
  */
 async function sendLongMessage(ctx: Context, text: string): Promise<void> {
-  if (text.length <= TELEGRAM_MAX_MESSAGE_LENGTH) {
-    await ctx.reply(text);
-    return;
-  }
-
-  const lines = text.split("\n");
-  let chunk = "";
-
-  for (const line of lines) {
-    const addition = chunk ? "\n" + line : line;
-    if (chunk.length + addition.length > TELEGRAM_MAX_MESSAGE_LENGTH) {
-      if (chunk) {
-        await ctx.reply(chunk);
-        chunk = line;
-      } else {
-        // Single line exceeds limit — force-split it
-        for (let i = 0; i < line.length; i += TELEGRAM_MAX_MESSAGE_LENGTH) {
-          await ctx.reply(line.substring(i, i + TELEGRAM_MAX_MESSAGE_LENGTH));
-        }
-        chunk = "";
-      }
-    } else {
-      chunk = chunk ? chunk + "\n" + line : line;
-    }
-  }
-
-  if (chunk) {
+  const chunks = smartSplit(text, TELEGRAM_MAX_MESSAGE_LENGTH);
+  for (const chunk of chunks) {
     await ctx.reply(chunk);
   }
 }
@@ -663,6 +640,107 @@ export function registerCommands(bot: Bot, options: CommandOptions): void {
     const lastPaste = options.getLastPaste?.(chatId);
     const result = await handleDocCommand(args, listDocuments, deleteDocument, searchDocumentsByTitles, lastPaste);
     await sendLongMessage(ctx, result);
+  });
+
+  // /kb — knowledge base commands (CWD filesystem indexing)
+  bot.command("kb", async (ctx) => {
+    const chatId = ctx.chat?.id;
+    if (!chatId) return;
+
+    const args = (ctx.match ?? "").trim();
+    const [subcmd, ...rest] = args.split(/\s+/);
+    const threadId = ctx.message?.message_thread_id ?? null;
+
+    // Get CWD from session
+    const session = getSession(chatId, threadId);
+    const cwdPath = session?.activeCwd || session?.cwd || options.projectDir;
+
+    if (!cwdPath) {
+      await ctx.reply("No working directory configured. Use /cwd to set one first.");
+      return;
+    }
+
+    if (!subcmd || subcmd === "help") {
+      await ctx.reply(
+        "Knowledge Base commands:\n\n" +
+        "  /kb index  — Index markdown files from CWD\n" +
+        "  /kb status — Show index status\n" +
+        "  /kb search <query> — Search indexed files\n\n" +
+        `Current CWD: ${cwdPath}`
+      );
+      return;
+    }
+
+    if (subcmd === "index") {
+      await ctx.reply(`Indexing markdown files from:\n${cwdPath}\n\nThis may take a moment...`);
+      const result = await indexCwdDocuments(cwdPath, async (msg) => {
+        // Progress updates are logged, not sent as messages (too noisy)
+        console.log(`[kb:index] ${msg}`);
+      });
+      const lines = [
+        `✅ Indexing complete`,
+        ``,
+        `  Files found: ${result.filesFound}`,
+        `  Indexed: ${result.filesIndexed}`,
+        `  Skipped (unchanged): ${result.filesSkipped}`,
+        ...(result.filesFailed > 0 ? [`  Failed: ${result.filesFailed}`] : []),
+      ];
+      if (result.indexed.length > 0 && result.indexed.length <= 10) {
+        lines.push("", "Indexed files:");
+        for (const f of result.indexed) {
+          lines.push(`  • ${f.relativePath} (${f.chunks} chunks)`);
+        }
+      }
+      await sendLongMessage(ctx, lines.join("\n"));
+      return;
+    }
+
+    if (subcmd === "status") {
+      const status = getIndexStatus(cwdPath);
+      const lines = [
+        `Knowledge Base Status`,
+        ``,
+        `  CWD: ${status.cwdPath}`,
+        `  Indexed files: ${status.indexedFiles}`,
+        `  Total .md files: ${status.totalFiles}`,
+        `  Stale/new files: ${status.staleFiles.length}`,
+        ...(status.lastIndexed ? [`  Last indexed: ${status.lastIndexed}`] : []),
+      ];
+      if (status.staleFiles.length > 0 && status.staleFiles.length <= 10) {
+        lines.push("", "Stale files:");
+        for (const f of status.staleFiles) {
+          lines.push(`  • ${f}`);
+        }
+        lines.push("", "Run /kb index to update.");
+      }
+      await ctx.reply(lines.join("\n"));
+      return;
+    }
+
+    if (subcmd === "search") {
+      const query = rest.join(" ").trim();
+      if (!query) {
+        await ctx.reply("Usage: /kb search <query>");
+        return;
+      }
+      // Use the existing document search with keyword fallback enabled
+      const result = await searchDocumentsByTitles(query, [], {
+        keywordFallback: true,
+        matchCount: 5,
+      });
+      if (!result.hasResults) {
+        await ctx.reply("No results found. Try /kb index first if you haven't indexed yet.");
+        return;
+      }
+      const lines = result.chunks.map((c, i) => {
+        const score = (c.similarity * 100).toFixed(0);
+        return `${i + 1}. ${c.title} (${score}%)\n   ${c.content.slice(0, 150)}...`;
+      });
+      await sendLongMessage(ctx, `Search results for "${query}":\n\n${lines.join("\n\n")}`);
+      return;
+    }
+
+    await ctx.reply(`Unknown subcommand: ${subcmd}. Use /kb help for usage.`);
   });
 
   // /monthly_update — trigger TRO monthly update pipeline ad-hoc
