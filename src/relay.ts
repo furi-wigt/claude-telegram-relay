@@ -19,7 +19,7 @@ import {
   handleCancelCallback,
   handleCancelCommand,
 } from "./cancel.ts";
-import { markdownToHtml, splitMarkdown } from "./utils/htmlFormat.ts";
+import { markdownToHtml, splitMarkdown, decodeHtmlEntities } from "./utils/htmlFormat.ts";
 import { transcribe } from "./transcribe.ts";
 import {
   processMemoryIntents,
@@ -3260,8 +3260,8 @@ async function sendResponse(ctx: Context, response: string, footer?: FooterData)
     try {
       if (fullHtml.length > TELEGRAM_MAX) {
         // HTML expanded beyond Telegram's limit (tables are common cause).
-        // Strip tags and send as plain text sub-chunks.
-        const plain = fullHtml.replace(/<[^>]+>/g, "");
+        // Strip tags, decode HTML entities, send as plain text sub-chunks.
+        const plain = decodeHtmlEntities(fullHtml.replace(/<[^>]+>/g, ""));
         const subChunks = [];
         for (let j = 0; j < plain.length; j += TELEGRAM_MAX) subChunks.push(plain.slice(j, j + TELEGRAM_MAX));
         for (let k = 0; k < subChunks.length; k++) {
@@ -3277,9 +3277,9 @@ async function sendResponse(ctx: Context, response: string, footer?: FooterData)
         if (responseKey) appendAssistantPart(lastAssistantResponses, responseKey, chunks[i]);
       }
     } catch {
-      // Telegram rejected the HTML — fall back to plain text so the response
-      // is never silently lost.
-      const plain = fullHtml.replace(/<[^>]+>/g, "");
+      // Telegram rejected the HTML — strip tags, decode HTML entities, fall back to
+      // plain text so &lt; / &gt; / &amp; don't appear literally.
+      const plain = decodeHtmlEntities(fullHtml.replace(/<[^>]+>/g, ""));
       const subChunks = [];
       for (let j = 0; j < plain.length; j += TELEGRAM_MAX) subChunks.push(plain.slice(j, j + TELEGRAM_MAX));
       for (let k = 0; k < subChunks.length; k++) {

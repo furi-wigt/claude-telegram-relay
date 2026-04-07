@@ -15,7 +15,7 @@
  */
 
 import { sendToGroup } from "./sendToGroup.ts";
-import { markdownToHtml, splitMarkdown } from "./htmlFormat.ts";
+import { markdownToHtml, splitMarkdown, decodeHtmlEntities } from "./htmlFormat.ts";
 import { callRoutineModel } from "../routines/routineModel.ts";
 import { ROUTINE_SOURCE } from "../memory/shortTermMemory.ts";
 import { insertMessageRecord } from "../local/storageBackend";
@@ -97,8 +97,8 @@ export async function sendAndRecord(
       const html = markdownToHtml(chunks[i]);
 
       if (html.length > TELEGRAM_MAX) {
-        // HTML expanded past 4096 — strip tags and send as plain-text sub-chunks.
-        const plain = html.replace(/<[^>]+>/g, "");
+        // HTML expanded past 4096 — strip tags, decode entities, send as plain-text sub-chunks.
+        const plain = decodeHtmlEntities(html.replace(/<[^>]+>/g, ""));
         const subChunks: string[] = [];
         for (let j = 0; j < plain.length; j += TELEGRAM_MAX) subChunks.push(plain.slice(j, j + TELEGRAM_MAX));
         for (let k = 0; k < subChunks.length; k++) {

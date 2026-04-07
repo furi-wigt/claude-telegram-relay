@@ -5,6 +5,8 @@ import {
   scanBreakPoints,
   findBestCutoff,
   smartSplit,
+  findBracketSpans,
+  isInsideBracketSpan,
 } from "./smartBoundary";
 
 // ─── findCodeFences ──────────────────────────────────────────────────────────
@@ -248,5 +250,118 @@ describe("smartSplit", () => {
 
     const text2 = "A".repeat(3801);
     expect(smartSplit(text2).length).toBeGreaterThanOrEqual(1);
+  });
+
+  test("does not split inside a multi-line bracket span", () => {
+    // Regression: "fill the [TBC\n fields in EDENPlan.md]" was split at the
+    // inner newline, producing "[TBC" in one chunk and " fields in EDENPlan.md]"
+    // at the start of the next.
+    const prefix = "x".repeat(60);
+    const bracket = "[TBC\n fields in EDENBusinessContinuity_Plan.md]";
+    const text = `${prefix}\n\n${bracket}`;
+    const chunks = smartSplit(text, 70);
+
+    // The bracket span must not be split: every chunk must either contain
+    // the full bracket or none of it.
+    const fullBracket = chunks.some((c) => c.includes("[TBC") && c.includes("EDENBusinessContinuity_Plan.md]"));
+    const splitOpen = chunks.some((c) => c.includes("[TBC") && !c.includes("]"));
+    const splitClose = chunks.some((c) => c.startsWith(" fields in") && c.includes("]") && !c.includes("["));
+
+    // If the bracket fits in a chunk at all, it should not be split
+    if (fullBracket || splitOpen || splitClose) {
+      expect(splitOpen).toBe(false);
+      expect(splitClose).toBe(false);
+    }
+  });
+});
+
+// ─── findBracketSpans ─────────────────────────────────────────────────────────
+
+describe("findBracketSpans", () => {
+  test("detects a simple single-line bracket span", () => {
+    const text = "paste into [TBC] fields";
+    const spans = findBracketSpans(text);
+    expect(spans).toHaveLength(1);
+    expect(text.slice(spans[0].start, spans[0].end)).toBe("[TBC]");
+  });
+
+  test("detects a multi-line bracket span", () => {
+    const text = "fill the [TBC\n fields in Plan.md] now";
+    const spans = findBracketSpans(text);
+    expect(spans).toHaveLength(1);
+    expect(spans[0].start).toBe(text.indexOf("["));
+    expect(spans[0].end).toBe(text.indexOf("]") + 1);
+  });
+
+  test("detects multiple bracket spans", () => {
+    const text = "[A] and [B]";
+    const spans = findBracketSpans(text);
+    expect(spans).toHaveLength(2);
+  });
+
+  test("returns empty for text with no brackets", () => {
+    expect(findBracketSpans("no brackets here")).toEqual([]);
+  });
+
+  test("handles unclosed bracket (no closing ])", () => {
+    const spans = findBracketSpans("[unclosed");
+    expect(spans).toHaveLength(0);
+  });
+
+  test("handles nested brackets — only outer span returned", () => {
+    const text = "[[inner] outer]";
+    const spans = findBracketSpans(text);
+    // Outer bracket: from position 0 to end
+    expect(spans).toHaveLength(1);
+    expect(text.slice(spans[0].start, spans[0].end)).toBe("[[inner] outer]");
+  });
+});
+
+// ─── isInsideBracketSpan ──────────────────────────────────────────────────────
+
+describe("isInsideBracketSpan", () => {
+  test("returns true for position strictly inside a bracket span", () => {
+    const text = "[TBC\n fields]";
+    const spans = findBracketSpans(text);
+    const newlinePos = text.indexOf("\n");
+    expect(isInsideBracketSpan(newlinePos, spans)).toBe(true);
+  });
+
+  test("returns false for position outside bracket spans", () => {
+    const text = "before [TBC] after";
+    const spans = findBracketSpans(text);
+    expect(isInsideBracketSpan(0, spans)).toBe(false);
+    expect(isInsideBracketSpan(text.length - 1, spans)).toBe(false);
+  });
+
+  test("returns false for position at the opening [ itself", () => {
+    // The [ boundary is not 'inside' — break before [ is acceptable
+    const text = "x [inner]";
+    const spans = findBracketSpans(text);
+    const openPos = text.indexOf("[");
+    expect(isInsideBracketSpan(openPos, spans)).toBe(false);
+  });
+
+  test("returns false for position at the closing ] itself", () => {
+    const text = "[inner] x";
+    const spans = findBracketSpans(text);
+    const closePos = text.indexOf("]");
+    expect(isInsideBracketSpan(closePos, spans)).toBe(false);
+  });
+});
+
+// ─── findBestCutoff with bracket spans ────────────────────────────────────────
+
+describe("findBestCutoff — bracket span avoidance", () => {
+  test("skips break point inside bracket span", () => {
+    // newline at pos 10 is inside [TBC\n...] starting at pos 8
+    const text = "xxxxxxxx[TBC\n fields]xxxxxxxx";
+    const spans = findBracketSpans(text);
+    const newlinePos = text.indexOf("\n");
+    const breakPoints = [{ pos: newlinePos, score: 1, type: "newline" }];
+    const fences: never[] = [];
+    // With the bracket span, the newline at newlinePos should be skipped
+    const cutoff = findBestCutoff(breakPoints, newlinePos, 200, fences, text, spans);
+    expect(cutoff).not.toBe(newlinePos + 1); // Would be newlinePos+1 if chosen
   });
 });

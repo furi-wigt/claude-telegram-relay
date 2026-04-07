@@ -9,6 +9,7 @@
 
 import { loadEnv } from "../config/envLoader.ts";
 import { smartSplit } from "./smartBoundary";
+import { decodeHtmlEntities } from "./htmlFormat.ts";
 
 loadEnv();
 
@@ -49,10 +50,12 @@ async function sendChunk(
 
   if (!response.ok) {
     const errorData = await response.text();
-    // If Telegram can't parse the Markdown/HTML, retry as plain text
+    // If Telegram can't parse the Markdown/HTML, strip tags, decode HTML entities,
+    // and retry as plain text so &lt; / &gt; / &amp; don't appear literally.
     if (response.status === 400 && errorData.includes("can't parse entities") && options?.parseMode) {
       console.warn(`[sendChunk] Telegram rejected ${options.parseMode} (400 can't parse entities) — falling back to plain text. Chat: ${chatId}. First 200 chars: ${text.slice(0, 200)}`);
-      return sendChunk(chatId, text, { ...options, parseMode: undefined });
+      const plain = decodeHtmlEntities(text.replace(/<[^>]+>/g, ""));
+      return sendChunk(chatId, plain, { ...options, parseMode: undefined });
     }
     throw new Error(`Telegram API error (${response.status}): ${errorData}`);
   }

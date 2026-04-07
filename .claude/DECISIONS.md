@@ -1,4 +1,11 @@
 # Decision Journal
+
+## 2026-04-07 — Fix HTML entity literal display and bracket-span split in Telegram fallback [pending]
+
+**Change**: (1) Added `decodeHtmlEntities()` to all plain-text fallback paths so `&lt;` / `&gt;` / `&amp;` never appear literally. (2) Added `findBracketSpans` + `isInsideBracketSpan` to `smartBoundary.ts`; `smartSplit` and `findBestCutoff` now skip break points inside `[...]` spans.
+**Why**: When `markdownToHtml` escapes `<timestamp>` → `&lt;timestamp&gt;` and Telegram rejects the HTML (400 "can't parse entities"), the fallback stripped HTML tags but left entities intact — users saw `&lt;` literally. Separately, `smartSplit` was splitting at `\n` inside `[TBC\n fields in Plan.md]` because it had no awareness of bracket spans, producing broken fragments across two messages.
+**Rejected**: (A) Sending plain text from the start — loses formatting for 99% of messages that are valid HTML. (B) Pre-processing to remove angle brackets before `markdownToHtml` — changes semantics; filenames like `output-<timestamp>.md` are user-visible content. (C) Making `scanBreakPoints` bracket-aware — better to keep scanning cheap and filter at selection time in `findBestCutoff`.
+**Branch**: bugfix/html-entity-decode-bracket-split
 ## 2026-04-03 — Streaming SSE over buffered HTTP/1.0 for MLX client [pending]
 
 **Change**: Switched `callMlxGenerate` from `stream: false` (buffered) to `stream: true` (SSE) with `Promise.race`-based per-chunk inactivity timeout.
