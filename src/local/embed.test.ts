@@ -2,9 +2,11 @@
  * Unit tests for embed.ts — retry-once logic and timeout handling.
  *
  * Uses a local HTTP server to simulate MLX /v1/embeddings responses.
+ * Registry is injected via _testSetRegistry to avoid needing ~/.claude-relay/models.json.
  */
 import { describe, it, expect, beforeAll, afterAll } from "bun:test";
 import { localEmbed, localEmbedBatch } from "./embed";
+import { ModelRegistry, _testSetRegistry } from "../models/index.ts";
 
 // ── Test server to simulate MLX embed server ────────────────────────────────
 
@@ -21,7 +23,7 @@ function resetServer() {
 
 beforeAll(() => {
   server = Bun.serve({
-    port: 0, // random available port
+    port: 19871, // fixed port for embed unit tests
     async fetch(req) {
       callCount++;
       const url = new URL(req.url);
@@ -49,16 +51,37 @@ beforeAll(() => {
     },
   });
 
-  // Point embed module at our test server
-  process.env.EMBED_URL = `http://localhost:${server.port}`;
-  // Use short timeouts for faster tests
-  process.env.EMBED_TIMEOUT_MS = "500";
+  // Inject a test registry pointing at our test server.
+  // timeoutMs: 500ms so timeout tests complete quickly.
+  const registry = ModelRegistry.fromConfig({
+    providers: [
+      {
+        id: "test-embed",
+        type: "openai-compat",
+        url: `http://localhost:${server.port}`,
+        model: "bge-m3",
+        dimensions: 1024,
+        timeoutMs: 500,
+      },
+      {
+        id: "test-claude",
+        type: "claude",
+        model: "claude-haiku-4-5-20251001",
+      },
+    ],
+    slots: {
+      routine: ["test-claude"],
+      stm: ["test-claude"],
+      ltm: ["test-claude"],
+      classify: ["test-claude"],
+      embed: ["test-embed"],
+    },
+  });
+  _testSetRegistry(registry);
 });
 
 afterAll(() => {
   server.stop(true);
-  delete process.env.EMBED_URL;
-  delete process.env.EMBED_TIMEOUT_MS;
 });
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -91,12 +114,14 @@ describe("localEmbed", () => {
     await expect(localEmbed("double timeout")).rejects.toThrow();
   });
 
-  it("throws on HTTP error without retry", async () => {
+  it("retries once on 503 then succeeds (5xx is transient)", async () => {
     resetServer();
-    failFirst = true;
+    failFirst = true; // only first call returns 503; second call succeeds
 
-    await expect(localEmbed("server error")).rejects.toThrow(/503/);
-    expect(callCount).toBe(1); // no retry on HTTP error
+    // Registry treats Embed HTTP 5xx as transient and retries once with 2x timeout
+    const vec = await localEmbed("server error");
+    expect(vec).toHaveLength(1024);
+    expect(callCount).toBe(2); // first 503, second success
   });
 });
 
@@ -118,7 +143,7 @@ describe("localEmbedBatch", () => {
 
   it("retries once on batch timeout", async () => {
     resetServer();
-    delayMs = 1200; // > batch timeout (500*2=1000ms), but < retry (1000*2=2000ms)
+    delayMs = 800; // > first timeout (500ms), but < retry timeout (1000ms)
 
     const vecs = await localEmbedBatch(["x", "y"]);
     expect(vecs).toHaveLength(2);
