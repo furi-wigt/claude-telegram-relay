@@ -241,7 +241,7 @@
     "chatId": null,
     "topicId": null,
     "isDefault": true,
-    "defaultModel": "haiku",
+    "defaultModel": "sonnet",
     "capabilities": [
       "general",
       "meeting-prep",
