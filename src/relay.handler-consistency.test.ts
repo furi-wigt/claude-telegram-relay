@@ -237,8 +237,8 @@ describe("auto-injection gate (relay.ts source contracts)", () => {
     expect(gateBlock).toContain("FILLER_RE.test(text.trim())");
   });
 
-  test("auto-injection similarity threshold is 0.58", () => {
-    expect(gateBlock).toContain("matchThreshold: 0.58");
+  test("auto-injection similarity threshold is 0.65", () => {
+    expect(gateBlock).toContain("matchThreshold: 0.65");
   });
 
   test("command prefix is excluded", () => {

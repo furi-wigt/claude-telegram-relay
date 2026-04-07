@@ -1933,9 +1933,9 @@ async function processTextMessage(
       // Gate 1 (semantic gate): skip embedding call for commands or filler acks.
       //   - No length floor — short domain queries like "IM8?" (4 chars) are valid and must trigger search.
       //   - FILLER_RE catches social ack messages ("Thanks!", "Got it", "ok") regardless of length.
-      // Gate 2 (quality gate): similarity threshold 0.58 — the real noise filter.
-      //   Explicit /doc query uses 0.50; auto-injection uses 0.58 to stay conservative.
-      //   Generic follow-ups ("Can you elaborate?") score <0.58 and are filtered here, not at Gate 1.
+      // Gate 2 (quality gate): similarity threshold 0.65 — the real noise filter.
+      //   Explicit /doc query uses 0.50; auto-injection uses 0.65 (raised from 0.58 — BM25+RRF compensates for recall).
+      //   Generic follow-ups ("Can you elaborate?") score <0.65 and are filtered here, not at Gate 1.
       (() => {
         const FILLER_RE = /^(yes|no|ok|okay|sure|thanks|thank you|got it|noted|sounds good|great|alright|perfect)[\s!.?,]*$/i;
         const shouldSearch = !text.startsWith("/") && !FILLER_RE.test(text.trim());
