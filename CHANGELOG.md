@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased] / 2026-04-09 — Fix: Document Query Collection Mismatch
+
+### Fixed
+- **searchService**: `hybridSearch()` now queries the embed-suffixed Qdrant collection (e.g. `documents_bge-m3_1024`) instead of the bare `documents` collection. This fixes `/doc query` returning no results for recently ingested documents — vectors were stored in `documents_bge-m3_1024` by `insertDocumentRecords()` but searched in the wrong collection. Affects all hybrid search: memory, messages, documents, summaries.
+- **vectorStore**: `initEmbedCollections()` now sets `_activeEmbedSuffix` so `getActiveEmbedSuffix()` returns the correct suffix at search time. New `getActiveEmbedSuffix()` export avoids circular dependency between `searchService` and `storageBackend`.
+
 ## [Unreleased] / 2026-04-05 — P3: Mesh Topic Routing
 
 ### Added

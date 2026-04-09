@@ -74,6 +74,14 @@ export async function initCollections(): Promise<void> {
 /** Base names for embed-backed collections (versioned with suffix). */
 export type EmbedCollectionBase = "memory" | "messages" | "documents" | "summaries";
 
+/** Active embed suffix, set by initEmbedCollections(). */
+let _activeEmbedSuffix = "bge-m3_1024";
+
+/** Returns the active embed collection suffix (e.g. "bge-m3_1024"). */
+export function getActiveEmbedSuffix(): string {
+  return _activeEmbedSuffix;
+}
+
 /** Returns versioned collection name: e.g. "memory_bge-m3_1024" */
 export function embedCollectionName(base: EmbedCollectionBase, suffix: string): string {
   return `${base}_${suffix}`;
@@ -99,6 +107,7 @@ export async function ensureEmbedCollection(name: string, dimensions: number): P
  * Call at startup with the suffix from ModelRegistry.embedCollectionSuffix().
  */
 export async function initEmbedCollections(suffix: string, dimensions: number): Promise<void> {
+  _activeEmbedSuffix = suffix;
   const bases: EmbedCollectionBase[] = ["memory", "messages", "documents", "summaries"];
   await Promise.all(bases.map(base => ensureEmbedCollection(embedCollectionName(base, suffix), dimensions)));
 }

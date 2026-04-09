@@ -2,7 +2,7 @@
  * Unified search service: embed query → Qdrant search → join with SQLite for full records.
  */
 import { localEmbed } from "./embed";
-import { search as qdrantSearch, type CollectionName, type SearchResult } from "./vectorStore";
+import { search as qdrantSearch, embedCollectionName, getActiveEmbedSuffix, type CollectionName, type EmbedCollectionBase, type SearchResult } from "./vectorStore";
 import { getDb, type MemoryRow, type DocumentRow } from "./db";
 
 export interface HybridSearchResult<T = Record<string, unknown>> {
@@ -33,7 +33,13 @@ export async function hybridSearch<T = Record<string, unknown>>(
     console.error("[search] Embedding failed, returning empty results:", (err as Error).message);
     return [];
   }
-  const hits = await qdrantSearch(collection, vector, opts);
+  // Use embed-suffixed collection name for Qdrant (e.g. "documents_bge-m3_1024")
+  // to match the collection where insertDocumentRecords/insertMemoryRecord store vectors.
+  const EMBED_BASES: Set<string> = new Set(["memory", "messages", "documents", "summaries"]);
+  const qdrantCollection = EMBED_BASES.has(collection)
+    ? embedCollectionName(collection as EmbedCollectionBase, getActiveEmbedSuffix())
+    : collection;
+  const hits = await qdrantSearch(qdrantCollection, vector, opts);
 
   if (hits.length === 0) return [];
 
