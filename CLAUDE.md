@@ -14,6 +14,8 @@
 > **Service restart confirmation (MANDATORY):** Before executing any command that restarts or reloads the `telegram-relay` service (e.g. `npx pm2 restart telegram-relay`, `npx pm2 reload telegram-relay`), you MUST ask the user for explicit confirmation via Telegram inline keyboard — two buttons: Confirm restart and Cancel. Do NOT restart without a confirmed Yes. This applies to Claude Code agents operating in this project.
 >
 > **Temporary and session files:** Do NOT create temporary scripts, one-off tools, or session-scoped working files in the project root or `src/`. Save all temporary/session files to `.claude/workspace/` (e.g. `.claude/workspace/my-script.ts`). This directory is gitignored and meant for transient work. Delete temp files when the session task is complete.
+>
+> **Testing:** Always use `bun run test` to run the full test suite (runs tests in isolation). Use `bun test <file>` only for targeted single-file runs. Never use plain `bun test` for the full suite — it does not isolate mocks between files.
 
 ## What This Is
 
