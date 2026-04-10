@@ -1,5 +1,5 @@
 /**
- * Generates short topic labels (3-7 words) for messages using local MLX.
+ * Generates short topic labels (3-7 words) for messages using the ModelRegistry routine slot.
  */
 import { callRoutineModel } from "../routines/routineModel.ts";
 

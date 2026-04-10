@@ -962,7 +962,7 @@ async function callClaude(
 
     // Try fallback if available (skip for idle timeouts)
     if (!isIdleTimeout && fallbackAvailable) {
-      console.log("Claude failed, trying MLX fallback...");
+      console.log("Claude failed, trying local model fallback...");
       const notifyChatId = options?.chatId;
       const notifyThreadId = options?.threadId ?? null;
       if (notifyChatId != null) {
@@ -974,7 +974,7 @@ async function callClaude(
       }
       try {
         const fallbackResponse = await callRoutineModel(prompt, { label: "chat-fallback", timeoutMs: 60_000 });
-        return `[via Qwen3.5-9B (MLX)]\n\n${fallbackResponse}`;
+        return `[via local model]\n\n${fallbackResponse}`;
       } catch (fallbackError) {
         console.error("Fallback also failed:", fallbackError);
         return `Error: Both Claude and local model failed. Please try again in a moment.`;

@@ -2,10 +2,10 @@
  * Intent Classifier
  *
  * Routes user messages to the best-fit agent using:
- * 1. MLX local model (Qwen3.5-9B) for structured JSON classification
- * 2. Keyword fallback against agent capabilities[] when MLX is unavailable
+ * 1. ModelRegistry "classify" slot (any OpenAI-compatible provider configured in models.json)
+ * 2. Keyword fallback against agent capabilities[] when the registry model is unavailable
  *
- * Complexity: O(1) MLX call (~200-400ms) + O(n) keyword fallback (n = agents x capabilities)
+ * Complexity: O(1) registry call (~200-400ms) + O(n) keyword fallback (n = agents x capabilities)
  */
 
 import { getRegistry } from "../models/index.ts";
