@@ -30,6 +30,7 @@ import { join, dirname } from "path";
 import { sendToGroup } from "../src/utils/sendToGroup.ts";
 import { loadEnv } from "../src/config/envLoader.ts";
 import { GROUPS, validateGroup } from "../src/config/groups.ts";
+import { initRegistry } from "../src/models/index.ts";
 
 function resolveMemoryDedupGroupKey(): string | undefined {
   for (const key of [
@@ -254,6 +255,7 @@ async function sendWithKeyboard(
 
 async function main(): Promise<void> {
   loadEnv();
+  initRegistry();
 
   const dryRun = process.env.DRY_RUN === "true";
 
