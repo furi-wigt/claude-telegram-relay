@@ -7,6 +7,7 @@ import { join, dirname } from "path";
 import { homedir } from "os";
 import { mkdirSync } from "fs";
 import { initOrchestrationSchema } from "../orchestration/schema.ts";
+import { initJobSchema } from "../jobs/jobSchema.ts";
 
 function getDbPath(): string {
   if (process.env.LOCAL_DB_PATH) return process.env.LOCAL_DB_PATH;
@@ -182,6 +183,9 @@ function initSchema(db: Database) {
 
   // Orchestration tables (dispatches, dispatch_tasks)
   initOrchestrationSchema(db);
+
+  // Job queue tables (jobs, job_checkpoints)
+  initJobSchema(db);
 }
 
 function addColumnIfMissing(db: Database, table: string, column: string, typeDef: string): void {
