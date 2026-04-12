@@ -1,5 +1,18 @@
 # Changelog
 
+## [Unreleased] / 2026-04-12 — Job Queue System
+
+### Added
+- **jobs**: Persistent job queue subsystem (`src/jobs/`) for background work scheduling and tracking.
+- **jobs/store**: SQLite-backed job persistence with dedup keys, checkpoints, and intervention state.
+- **jobs/queue**: Event-driven scheduler with priority lanes (urgent/normal/background) and per-type concurrency caps.
+- **jobs/intervention**: Automation-first intervention cascade: auto-approve rules → confidence auto-proceed → auto-resolve policies → human fallback.
+- **jobs/executors**: RoutineExecutor (handler registry) and ApiCallExecutor (HTTP with retry/backoff).
+- **jobs/webhook**: HTTP server for external job submission with bearer auth and optional per-token ACL.
+- **jobs/cli**: `bun run relay:jobs` CLI for listing, inspecting, approving, retrying, and submitting jobs.
+- **jobs/telegram**: `/jobs` command with filtered views and inline keyboard callbacks for intervention resolution.
+- **config**: `~/.claude-relay/auto-approve.json` for zero-touch approval of safe operations.
+
 ## [Unreleased] / 2026-04-09 — Fix: Document Query Collection Mismatch
 
 ### Fixed
