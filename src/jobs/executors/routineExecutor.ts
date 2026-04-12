@@ -60,7 +60,7 @@ export class RoutineExecutor implements JobExecutor {
     if (!handler) {
       // Lazy dynamic import from routines/handlers/<name>.ts
       try {
-        const handlerPath = `../../routines/handlers/${job.executor}.ts`;
+        const handlerPath = `../../../routines/handlers/${job.executor}.ts`;
         const mod = await import(handlerPath);
         if (typeof mod.run !== "function") {
           return {
