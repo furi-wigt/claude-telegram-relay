@@ -1,5 +1,12 @@
 # Decision Journal
 
+## 2026-04-12 — Intervention continue-after-resolve: set pending, not running [pending]
+
+**Change**: Known design gap in `InterventionManager` — when an intervention is auto-resolved (auto-approve or confidence-proceed), `clearIntervention(id, "running")` is called, but the executor is not re-invoked. The job sits in `running` until `timeout_ms` elapses, then is retried.
+**Why**: Current executors (`RoutineExecutor`, `ApiCallExecutor`) do not emit `awaiting-intervention` in production, so the gap is latent. Fixing it requires either (a) setting status to `pending` on confirm so the scheduler re-dispatches, or (b) calling the executor again inside the resolution callback. Option (a) is cleaner and aligns with the scheduler's existing dispatch model.
+**Rejected**: Leaving as-is permanently — unacceptable once `ClaudeSessionExecutor` is implemented (it will emit intervention for user approvals). Timeout rescue is too slow (up to 30 min).
+**Branch**: feat/job-queue (fix deferred to ClaudeSessionExecutor plan)
+
 ## 2026-04-12 — Strip markdown markers from table cells; add language class to fenced code [pending]
 
 **Change**: (1) `markdownTableToPreAscii` now strips `**`, `*`, `__`, `_`, `~~`, backticks from cell content before padding into `<pre>` ASCII table. (2) Fenced code blocks now emit `class="language-{lang}"` when a language tag is present.
