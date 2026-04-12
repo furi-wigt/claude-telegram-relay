@@ -16,6 +16,8 @@
 > **Temporary and session files:** Do NOT create temporary scripts, one-off tools, or session-scoped working files in the project root or `src/`. Save all temporary/session files to `.claude/workspace/` (e.g. `.claude/workspace/my-script.ts`). This directory is gitignored and meant for transient work. Delete temp files when the session task is complete.
 >
 > **Testing:** Always use `bun run test` to run the full test suite (runs tests in isolation). Use `bun test <file>` only for targeted single-file runs. Never use plain `bun test` for the full suite — it does not isolate mocks between files.
+>
+> **Job queue and routines:** Executor types are registered in `src/jobs/index.ts`. To add a new routine, write `routines/handlers/<name>.ts` exporting `run(ctx: RoutineContext)` and add an entry to `config/routines.config.json`. Do NOT edit `ecosystem.config.cjs` for new routines — `routine-scheduler` is the sole cron dispatcher and reads the config automatically. `JOBS_WEBHOOK_PORT` and `JOBS_WEBHOOK_SECRET` must both be set for `routine-scheduler` to submit jobs. `/schedule <prompt>` on Telegram enqueues a `claude-session` job and posts the result back to the originating chat.
 
 ## What This Is
 

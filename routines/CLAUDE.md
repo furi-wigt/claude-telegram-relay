@@ -7,63 +7,80 @@ Read it before creating or modifying any file in `routines/`.
 
 ## When to write a code-based routine
 
-Use a TypeScript routine (this directory) when the task needs real data:
+Use a TypeScript handler (in `routines/handlers/`) when the task needs real data:
 API calls, database queries, conditional logic, or external integrations.
 
-For simple scheduled prompts with no custom logic, use the prompt-based
-system instead (created via Telegram's `/routines` command — files land in
-`routines/user/`).
+For simple scheduled prompts with no custom logic, add a `"type": "prompt"` entry
+to `config/routines.config.json` — no handler file needed.
 
 ---
 
-## File template
+## Handler contract
 
-```ts
-#!/usr/bin/env bun
+All handlers live in `routines/handlers/<name>.ts` and export a single `run` function.
+The scheduler owns all lifecycle boilerplate — no `_isEntry`, `loadEnv`, or `process.exit` needed.
 
-/**
- * @routine my-routine-name          ← kebab-case, matches PM2 process name
- * @description One-line description
- * @schedule 0 9 * * *               ← cron expression
- * @target General / AWS / etc.
- */
+```typescript
+// routines/handlers/my-routine.ts
+import type { RoutineContext } from "../../src/jobs/executors/routineContext.ts";
 
-import { sendAndRecord } from "../src/utils/routineMessage.ts";
-import { GROUPS, validateGroup } from "../src/config/groups.ts";
-import { USER_NAME, USER_TIMEZONE } from "../src/config/userConfig.ts";
+export async function run(ctx: RoutineContext): Promise<void> {
+  // Optional: skip if already ran recently
+  await ctx.skipIfRanWithin(6); // skip if ran within last 6 hours
 
-async function main() {
-  if (!validateGroup("GENERAL")) {
-    console.error("Cannot run — GENERAL group not configured");
-    process.exit(0); // graceful skip — PM2 retries at next cron cycle
-  }
+  // Call the LLM via the ModelRegistry routine slot
+  const result = await ctx.llm("Summarise today's activity and flag any blockers.");
 
-  const message = buildMessage(); // your logic here
+  // Send to the routine's configured Telegram group (records to DB automatically)
+  await ctx.send(result);
 
-  await sendAndRecord(GROUPS.GENERAL.chatId, message, {
-    routineName: "my-routine-name",
-    agentId: "general-assistant",
-    topicId: GROUPS.GENERAL.topicId,
-  });
-}
-
-// PM2's bun container loads scripts via require(), which sets import.meta.main = false.
-// Use _isEntry to detect both direct execution AND PM2 invocation.
-const _isEntry =
-  import.meta.main ||
-  process.env.pm_exec_path === import.meta.url?.replace("file://", "");
-
-if (_isEntry) {
-  main().catch((err) => {
-    console.error("Error:", err);
-    process.exit(0); // exit 0 — prevents PM2 restart loop on failure
-  });
+  // Structured log line tagged with routine name
+  ctx.log("my-routine complete");
 }
 ```
 
+### RoutineContext API
+
+Import path: `../../src/jobs/executors/routineContext.ts`
+
+| Method | Signature | Description |
+|---|---|---|
+| `send` | `(message: string) => Promise<void>` | Send message to the routine's Telegram group and persist to database. |
+| `llm` | `(prompt: string, opts?: LlmOpts) => Promise<string>` | Call LLM via ModelRegistry `routine` slot (cascade: Claude → local model). |
+| `log` | `(message: string) => void` | Write a tagged log line. |
+| `skipIfRanWithin` | `(hours: number) => Promise<void>` | Mark job `skipped` and stop if routine ran successfully within N hours. |
+
+### Registering the routine
+
+Add an entry to `config/routines.config.json`:
+
+```json
+{
+  "name": "my-routine",
+  "schedule": "0 9 * * *",
+  "group": "GENERAL",
+  "type": "routine"
+}
+```
+
+User overrides: `~/.claude-relay/routines.config.json` is merged on top of repo defaults.
+
+Do NOT add an entry to `ecosystem.config.cjs` — the `routine-scheduler` service reads the config and registers cron jobs automatically.
+
 ---
 
-## Sending messages: `sendAndRecord` vs `sendToGroup`
+## Sending messages in handlers: `ctx.send()`
+
+In handler-type routines (`routines/handlers/`), always use `ctx.send(message)`.
+This sends to Telegram AND persists the message to the local database, equivalent
+to `sendAndRecord`. The `RoutineContext` handles group resolution internally.
+
+---
+
+## Sending messages in legacy scripts: `sendAndRecord` vs `sendToGroup`
+
+> This section applies to any remaining standalone scripts. New code should use handlers.
+
 
 | Situation | Use |
 |---|---|
@@ -242,41 +259,27 @@ Use these in prompts and date formatting — never hardcode names or timezones.
 
 ---
 
-## ⚠️ PM2 + Bun: `import.meta.main` is always `false`
+## ⚠️ PM2 + Bun: handler files do not need `_isEntry`
 
-**Root cause (confirmed 26 Feb 2026):** PM2's `ProcessContainerForkBun.js`
-loads routine scripts via `require(process.env.pm_exec_path)`. When Bun
-`require()`s a module, `import.meta.main` is `false`. A plain
-`if (import.meta.main)` guard causes `main()` to never fire under PM2 — the
-routine runs silently and sends nothing to Telegram.
+Handlers in `routines/handlers/` are pure modules — they export `run(ctx)` and
+nothing else. The `routine-scheduler` service owns the PM2 lifecycle. You do NOT
+need `_isEntry`, `import.meta.main`, `loadEnv`, or `process.exit` in handler files.
 
-**Correct pattern — always use `_isEntry`:**
-
-```ts
-// At the bottom of every routine file — replaces `if (import.meta.main)`
-const _isEntry =
-  import.meta.main ||
-  process.env.pm_exec_path === import.meta.url?.replace("file://", "");
-
-if (_isEntry) {
-  main().catch((err) => {
-    console.error("Error:", err);
-    process.exit(0);
-  });
-}
-```
-
-`pm_exec_path` is set by PM2 to the absolute path of the entry script.
-Comparing it against `import.meta.url` (after stripping `file://`) correctly
-detects PM2 execution even when `import.meta.main` is false.
-
-**For one-shot cron routines** (morning-summary, night-summary): also set
-`autorestart: false` in `ecosystem.config.cjs`. Without it, PM2 restarts on
-every clean exit, burning through `max_restarts` and entering an errored state.
+The old `_isEntry` pattern was required for standalone routine scripts
+(`routines/*.ts`). Those scripts no longer exist; all routines are now handlers.
 
 ---
 
 ## ⚠️ PM2 Deployment Safety Rules
+
+### Only two always-running PM2 services
+
+After the handler migration, `ecosystem.config.cjs` has two always-running services:
+
+- `telegram-relay` — the main bot. Sacred. Never restart accidentally.
+- `routine-scheduler` — single cron dispatcher. Reads `config/routines.config.json` and submits jobs via webhook.
+
+Per-routine PM2 entries (e.g. `morning-summary`, `night-summary`, `smart-checkin`) have been removed. Do NOT add new per-routine entries to `ecosystem.config.cjs`.
 
 ### Never restart all services at once
 
@@ -287,8 +290,7 @@ npx pm2 restart ecosystem.config.cjs
 npx pm2 reload ecosystem.config.cjs --update-env
 
 # ✓ DO — restart only the specific service(s) you changed
-npx pm2 restart morning-summary
-npx pm2 restart morning-summary night-summary smart-checkin
+npx pm2 restart routine-scheduler
 ```
 
 `telegram-relay` is sacred. Accidentally restarting it via an ecosystem-wide
@@ -302,34 +304,25 @@ explicitly.
 { interpreter: "none", exec: "/bin/sh -c 'bun run script.ts'" }
 
 // ✓ DO — keep the default bun interpreter entry
-{ interpreter: "bun", script: "routines/my-routine.ts" }
+{ interpreter: "bun", script: "src/scheduler.ts" }
 ```
 
 Changing the interpreter or exec pattern in `ecosystem.config.cjs` affects every
-service. If a routine doesn't run under PM2, fix the routine itself (use
-`_isEntry` guard) — never work around it by patching the ecosystem config.
+service. Never work around a broken routine by patching the ecosystem config —
+fix the handler instead.
 
-### Adding a new routine to ecosystem.config.cjs
+### Adding a new routine
 
-Only append a new entry — never touch existing ones:
-
-```js
-{
-  name: "my-routine",
-  script: "routines/my-routine.ts",
-  interpreter: "bun",
-  cron_restart: "0 9 * * *",
-  autorestart: false,     // required for one-shot cron jobs
-  watch: false,
-},
-```
-
-Then start only the new service:
+1. Create `routines/handlers/<name>.ts` exporting `run(ctx: RoutineContext)`.
+2. Add an entry to `config/routines.config.json` with name, schedule, group, and type.
+3. Restart `routine-scheduler` only:
 
 ```bash
-npx pm2 start ecosystem.config.cjs --only my-routine
+npx pm2 restart routine-scheduler
 npx pm2 save
 ```
+
+No `ecosystem.config.cjs` edit needed.
 
 ---
 
@@ -358,17 +351,15 @@ Claude tools/agentic capabilities, use `claudeText`/`claudeStream` directly.
 
 ## Quick checklist
 
-Before committing a new routine:
+Before committing a new routine handler:
 
-- [ ] `#!/usr/bin/env bun` shebang on line 1
-- [ ] JSDoc frontmatter: `@routine`, `@description`, `@schedule`, `@target`
-- [ ] Uses `sendAndRecord` (not `sendToGroup`) for user-facing messages
-- [ ] `validateGroup()` called before any database or Telegram calls
-- [ ] All database calls guarded with try/catch
-- [ ] `process.exit(0)` in catch (never exit 1)
-- [ ] Catch block sends Telegram via `sendToGroup` on fatal error (wrapped in try/catch)
-- [ ] `_isEntry` guard on the main() call (NOT `import.meta.main` — PM2 bun sets it to false)
+- [ ] File lives at `routines/handlers/<name>.ts`
+- [ ] Exports `export async function run(ctx: RoutineContext): Promise<void>`
+- [ ] No `_isEntry`, `import.meta.main`, `loadEnv`, or `process.exit` — scheduler owns boilerplate
+- [ ] Uses `ctx.send()` for user-facing messages (records to DB automatically)
+- [ ] Uses `ctx.llm()` for LLM calls (not `callRoutineModel` directly)
+- [ ] Uses `ctx.skipIfRanWithin(hours)` if idempotency is required
 - [ ] Pure functions extracted and exported for testing
 - [ ] Test file exists: `routines/<name>.test.ts`
-- [ ] Entry added to `ecosystem.config.cjs` with correct cron and script path
-- [ ] After deploy: `npx pm2 start ecosystem.config.cjs --only <name>` (never ecosystem-wide restart)
+- [ ] Entry added to `config/routines.config.json` with correct `name`, `schedule`, `group`, `type`
+- [ ] After deploy: `npx pm2 restart routine-scheduler` only (never ecosystem-wide restart)

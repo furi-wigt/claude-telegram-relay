@@ -1,48 +1,14 @@
-#!/usr/bin/env bun
-
 /**
  * @routine weekly-etf
  * @description Weekly UCITS ETF portfolio analysis — 85/15 global/SG allocation using top-5 high-expectancy strategies
  * @schedule 0 17 * * 5
  * @target GENERAL group
+ *
+ * Handler — pure logic only. No standalone entry point, no PM2 boilerplate.
+ * Use ctx.send() for Telegram output and ctx.log() for console output.
  */
 
-/**
- * Weekly ETF Analysis Routine
- *
- * Schedule: Friday 5:00 PM SGT — before weekend review
- * Target: General AI Assistant group
- *
- * Strategy:
- * - 85% Global (UCITS ETFs, IBKR LSE, prioritise lowest TER)
- * - 15% Singapore (SGX-listed ETFs)
- *
- * ETF selection scored against Top-5 High-Expectancy strategies:
- * 1. Global Equity Dual Momentum (GEM) — momentum signal via 12-month returns
- * 2. 200-Day SMA Timing — price vs 200DMA for trend filter
- * 3. RSI(2) Mean Reversion — deeply oversold buy signals within uptrend
- * 4. 3-ETF Relative Strength Rotation (Equities/Gold/Bonds) — composite momentum scoring
- * 5. Monthly Asset-Class Momentum Rotation — rank by 6-month performance
- *
- * Run manually: bun run routines/weekly-etf.ts
- */
-
-import { sendAndRecord } from "../src/utils/routineMessage.ts";
-import { sendToGroup } from "../src/utils/sendToGroup.ts";
-import { GROUPS, validateGroup } from "../src/config/groups.ts";
-
-function resolveWeeklyEtfGroupKey(): string | undefined {
-  for (const key of [
-    process.env.WEEKLY_ETF_GROUP,
-    "OPERATIONS",
-    Object.keys(GROUPS).find((k) => (GROUPS[k]?.chatId ?? 0) !== 0),
-  ]) {
-    if (key && (GROUPS[key]?.chatId ?? 0) !== 0) return key;
-  }
-  return undefined;
-}
-
-const WEEKLY_ETF_GROUP_KEY = resolveWeeklyEtfGroupKey();
+import type { RoutineContext } from "../../src/jobs/executors/routineContext.ts";
 
 // ============================================================
 // UCITS ETF UNIVERSE (Ireland-domiciled, LSE-listed via IBKR)
@@ -156,7 +122,7 @@ const SG_ETFS = [
 // YAHOO FINANCE DATA FETCHER
 // ============================================================
 
-interface QuoteData {
+export interface QuoteData {
   ticker: string;
   yahooTicker: string;
   name: string;
@@ -297,7 +263,7 @@ async function fetchAllQuotes(etfs: typeof GLOBAL_UCITS_ETFS): Promise<QuoteData
  * Score each ETF against the 5 high-expectancy strategies.
  * Returns a score 0-5 (one point per strategy signal).
  */
-function scoreETF(q: QuoteData): { score: number; signals: string[] } {
+export function scoreETF(q: QuoteData): { score: number; signals: string[] } {
   const signals: string[] = [];
   let score = 0;
 
@@ -342,7 +308,7 @@ function scoreETF(q: QuoteData): { score: number; signals: string[] } {
 // ALLOCATION ADVISOR
 // ============================================================
 
-interface AllocationSlot {
+export interface AllocationSlot {
   etf: QuoteData;
   score: number;
   signals: string[];
@@ -350,7 +316,7 @@ interface AllocationSlot {
   suggestedAction: string;
 }
 
-function buildAllocationPlan(
+export function buildAllocationPlan(
   globalQuotes: QuoteData[],
   sgQuotes: QuoteData[]
 ): { global: AllocationSlot[]; sg: AllocationSlot[] } {
@@ -405,18 +371,18 @@ function buildAllocationPlan(
 // FORMAT HELPERS
 // ============================================================
 
-function fmt(n: number | null, decimals = 2, prefix = ""): string {
+export function fmt(n: number | null, decimals = 2, prefix = ""): string {
   if (n == null) return "N/A";
   const sign = n >= 0 ? "+" : "";
   return `${prefix}${sign}${n.toFixed(decimals)}`;
 }
 
-function fmtPrice(n: number | null): string {
+export function fmtPrice(n: number | null): string {
   if (n == null) return "N/A";
   return `$${n.toFixed(2)}`;
 }
 
-function signal(score: number): string {
+export function signal(score: number): string {
   if (score >= 4) return "STRONG";
   if (score >= 3) return "BUY";
   if (score >= 2) return "HOLD";
@@ -427,7 +393,7 @@ function signal(score: number): string {
 // BUILD REPORT
 // ============================================================
 
-async function buildReport(): Promise<string> {
+export async function buildReport(): Promise<string> {
   const now = new Date();
   const dateStr = now.toLocaleDateString("en-SG", {
     weekday: "long",
@@ -539,35 +505,14 @@ async function buildReport(): Promise<string> {
 }
 
 // ============================================================
-// MAIN
+// HANDLER — RoutineContext interface
 // ============================================================
 
-async function main() {
-  console.log("Running Weekly UCITS ETF Analysis...");
-
-  if (!WEEKLY_ETF_GROUP_KEY || !validateGroup(WEEKLY_ETF_GROUP_KEY)) {
-    console.error("Cannot run — no group configured");
-    process.exit(0); // graceful skip — PM2 will retry on next cron cycle
-  }
+export async function run(ctx: RoutineContext): Promise<void> {
+  ctx.log("Running Weekly UCITS ETF Analysis...");
 
   const report = await buildReport();
-  await sendAndRecord(GROUPS[WEEKLY_ETF_GROUP_KEY].chatId, report, { routineName: 'weekly-etf', agentId: 'general-assistant', topicId: GROUPS[WEEKLY_ETF_GROUP_KEY].topicId });
-  console.log("Weekly UCITS ETF analysis sent to General group");
-}
+  await ctx.send(report);
 
-// PM2's bun container uses require() internally, which sets import.meta.main = false.
-// Fall back to pm_exec_path to detect when PM2 is the entry runner.
-const _isEntry =
-  import.meta.main ||
-  process.env.pm_exec_path === import.meta.url?.replace("file://", "");
-
-if (_isEntry) {
-  main().catch(async (error) => {
-    const msg = error instanceof Error ? error.message : String(error);
-    console.error("Error running weekly ETF analysis:", error);
-    try {
-      if (WEEKLY_ETF_GROUP_KEY) await sendToGroup(GROUPS[WEEKLY_ETF_GROUP_KEY].chatId, `⚠️ weekly-etf failed:\n\n${msg}`);
-    } catch { /* ignore secondary failure */ }
-    process.exit(0); // exit 0 so PM2 does not immediately restart — next run at scheduled cron time
-  });
+  ctx.log("Weekly UCITS ETF analysis sent");
 }

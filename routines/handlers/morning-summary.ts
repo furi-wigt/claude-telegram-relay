@@ -1,17 +1,11 @@
-#!/usr/bin/env bun
-
 /**
  * @routine morning-summary
  * @description Daily morning briefing with news, weather, and goals summary
  * @schedule 0 7 * * *
  * @target Personal chat
- */
-
-/**
- * Enhanced Morning Summary Routine
  *
- * Schedule: 7:00 AM daily (SGT)
- * Target: General AI Assistant group
+ * Handler — pure logic only. No standalone entry point, no PM2 boilerplate.
+ * Use ctx.send() for Telegram output and ctx.log() for console output.
  *
  * Features:
  * 1. Singapore weather: 2hr area forecasts (4 locations) + 24hr + air quality
@@ -19,47 +13,23 @@
  * 3. Daily devotional (stub — Gmail integration pending)
  * 4. Suggested tasks calendar-aware, slotted around Apple Calendar events
  * 5. Markdown output — sendAndRecord auto-converts to HTML
- *
- * Run manually: bun run routines/morning-summary.ts
  */
 
 import { join } from "path";
-import { sendAndRecord } from "../src/utils/routineMessage.ts";
-import { sendToGroup } from "../src/utils/sendToGroup.ts";
-import { GROUPS, validateGroup } from "../src/config/groups.ts";
-
-/**
- * Priority: MORNING_SUMMARY_GROUP env var → OPERATIONS → first configured group.
- */
-function resolveMorningGroupKey(): string | undefined {
-  for (const key of [
-    process.env.MORNING_SUMMARY_GROUP,
-    "OPERATIONS",
-    Object.keys(GROUPS).find((k) => (GROUPS[k]?.chatId ?? 0) !== 0),
-  ]) {
-    if (key && (GROUPS[key]?.chatId ?? 0) !== 0) return key;
-  }
-  return undefined;
-}
-
-const MORNING_GROUP_KEY = resolveMorningGroupKey();
-import { claudeText } from "../src/claude-process.ts";
-import { callRoutineModel } from "../src/routines/routineModel.ts";
-import { initRegistry } from "../src/models/index.ts";
-import { createWeatherClient } from "../integrations/weather/index.ts";
+import { claudeText } from "../../src/claude-process.ts";
+import { callRoutineModel } from "../../src/routines/routineModel.ts";
+import { initRegistry } from "../../src/models/index.ts";
+import { createWeatherClient } from "../../integrations/weather/index.ts";
 import {
   createAppleCalendarClient,
   type AppleCalendarEvent,
-} from "../integrations/osx-calendar/index.ts";
-import { USER_NAME, USER_TIMEZONE } from "../src/config/userConfig.ts";
-import { scanPendingE2ETests, formatPendingE2ESection } from "../src/routines/pendingE2EScanner.ts";
-import { shouldSkipToday, markRanToday } from "../src/routines/runOnceGuard.ts";
-import { getPm2LogsDir } from "../config/observability.ts";
-import { fetchThingsTasks } from "../src/utils/t3Helper.ts";
-import { breakdownTasks, scanPendingTodos, formatAtomicTaskBlock, formatDevTodosMessage, type AtomicTask } from "../src/utils/atomicBreakdown.ts";
-import { storeTaskSession, buildTaskKeyboardJSON } from "../src/callbacks/taskSuggestionHandler.ts";
-
-const LAST_RUN_FILE = join(getPm2LogsDir(), "morning-summary.lastrun");
+} from "../../integrations/osx-calendar/index.ts";
+import { USER_NAME, USER_TIMEZONE } from "../../src/config/userConfig.ts";
+import { scanPendingE2ETests, formatPendingE2ESection } from "../../src/routines/pendingE2EScanner.ts";
+import { fetchThingsTasks } from "../../src/utils/t3Helper.ts";
+import { breakdownTasks, scanPendingTodos, formatAtomicTaskBlock, formatDevTodosMessage, type AtomicTask } from "../../src/utils/atomicBreakdown.ts";
+import { storeTaskSession, buildTaskKeyboardJSON } from "../../src/callbacks/taskSuggestionHandler.ts";
+import type { RoutineContext } from "../../src/jobs/executors/routineContext.ts";
 
 // ── Area targets for 2-hour forecast ─────────────────────────────────────────
 // Matched against NEA area names using case-insensitive substring search.
@@ -76,38 +46,56 @@ const FORECAST_AREA_TARGETS = (process.env.WEATHER_AREAS || "")
 // TYPES
 // ============================================================
 
-interface WeatherSection {
+export interface WeatherSection {
   areaForecasts: { label: string; forecast: string }[];  // 2hr for 4 areas
   summary24h: string;          // e.g. "Thundery Showers (25–33°C)"
   airQuality: string;          // e.g. "PSI 42 (Good), PM2.5 12"
   uvIndex: number;
 }
 
-interface YesterdayActivity {
+export interface YesterdayActivity {
   messageCount: number;
   factsLearned: number;
   messageContent: string[];    // up to 15 message snippets for Haiku recap
   completedGoals: string[];
 }
 
-interface Goal {
+export interface Goal {
   id: string;
   content: string;
   deadline?: string;
   priority?: "high" | "medium" | "low";
 }
 
-interface DevotionalContent {
+export interface DevotionalContent {
   passage: string;
   reference: string;
   reflection: string;
 }
 
 // ============================================================
+// DEPENDENCY INJECTION (for testing)
+// ============================================================
+
+/**
+ * Overrideable dependency references — allows tests to inject mocks without
+ * using mock.module() at module level (which pollutes bun's module cache and
+ * breaks other test files that need the real claude-process and osx-calendar).
+ *
+ * Usage in tests:
+ *   _deps.claudeText = async () => "[]";
+ *   _deps.createAppleCalendarClient = mockFn;
+ */
+export const _deps = {
+  claudeText: claudeText as typeof claudeText,
+  createAppleCalendarClient: createAppleCalendarClient as typeof createAppleCalendarClient,
+};
+
+// ============================================================
 // WEATHER (integration layer)
 // ============================================================
 
-async function getWeatherData(): Promise<WeatherSection> {
+export async function getWeatherData(): Promise<WeatherSection> {
   const fallback: WeatherSection = {
     areaForecasts: [],
     summary24h: "Forecast unavailable",
@@ -152,7 +140,7 @@ async function getWeatherData(): Promise<WeatherSection> {
 // YESTERDAY'S ACTIVITY
 // ============================================================
 
-async function getYesterdaysActivity(): Promise<YesterdayActivity> {
+export async function getYesterdaysActivity(): Promise<YesterdayActivity> {
   const empty: YesterdayActivity = {
     messageCount: 0,
     factsLearned: 0,
@@ -161,7 +149,7 @@ async function getYesterdaysActivity(): Promise<YesterdayActivity> {
   };
 
   try {
-    const { getDb } = await import("../src/local/db");
+    const { getDb } = await import("../../src/local/db");
     const db = getDb();
     const yesterday = new Date();
     yesterday.setDate(yesterday.getDate() - 1);
@@ -207,7 +195,7 @@ async function getYesterdaysActivity(): Promise<YesterdayActivity> {
 // RECAP NARRATIVE (Claude Haiku)
 // ============================================================
 
-async function generateRecapNarrative(activity: YesterdayActivity): Promise<string> {
+export async function generateRecapNarrative(activity: YesterdayActivity): Promise<string> {
   if (activity.messageCount === 0) {
     return "No conversations recorded yesterday.";
   }
@@ -249,9 +237,9 @@ async function generateRecapNarrative(activity: YesterdayActivity): Promise<stri
 // ACTIVE GOALS
 // ============================================================
 
-async function getActiveGoals(): Promise<Goal[]> {
+export async function getActiveGoals(): Promise<Goal[]> {
   try {
-    const { getDb } = await import("../src/local/db");
+    const { getDb } = await import("../../src/local/db");
     const db = getDb();
     const rows = db.query(
       "SELECT id, content, deadline FROM memory WHERE type = 'goal' AND status = 'active' ORDER BY created_at DESC LIMIT 20"
@@ -275,7 +263,7 @@ async function getActiveGoals(): Promise<Goal[]> {
 // CALENDAR (OSX integration — null-safe)
 // ============================================================
 
-async function getTodayCalendarEvents(): Promise<AppleCalendarEvent[] | null> {
+export async function getTodayCalendarEvents(): Promise<AppleCalendarEvent[] | null> {
   // checkCalendarAccess() (inside createAppleCalendarClient) takes ~1-3s.
   // getTodayEvents() (JXA getEventsInRangeJXA with whose()) takes ~23s for GovTech.
   // Use separate budgets to avoid conflating the two operations.
@@ -302,7 +290,7 @@ async function getTodayCalendarEvents(): Promise<AppleCalendarEvent[] | null> {
   }
 }
 
-function formatCalendarEvent(e: AppleCalendarEvent): string {
+export function formatCalendarEvent(e: AppleCalendarEvent): string {
   if (e.isAllDay) return `All day — ${e.title}`;
   const startStr = e.start.toLocaleTimeString("en-SG", {
     hour: "2-digit",
@@ -323,7 +311,7 @@ function formatCalendarEvent(e: AppleCalendarEvent): string {
 // GMAIL DEVOTIONAL (STUB)
 // ============================================================
 
-async function getDailyDevotional(): Promise<DevotionalContent | null> {
+export async function getDailyDevotional(): Promise<DevotionalContent | null> {
   // TODO: Implement Gmail API connector
   return {
     passage: "[Devotional passage will be fetched from Gmail]",
@@ -336,7 +324,7 @@ async function getDailyDevotional(): Promise<DevotionalContent | null> {
 // BUILD BRIEFING (HTML output)
 // ============================================================
 
-async function buildEnhancedBriefing(): Promise<{
+export async function buildEnhancedBriefing(): Promise<{
   message: string;
   tasks: AtomicTask[];
   replyMarkup?: unknown;
@@ -350,7 +338,7 @@ async function buildEnhancedBriefing(): Promise<{
     timeZone: USER_TIMEZONE,
   });
 
-  const todosDir = join(import.meta.dir, "../.claude/todos");
+  const todosDir = join(import.meta.dir, "../../.claude/todos");
 
   // Parallel fetches — Things 3 + todos added
   const [weatherData, goals, activity, devotional, calendarEvents, pendingE2E, thingsTasks, pendingTodos] = await Promise.all([
@@ -404,10 +392,10 @@ async function buildEnhancedBriefing(): Promise<{
 
   // ── Cross-Agent Activity Digest (Orchestration) ───────────────────────────
   try {
-    const { getYesterdayActivity } = await import("../src/orchestration/dispatchEngine");
+    const { getYesterdayActivity } = await import("../../src/orchestration/dispatchEngine");
     const agentActivity = getYesterdayActivity();
     if (agentActivity.length > 0) {
-      const { AGENTS } = await import("../src/agents/config");
+      const { AGENTS } = await import("../../src/agents/config");
       lines.push(`🤖 **Yesterday Across Agents:**`);
       for (const row of agentActivity) {
         const agent = AGENTS[row.agent_id];
@@ -423,7 +411,7 @@ async function buildEnhancedBriefing(): Promise<{
 
   // ── Mesh Board Activity (Constrained Mesh sessions) ────────────────────────
   try {
-    const { getDb } = await import("../src/local/db");
+    const { getDb } = await import("../../src/local/db");
     const db = getDb();
     const boardActivity = db.query(`
       SELECT
@@ -505,108 +493,34 @@ async function buildEnhancedBriefing(): Promise<{
 }
 
 // ============================================================
-// DEPENDENCY INJECTION (for testing)
+// RUN — RoutineContext interface
 // ============================================================
 
-/**
- * Overrideable dependency references — allows tests to inject mocks without
- * using mock.module() at module level (which pollutes bun's module cache and
- * breaks other test files that need the real claude-process and osx-calendar).
- *
- * Usage in tests:
- *   _deps.claudeText = async () => "[]";
- *   _deps.createAppleCalendarClient = mockFn;
- */
-export const _deps = {
-  claudeText: claudeText as typeof claudeText,
-  createAppleCalendarClient: createAppleCalendarClient as typeof createAppleCalendarClient,
-};
-
-// ============================================================
-// MAIN
-// ============================================================
-
-async function main() {
-  console.log("Running Enhanced Morning Summary...");
+export async function run(ctx: RoutineContext): Promise<void> {
+  ctx.log("Running Enhanced Morning Summary...");
   initRegistry();
 
-  if (shouldSkipToday(LAST_RUN_FILE)) {
-    console.log("[morning-summary] Already ran today, skipping.");
-    process.exit(0);
+  // Skip if already ran today
+  if (await ctx.skipIfRanWithin(20)) {
+    ctx.log("Already ran today, skipping.");
+    return;
   }
-
-  if (!MORNING_GROUP_KEY) {
-    console.error("Cannot run — no group configured");
-    console.error("Set MORNING_SUMMARY_GROUP env var or ensure at least one agent has a chatId in agents.json");
-    process.exit(0); // graceful skip — PM2 will retry on next cron cycle
-  }
-  const MORNING_GROUP = GROUPS[MORNING_GROUP_KEY];
-  console.log(`[morning-summary] Sending to group: ${MORNING_GROUP_KEY}`);
 
   const { message, tasks, replyMarkup, devTodosMessage } = await buildEnhancedBriefing();
-  await sendAndRecord(MORNING_GROUP.chatId, message, {
-    routineName: "morning-summary",
-    agentId: "general-assistant",
-    topicId: MORNING_GROUP.topicId,
-    reply_markup: replyMarkup,
-  });
-  markRanToday(LAST_RUN_FILE);
-  console.log(`Enhanced morning summary sent to ${MORNING_GROUP_KEY} group`);
+  await ctx.send(message, { reply_markup: replyMarkup });
+  ctx.log("Enhanced morning summary sent.");
 
   // Send dev todos as a separate reference message
   if (devTodosMessage) {
     try {
-      await sendAndRecord(MORNING_GROUP.chatId, devTodosMessage, {
-        routineName: "morning-summary",
-        agentId: "general-assistant",
-        topicId: MORNING_GROUP.topicId,
-      });
-      console.log("Dev todos message sent");
+      await ctx.send(devTodosMessage);
+      ctx.log("Dev todos message sent.");
     } catch (err) {
       console.warn("[morning-summary] Failed to send dev todos:", err instanceof Error ? err.message : err);
     }
   }
 
   if (tasks.length > 0) {
-    console.log(`${tasks.length} tasks suggested, awaiting user confirmation`);
+    ctx.log(`${tasks.length} tasks suggested, awaiting user confirmation.`);
   }
 }
-
-// PM2's bun container uses require() internally, which sets import.meta.main = false.
-// Fall back to pm_exec_path to detect when PM2 is the entry runner.
-const _isEntry =
-  import.meta.main ||
-  process.env.pm_exec_path === import.meta.url?.replace("file://", "");
-
-if (_isEntry) {
-  main().catch(async (error) => {
-    const msg = error instanceof Error ? error.message : String(error);
-    console.error("Error running enhanced morning summary:", error);
-    try {
-      await sendToGroup((MORNING_GROUP_KEY ? GROUPS[MORNING_GROUP_KEY]?.chatId : undefined) ?? 0, `⚠️ morning-summary failed:\n\n${msg}`);
-    } catch { /* ignore secondary failure */ }
-    process.exit(0); // exit 0 so PM2 does not immediately restart — next run at scheduled cron time
-  });
-}
-
-// ============================================================
-// EXPORTS FOR TESTING
-// ============================================================
-
-export {
-  getWeatherData,
-  getYesterdaysActivity,
-  getActiveGoals,
-  getTodayCalendarEvents,
-  generateRecapNarrative,
-  getDailyDevotional,
-  buildEnhancedBriefing,
-  formatCalendarEvent,
-};
-
-export type {
-  WeatherSection,
-  YesterdayActivity,
-  Goal,
-  DevotionalContent,
-};

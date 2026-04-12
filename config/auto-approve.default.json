@@ -1,0 +1,7 @@
+[
+  { "executor": "log-cleanup",         "intervention_types": ["approval"], "action": "confirm" },
+  { "executor": "orphan-gc",           "intervention_types": ["approval"], "action": "confirm" },
+  { "executor": "memory-cleanup",      "intervention_types": ["approval"], "action": "confirm" },
+  { "executor": "memory-dedup-review", "intervention_types": ["approval"], "action": "confirm" },
+  { "source": "cron",                  "intervention_types": ["budget"],   "action": "skip" }
+]

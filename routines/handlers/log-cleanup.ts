@@ -1,52 +1,17 @@
-#!/usr/bin/env bun
-
 /**
  * @routine log-cleanup
  * @description Delete PM2 logs from ~/.claude-relay/logs/ and observability JSONL logs older than the retention threshold
  * @schedule 0 6 * * 1  (Monday 6:00 AM)
  * @target no Telegram message unless files were deleted
+ *
+ * Handler — pure logic only. No standalone entry point, no PM2 boilerplate.
+ * Use ctx.send() for Telegram output and ctx.log() for console output.
  */
 
-/**
- * Log Cleanup Routine
- *
- * Schedule: 6:00 AM every Monday (cron: 0 6 * * 1)
- *
- * Scans two log directories and deletes files older than the retention threshold:
- *   1. ~/.claude-relay/logs/ — PM2 service logs (*.log)
- *   2. LOG_DIR        — observability JSONL traces (*.jsonl)
- *
- * Sends a Telegram summary only when files were actually deleted.
- *
- * Configuration (via .env):
- *   LOG_CLEANUP_RETAIN_DAYS  — days to keep log files (default: 7)
- *   LOG_CLEANUP_PM2_DIR      — override PM2 log dir (default: ~/.claude-relay/logs)
- *   LOG_CLEANUP_OBS_DIR      — override observability log dir (default: LOG_DIR or ~/.claude-relay/logs)
- *   DRY_RUN=true             — preview what would be deleted without deleting
- *
- * Run manually: bun run routines/log-cleanup.ts
- * Dry run:      DRY_RUN=true bun run routines/log-cleanup.ts
- */
-
+import type { RoutineContext } from "../../src/jobs/executors/routineContext.ts";
 import { readdir, stat, unlink } from "fs/promises";
 import { join, dirname } from "path";
-import { sendAndRecord } from "../src/utils/routineMessage.ts";
-import { sendToGroup } from "../src/utils/sendToGroup.ts";
-import { GROUPS, validateGroup } from "../src/config/groups.ts";
-import { getObservabilityConfig, getPm2LogsDir } from "../config/observability.ts";
-
-function resolveLogCleanupGroupKey(): string | undefined {
-  for (const key of [
-    process.env.LOG_CLEANUP_GROUP,
-    "OPERATIONS",
-    Object.keys(GROUPS).find((k) => (GROUPS[k]?.chatId ?? 0) !== 0),
-  ]) {
-    if (key && (GROUPS[key]?.chatId ?? 0) !== 0) return key;
-  }
-  return undefined;
-}
-
-const LOG_CLEANUP_GROUP_KEY = resolveLogCleanupGroupKey();
+import { getObservabilityConfig, getPm2LogsDir } from "../../config/observability.ts";
 
 // ============================================================
 // TYPES
@@ -281,44 +246,16 @@ export async function runLogCleanup(
 }
 
 // ============================================================
-// ENTRY POINT
+// HANDLER — RoutineContext interface
 // ============================================================
 
-async function main(): Promise<void> {
+export async function run(ctx: RoutineContext): Promise<void> {
   const result = await runLogCleanup();
-
   const totalDeleted = result.pm2Deleted + result.obsDeleted;
 
-  if (totalDeleted > 0 && LOG_CLEANUP_GROUP_KEY && validateGroup(LOG_CLEANUP_GROUP_KEY)) {
-    const message = buildTelegramMessage(result);
-    await sendAndRecord(GROUPS[LOG_CLEANUP_GROUP_KEY].chatId, message, {
-      routineName: "log-cleanup",
-      agentId: "general-assistant",
-      topicId: GROUPS[LOG_CLEANUP_GROUP_KEY].topicId,
-    });
-    console.log(`Summary sent to ${LOG_CLEANUP_GROUP_KEY} group`);
-  } else if (totalDeleted === 0) {
-    console.log("Nothing deleted — no Telegram message sent");
+  if (totalDeleted > 0) {
+    await ctx.send(buildTelegramMessage(result));
   } else {
-    console.warn("No group configured — skipping Telegram notification");
+    ctx.log("Nothing deleted — no message sent");
   }
-
-  process.exit(0);
-}
-
-// PM2's bun container uses require() internally, which sets import.meta.main = false.
-// Fall back to pm_exec_path to detect when PM2 is the entry runner.
-const _isEntry =
-  import.meta.main ||
-  process.env.pm_exec_path === import.meta.url?.replace("file://", "");
-
-if (_isEntry) {
-  main().catch(async (error) => {
-    const msg = error instanceof Error ? error.message : String(error);
-    console.error("Error running log cleanup:", error);
-    try {
-      if (LOG_CLEANUP_GROUP_KEY) await sendToGroup(GROUPS[LOG_CLEANUP_GROUP_KEY].chatId, `⚠️ log-cleanup failed:\n\n${msg}`);
-    } catch { /* ignore secondary failure */ }
-    process.exit(0); // exit 0 so PM2 does not immediately restart
-  });
 }

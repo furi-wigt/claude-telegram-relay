@@ -14,6 +14,8 @@ import { InterventionManager } from "./interventionManager.ts";
 import { ExecutorRegistry } from "./executors/registry.ts";
 import { RoutineExecutor } from "./executors/routineExecutor.ts";
 import { ApiCallExecutor } from "./executors/apiCallExecutor.ts";
+import { ClaudeSessionExecutor } from "./executors/claudeSessionExecutor.ts";
+import { CompoundExecutor } from "./executors/compoundExecutor.ts";
 import { registerJobCommands, buildInterventionKeyboard } from "./telegramJobCommands.ts";
 import { createWebhookServer } from "./sources/webhookServer.ts";
 import { sendToGroup } from "../utils/sendToGroup.ts";
@@ -71,6 +73,12 @@ export function initJobQueue(bot: Bot<Context>): JobQueueSystem {
 
   const apiCallExecutor = new ApiCallExecutor();
   registry.register("api-call", apiCallExecutor);
+
+  const claudeSessionExecutor = new ClaudeSessionExecutor(store);
+  registry.register("claude-session", claudeSessionExecutor);
+
+  const compoundExecutor = new CompoundExecutor(store);
+  registry.register("compound", compoundExecutor);
 
   // Register Telegram commands
   registerJobCommands(bot, store, intervention);

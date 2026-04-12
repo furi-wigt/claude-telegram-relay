@@ -187,7 +187,7 @@ mock.module("./profileRebuildCounter", () => ({
   resetProfileRebuildCounter: () => {},
 }));
 
-const { runDemotionPass } = await import("../../routines/memory-cleanup.ts");
+const { runDemotionPass } = await import("../../routines/handlers/memory-cleanup.ts");
 const { getMemoryContext } = await import("../memory.ts");
 const { storeExtractedMemories } = await import("./longTermExtractor.ts");
 

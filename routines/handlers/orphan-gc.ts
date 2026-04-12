@@ -1,61 +1,18 @@
-#!/usr/bin/env bun
-
 /**
  * @routine orphan-gc
  * @description Kill orphaned Claude CLI processes left behind after relay crashes
  * @schedule 0 * * * *  (every hour)
  * @target no Telegram message unless orphans were found and killed
+ *
+ * Handler — pure logic only. No standalone entry point, no PM2 boilerplate.
+ * Use ctx.send() for Telegram output and ctx.log() for console output.
  */
 
-/**
- * Orphan GC Routine — Claude Process Garbage Collector
- *
- * Schedule: Every hour (cron: 0 * * * *)
- *
- * Finds and kills orphaned `claude` CLI processes: processes that are running
- * on the system but have no corresponding active coding session in the relay's
- * session store. This happens when the relay crashes mid-session and leaves
- * the spawned `claude` subprocess behind.
- *
- * Orphan detection criteria:
- *   1. Process has `--dangerously-skip-permissions` in its command line
- *      (the flag used exclusively by SessionRunner for coding sessions)
- *   2. Process PID does not match any session in
- *      running / starting / waiting_for_input / waiting_for_plan state
- *   3. Process has been running longer than ORPHAN_GC_MIN_AGE_MINUTES
- *      (default: 30 min) to avoid racing against session startup
- *
- * Kill strategy: SIGTERM, then SIGKILL after 5 seconds if still alive.
- *
- * Configuration (via .env):
- *   ORPHAN_GC_MIN_AGE_MINUTES — minimum process age before killing (default: 30)
- *   DRY_RUN=true              — preview what would be killed, no actual kills
- *   RELAY_DIR                 — relay data directory (default: ~/.claude-relay)
- *
- * Run manually: bun run routines/orphan-gc.ts
- * Dry run:      DRY_RUN=true bun run routines/orphan-gc.ts
- */
-
+import type { RoutineContext } from "../../src/jobs/executors/routineContext.ts";
 import { readFile } from "fs/promises";
 import { join } from "path";
 import { homedir } from "os";
 import { spawn } from "bun";
-import { sendAndRecord } from "../src/utils/routineMessage.ts";
-import { sendToGroup } from "../src/utils/sendToGroup.ts";
-import { GROUPS, validateGroup } from "../src/config/groups.ts";
-
-function resolveOrphanGCGroupKey(): string | undefined {
-  for (const key of [
-    process.env.ORPHAN_GC_GROUP,
-    "OPERATIONS",
-    Object.keys(GROUPS).find((k) => (GROUPS[k]?.chatId ?? 0) !== 0),
-  ]) {
-    if (key && (GROUPS[key]?.chatId ?? 0) !== 0) return key;
-  }
-  return undefined;
-}
-
-const ORPHAN_GC_GROUP_KEY = resolveOrphanGCGroupKey();
 
 // ============================================================
 // TYPES
@@ -442,42 +399,14 @@ export async function runOrphanGC(): Promise<GCResult> {
 }
 
 // ============================================================
-// ENTRY POINT
+// HANDLER — RoutineContext interface
 // ============================================================
 
-async function main(): Promise<void> {
+export async function run(ctx: RoutineContext): Promise<void> {
   const result = await runOrphanGC();
-
-  if (result.orphansFound > 0 && ORPHAN_GC_GROUP_KEY && validateGroup(ORPHAN_GC_GROUP_KEY)) {
-    const message = buildTelegramMessage(result);
-    await sendAndRecord(GROUPS[ORPHAN_GC_GROUP_KEY].chatId, message, {
-      routineName: "orphan-gc",
-      agentId: "general-assistant",
-      topicId: GROUPS[ORPHAN_GC_GROUP_KEY].topicId,
-    });
-    console.log(`Summary sent to ${ORPHAN_GC_GROUP_KEY} group`);
-  } else if (result.orphansFound === 0) {
-    console.log("No orphans found — no Telegram message sent");
+  if (result.orphansFound > 0) {
+    await ctx.send(buildTelegramMessage(result));
   } else {
-    console.warn("No group configured — skipping Telegram notification");
+    ctx.log("No orphans found — no message sent");
   }
-
-  process.exit(0);
-}
-
-// PM2's bun container uses require() internally, which sets import.meta.main = false.
-// Fall back to pm_exec_path to detect when PM2 is the entry runner.
-const _isEntry =
-  import.meta.main ||
-  process.env.pm_exec_path === import.meta.url?.replace("file://", "");
-
-if (_isEntry) {
-  main().catch(async (error) => {
-    const msg = error instanceof Error ? error.message : String(error);
-    console.error("Error running orphan GC:", error);
-    try {
-      if (ORPHAN_GC_GROUP_KEY) await sendToGroup(GROUPS[ORPHAN_GC_GROUP_KEY].chatId, `⚠️ orphan-gc failed:\n\n${msg}`);
-    } catch { /* ignore secondary failure */ }
-    process.exit(0); // exit 0 so PM2 does not immediately restart
-  });
 }

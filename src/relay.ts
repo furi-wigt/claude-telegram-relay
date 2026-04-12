@@ -56,6 +56,7 @@ import { getTROQAState, appendQAAnswer } from "./tro/troQAState.ts";
 import { registerDedupReviewCallbackHandler } from "./memory/dedupReviewCallbackHandler.ts";
 import { registerConflictCallbackHandler } from "./memory/conflictCallbackHandler.ts";
 import { initJobQueue } from "./jobs/index.ts";
+import { handleScheduleCommand } from "./jobs/scheduleCommand.ts";
 import { registerTaskSuggestionHandler } from "./callbacks/taskSuggestionHandler.ts";
 import { registerLearningRetroHandler } from "./callbacks/learningRetroCallbackHandler.ts";
 import { registerReflectCommand } from "./callbacks/reflectCommandHandler.ts";
@@ -1379,6 +1380,25 @@ setInterviewStateMachine(interactive);
 interactive.setOrchestrationHandler((session) => handleOrchestrationComplete(bot, session));
 
 bot.command("plan", (ctx) => interactive.handlePlanCommand(ctx));
+
+// /schedule — submit a background Claude session job via the job queue
+bot.command("schedule", async (ctx) => {
+  const result = handleScheduleCommand(
+    { submitJob: jobSystem.submitJob },
+    {
+      chatId: ctx.chat?.id,
+      threadId: ctx.message?.message_thread_id,
+      prompt: ctx.match ?? "",
+    }
+  );
+  if (result.ok) {
+    await ctx.reply(`Queued: ${result.jobId.slice(0, 8)} — will post results here when done.`);
+  } else if (result.reason === "no-prompt") {
+    await ctx.reply("Usage: /schedule <prompt>");
+  } else {
+    await ctx.reply("Failed to queue job. Try again.");
+  }
+});
 
 // Report Generator integration (/report command + QA sessions)
 const reportQA = registerReportCommands(bot);

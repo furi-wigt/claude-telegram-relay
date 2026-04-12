@@ -68,7 +68,7 @@ import {
   type MemoryItem,
   type CleanupResult,
   type CleanupConfig,
-} from "./memory-cleanup.ts";
+} from "./handlers/memory-cleanup.ts";
 
 // ============================================================
 // Shared helpers
@@ -965,7 +965,7 @@ describe("groupItems() — provenance model: type-only clustering key (G1)", () 
 
 describe("import safety", () => {
   it("importing the module does NOT trigger main()", async () => {
-    const mod = await import("./memory-cleanup.ts");
+    const mod = await import("./handlers/memory-cleanup.ts");
     expect(typeof mod.fetchActiveItems).toBe("function");
     expect(typeof mod.clusterDuplicates).toBe("function");
   });

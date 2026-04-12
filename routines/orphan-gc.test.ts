@@ -28,7 +28,7 @@ import {
   buildTelegramMessage,
   type ProcessEntry,
   type GCResult,
-} from "./orphan-gc.ts";
+} from "./handlers/orphan-gc.ts";
 
 // ============================================================
 // Helpers

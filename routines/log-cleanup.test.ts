@@ -25,7 +25,7 @@ import {
   type CleanupConfig,
   type FileEntry,
   type CleanupResult,
-} from "./log-cleanup.ts";
+} from "./handlers/log-cleanup.ts";
 
 // ============================================================
 // Helpers

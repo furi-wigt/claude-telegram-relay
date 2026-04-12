@@ -1,60 +1,26 @@
-#!/usr/bin/env bun
-
 /**
  * @routine smart-checkin
  * @description Context-aware check-in with calendar, Things 3, and meeting awareness
  * @schedule *\/30 * * * *
  * @target General AI Assistant group
- */
-
-/**
- * Smart Check-in Routine
  *
- * Schedule: Every 30 min (PM2 cron), with in-code day/hour guard:
- *   Mon–Sat: 06:00–22:00
- *   Sunday:  12:00–23:00
- *
- * Features:
- * - Meeting prep reminders (30min before meetings)
- * - Post-meeting task suggestions
- * - Things 3 task awareness
- * - Calendar-aware context for Claude decision
- * - Atomic task breakdown with inline keyboard
- *
- * Run manually: bun run routines/smart-checkin.ts
+ * Handler — pure logic only. No standalone entry point, no PM2 boilerplate.
+ * Use ctx.send() for Telegram output and ctx.log() for console output.
  */
 
 import { join } from "path";
 import { readFile, writeFile } from "fs/promises";
-import { sendAndRecord } from "../src/utils/routineMessage.ts";
-import { sendToGroup } from "../src/utils/sendToGroup.ts";
-import { GROUPS, validateGroup } from "../src/config/groups.ts";
-
-/**
- * Priority: SMART_CHECKIN_GROUP env var → OPERATIONS → first configured group.
- */
-function resolveCheckinGroupKey(): string | undefined {
-  for (const key of [
-    process.env.SMART_CHECKIN_GROUP,
-    "OPERATIONS",
-    Object.keys(GROUPS).find((k) => (GROUPS[k]?.chatId ?? 0) !== 0),
-  ]) {
-    if (key && (GROUPS[key]?.chatId ?? 0) !== 0) return key;
-  }
-  return undefined;
-}
-
-const CHECKIN_GROUP_KEY = resolveCheckinGroupKey();
-import { USER_NAME, USER_TIMEZONE } from "../src/config/userConfig.ts";
 import {
   createAppleCalendarClient,
   type AppleCalendarEvent,
-} from "../integrations/osx-calendar/index.ts";
-import { fetchThingsTasks, type T3Task } from "../src/utils/t3Helper.ts";
-import { breakdownTasks, scanPendingTodos, formatAtomicTaskBlock, type AtomicTask } from "../src/utils/atomicBreakdown.ts";
-import { callRoutineModel } from "../src/routines/routineModel.ts";
-import { initRegistry } from "../src/models/index.ts";
-import { storeTaskSession, buildTaskKeyboardJSON } from "../src/callbacks/taskSuggestionHandler.ts";
+} from "../../integrations/osx-calendar/index.ts";
+import { fetchThingsTasks, type T3Task } from "../../src/utils/t3Helper.ts";
+import { breakdownTasks, scanPendingTodos, formatAtomicTaskBlock, type AtomicTask } from "../../src/utils/atomicBreakdown.ts";
+import { callRoutineModel } from "../../src/routines/routineModel.ts";
+import { initRegistry } from "../../src/models/index.ts";
+import { storeTaskSession, buildTaskKeyboardJSON } from "../../src/callbacks/taskSuggestionHandler.ts";
+import { USER_NAME, USER_TIMEZONE } from "../../src/config/userConfig.ts";
+import type { RoutineContext } from "../../src/jobs/executors/routineContext.ts";
 
 const STATE_FILE = process.env.CHECKIN_STATE_FILE || "/tmp/group-checkin-state.json";
 
@@ -67,7 +33,7 @@ const STATE_FILE = process.env.CHECKIN_STATE_FILE || "/tmp/group-checkin-state.j
  * Mon–Sat (1-6): 06:00–22:00
  * Sunday  (0):   12:00–23:00
  */
-function isWithinSchedule(): boolean {
+export function isWithinSchedule(): boolean {
   const now = new Date();
   const hour = parseInt(
     now.toLocaleTimeString("en-US", { hour: "numeric", hour12: false, timeZone: USER_TIMEZONE })
@@ -119,7 +85,7 @@ async function saveState(state: CheckinState): Promise<void> {
 
 async function getActiveGoals(): Promise<{ content: string; deadline: string | null }[]> {
   try {
-    const { getDb } = await import("../src/local/db");
+    const { getDb } = await import("../../src/local/db");
     const db = getDb();
     const rows = db.query(
       "SELECT content, deadline FROM memory WHERE type = 'goal' AND status = 'active' ORDER BY created_at DESC LIMIT 5"
@@ -137,7 +103,7 @@ async function getStaleActivityItems(): Promise<string[]> {
 
 async function getRecentMessageCount(): Promise<number> {
   try {
-    const { getDb } = await import("../src/local/db");
+    const { getDb } = await import("../../src/local/db");
     const db = getDb();
     const fourHoursAgo = new Date(Date.now() - 4 * 60 * 60 * 1000);
     const row = db.query(
@@ -169,14 +135,14 @@ async function getTodayCalendarEvents(): Promise<AppleCalendarEvent[] | null> {
 // MEETING DETECTION
 // ============================================================
 
-interface MeetingContext {
+export interface MeetingContext {
   /** Meeting starting within 30 min that hasn't been prepped */
   upcomingMeeting: AppleCalendarEvent | null;
   /** Meeting that ended within the last 30 min */
   recentlyEndedMeeting: AppleCalendarEvent | null;
 }
 
-function detectMeetingContext(
+export function detectMeetingContext(
   events: AppleCalendarEvent[] | null,
   state: CheckinState
 ): MeetingContext {
@@ -210,7 +176,7 @@ function detectMeetingContext(
   };
 }
 
-function formatCalendarEvent(e: AppleCalendarEvent): string {
+export function formatCalendarEvent(e: AppleCalendarEvent): string {
   if (e.isAllDay) return `All day — ${e.title}`;
   const startStr = e.start.toLocaleTimeString("en-SG", {
     hour: "2-digit", minute: "2-digit", hour12: false, timeZone: USER_TIMEZONE,
@@ -225,14 +191,14 @@ function formatCalendarEvent(e: AppleCalendarEvent): string {
 // CHECK-IN DECISION (Ollama)
 // ============================================================
 
-interface CheckinDecision {
+export interface CheckinDecision {
   shouldCheckin: boolean;
   message: string;
   reason: string;
   suggestTasks: boolean; // whether to include atomic task suggestions
 }
 
-async function decideCheckin(
+export async function decideCheckin(
   goals: { content: string; deadline: string | null }[],
   staleItems: string[],
   recentMessages: number,
@@ -297,8 +263,7 @@ ${calendarStr}
 THINGS 3 TASKS:
 ${thingsStr}
 
-${meetingNote ? `MEETING ALERT:\n${meetingNote}\n` : ""}
-RULES:
+${meetingNote ? `MEETING ALERT:\n${meetingNote}\n` : ""}RULES:
 1. Maximum 3 check-ins per day — do not be annoying
 2. Only check in if there is a concrete reason:
    - Meeting starting soon (ALWAYS check in for this)
@@ -361,12 +326,12 @@ REASON: [One line explaining your decision]`;
 // BUILD TASK SUGGESTION MESSAGE
 // ============================================================
 
-async function buildTaskSuggestions(
+export async function buildTaskSuggestions(
   thingsTasks: T3Task[],
   calendarEvents: AppleCalendarEvent[] | null,
   goals: { content: string; deadline: string | null }[]
 ): Promise<{ text: string; replyMarkup?: unknown } | null> {
-  const todosDir = join(import.meta.dir, "../.claude/todos");
+  const todosDir = join(import.meta.dir, "../../.claude/todos");
   const pendingTodos = await scanPendingTodos(todosDir);
 
   const atomicTasks = await breakdownTasks(
@@ -383,26 +348,18 @@ async function buildTaskSuggestions(
 }
 
 // ============================================================
-// MAIN
+// RUN — RoutineContext interface
 // ============================================================
 
-async function main() {
-  console.log("[smart-checkin] Running...");
+export async function run(ctx: RoutineContext): Promise<void> {
+  ctx.log("Running...");
   initRegistry();
 
-  // Schedule guard — exit early if outside allowed hours
+  // Schedule guard — skip if outside allowed hours
   if (!isWithinSchedule()) {
-    console.log("[smart-checkin] Outside scheduled hours, skipping.");
-    process.exit(0);
+    ctx.log("Outside scheduled hours, skipping.");
+    return;
   }
-
-  if (!CHECKIN_GROUP_KEY) {
-    console.error("[smart-checkin] No group configured");
-    console.error("Set SMART_CHECKIN_GROUP env var or ensure at least one agent has a chatId in agents.json");
-    process.exit(0);
-  }
-  const CHECKIN_GROUP = GROUPS[CHECKIN_GROUP_KEY];
-  console.log(`[smart-checkin] Sending to group: ${CHECKIN_GROUP_KEY}`);
 
   const state = await loadState();
 
@@ -417,36 +374,27 @@ async function main() {
 
   const meetingCtx = detectMeetingContext(calendarEvents, state);
 
-  // Ask Ollama whether to check in
+  // Ask model whether to check in
   const decision = await decideCheckin(
     goals, staleItems, recentMessages, calendarEvents,
     thingsTasks, meetingCtx, state
   );
 
   if (!decision.shouldCheckin || !decision.message || decision.message === "none") {
-    console.log("[smart-checkin] No check-in needed.");
-    process.exit(0);
+    ctx.log("No check-in needed.");
+    return;
   }
 
   // Send the main check-in message
-  console.log("[smart-checkin] Sending check-in...");
-  await sendAndRecord(CHECKIN_GROUP.chatId, decision.message, {
-    routineName: "smart-checkin",
-    agentId: "general-assistant",
-    topicId: CHECKIN_GROUP.topicId,
-  });
+  ctx.log("Sending check-in...");
+  await ctx.send(decision.message);
 
-  // If Haiku suggested tasks, generate and send atomic breakdown
+  // If model suggested tasks, generate and send atomic breakdown
   if (decision.suggestTasks) {
     const taskSuggestions = await buildTaskSuggestions(thingsTasks, calendarEvents, goals);
     if (taskSuggestions) {
-      await sendAndRecord(CHECKIN_GROUP.chatId, taskSuggestions.text, {
-        routineName: "smart-checkin",
-        agentId: "general-assistant",
-        topicId: CHECKIN_GROUP.topicId,
-        reply_markup: taskSuggestions.replyMarkup,
-      });
-      console.log("[smart-checkin] Task suggestions sent with inline keyboard.");
+      await ctx.send(taskSuggestions.text, { reply_markup: taskSuggestions.replyMarkup });
+      ctx.log("Task suggestions sent with inline keyboard.");
     }
   }
 
@@ -456,33 +404,5 @@ async function main() {
     state.lastMeetingPrepId = meetingCtx.upcomingMeeting.title;
   }
   await saveState(state);
-  console.log("[smart-checkin] Done.");
+  ctx.log("Done.");
 }
-
-// PM2's bun container uses require() internally, which sets import.meta.main = false.
-// Fall back to pm_exec_path to detect when PM2 is the entry runner.
-const _isEntry =
-  import.meta.main ||
-  process.env.pm_exec_path === import.meta.url?.replace("file://", "");
-
-if (_isEntry) {
-  main().catch(async (error) => {
-    const msg = error instanceof Error ? error.message : String(error);
-    console.error("[smart-checkin] Error:", error);
-    try {
-      await sendToGroup((CHECKIN_GROUP_KEY ? GROUPS[CHECKIN_GROUP_KEY]?.chatId : undefined) ?? 0, `⚠️ smart-checkin failed:\n\n${msg}`);
-    } catch { /* ignore secondary failure */ }
-    process.exit(0);
-  });
-}
-
-// ============================================================
-// EXPORTS FOR TESTING
-// ============================================================
-
-export {
-  isWithinSchedule,
-  detectMeetingContext,
-  formatCalendarEvent,
-  buildTaskSuggestions,
-};

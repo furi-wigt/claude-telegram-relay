@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { buildRetroMessage, formatEvidenceSummary } from "../../routines/weekly-retro";
+import { buildRetroMessage, formatEvidenceSummary } from "../../routines/handlers/weekly-retro.ts";
 
 describe("formatEvidenceSummary", () => {
   test("formats inline_correction evidence", () => {

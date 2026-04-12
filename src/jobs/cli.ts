@@ -13,8 +13,8 @@
  *   bun run relay:jobs abort <id>               # cancel
  *   bun run relay:jobs retry <id>               # re-queue failed job
  *   bun run relay:jobs cancel <id>              # cancel pending job
- *   bun run relay:jobs run "<prompt>"           # submit claude-session job
- *   bun run relay:jobs run --type routine --executor morning-summary
+ *   bun run relay:jobs run "<prompt>"                       # submit claude-session job
+ *   bun run relay:jobs run --type routine --executor <name> # submit routine job (title = executor name)
  */
 
 import { loadEnv } from "../config/envLoader.ts";
@@ -181,14 +181,10 @@ function main() {
     return;
   }
 
-  // relay jobs run "<prompt>" [--type X] [--executor Y] [--priority Z]
+  // relay jobs run "<title/prompt>" [--type X] [--executor Y] [--priority Z]
+  // relay jobs run --type routine --executor <name>   (title defaults to executor name)
   if (command === "run") {
     const submitJob = createSubmitJob(store, () => {});
-    const prompt = filteredArgs[1];
-    if (!prompt) {
-      console.error('Usage: relay jobs run "<prompt>" [--type TYPE] [--executor EXECUTOR]');
-      process.exit(1);
-    }
     const typeIdx = filteredArgs.indexOf("--type");
     const execIdx = filteredArgs.indexOf("--executor");
     const prioIdx = filteredArgs.indexOf("--priority");
@@ -197,13 +193,26 @@ function main() {
     const executor = execIdx >= 0 ? filteredArgs[execIdx + 1] : type;
     const priority = prioIdx >= 0 ? filteredArgs[prioIdx + 1] : "normal";
 
+    // First positional after "run" is the title/prompt — skip if it's a flag
+    const firstArg = filteredArgs[1];
+    const titleArg = firstArg && !firstArg.startsWith("--") ? firstArg : undefined;
+
+    if (!titleArg && type === "claude-session") {
+      console.error('Usage: relay jobs run "<prompt>" [--type TYPE] [--executor EXECUTOR]');
+      process.exit(1);
+    }
+
+    const title = titleArg ?? executor;
+    const payload: Record<string, unknown> =
+      type === "claude-session" ? { prompt: titleArg } : { config: {} };
+
     const job = submitJob({
       type,
       executor,
-      title: prompt.slice(0, 80),
+      title: title.slice(0, 80),
       source: "cli",
       priority: priority as any,
-      payload: { prompt },
+      payload,
     });
 
     if (job) {

@@ -7,8 +7,8 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { checkBotResponsiveness, buildResponsivenessAlert } from "./watchdog.ts";
-import type { ResponsivenessResult } from "./watchdog.ts";
+import { checkBotResponsiveness, buildResponsivenessAlert } from "./handlers/watchdog.ts";
+import type { ResponsivenessResult } from "./handlers/watchdog.ts";
 
 // ── Mock DB factory ──────────────────────────────────────────────────────────
 

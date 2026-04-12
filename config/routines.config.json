@@ -1,0 +1,13 @@
+[
+  { "name": "morning-summary",     "type": "handler", "schedule": "0 7 * * *",    "group": "OPERATIONS", "enabled": true },
+  { "name": "night-summary",       "type": "handler", "schedule": "0 23 * * *",   "group": "OPERATIONS", "enabled": true },
+  { "name": "smart-checkin",       "type": "handler", "schedule": "*/30 * * * *", "group": "OPERATIONS", "enabled": true },
+  { "name": "watchdog",            "type": "handler", "schedule": "0 */2 * * *",  "group": "OPERATIONS", "enabled": true },
+  { "name": "orphan-gc",           "type": "handler", "schedule": "0 * * * *",    "group": "OPERATIONS", "enabled": true, "priority": "background" },
+  { "name": "log-cleanup",         "type": "handler", "schedule": "0 6 * * 1",    "group": "OPERATIONS", "enabled": true, "priority": "background" },
+  { "name": "memory-cleanup",      "type": "handler", "schedule": "0 3 * * *",    "group": "OPERATIONS", "enabled": true, "priority": "background" },
+  { "name": "memory-dedup-review", "type": "handler", "schedule": "0 16 * * 5",   "group": "OPERATIONS", "enabled": true, "priority": "background" },
+  { "name": "weekly-etf",          "type": "handler", "schedule": "0 7 * * 1",    "group": "OPERATIONS", "enabled": true },
+  { "name": "etf-52week-screener", "type": "handler", "schedule": "0 7 * * 1",    "group": "OPERATIONS", "enabled": true },
+  { "name": "weekly-retro",        "type": "handler", "schedule": "0 9 * * 0",    "group": "OPERATIONS", "enabled": true }
+]

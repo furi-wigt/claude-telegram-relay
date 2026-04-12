@@ -1,85 +1,54 @@
-#!/usr/bin/env bun
-
 /**
  * @routine watchdog
  * @description System health watchdog that monitors bot and services
+ * @schedule 0 *\/2 * * *
  * @target System
- */
-// @schedule 0 */2 * * *
-
-/**
- * Watchdog Routine — PM2 Health Monitor
  *
- * Schedule: Every 2 hours (cron: 0 * /2 * * *)
- * Target: General AI Assistant group
- *
- * Checks the health of all PM2-managed processes:
- * - Detects stopped or errored processes
- * - Flags high restart counts (potential crash loops)
- * - Optionally restarts failed always-on processes (telegram-relay)
- * - Sends alerts to the General group only when problems are found
- *
- * Run manually: bun run routines/watchdog.ts
+ * Handler — pure logic only. No standalone entry point, no PM2 boilerplate.
+ * Use ctx.send() for Telegram output and ctx.log() for console output.
  */
 
+import type { RoutineContext } from "../../src/jobs/executors/routineContext.ts";
 import { createRequire } from "module";
-import { sendToGroup } from "../src/utils/sendToGroup.ts";
-import { GROUPS, validateGroup } from "../src/config/groups.ts";
-import { loadEnv } from "../src/config/envLoader.ts";
-import { getDb } from "../src/local/db.ts";
-
-loadEnv();
-
-/**
- * Resolve the target group for watchdog alerts.
- * Priority: WATCHDOG_GROUP env var → OPERATIONS → first configured group.
- * Returns the group key string, or null if no group is configured.
- */
-function resolveWatchdogGroupKey(): string | null {
-  const candidates = [
-    process.env.WATCHDOG_GROUP,
-    "OPERATIONS",
-    Object.keys(GROUPS).find((k) => (GROUPS[k]?.chatId ?? 0) !== 0),
-  ];
-  for (const key of candidates) {
-    if (key && (GROUPS[key]?.chatId ?? 0) !== 0) return key;
-  }
-  return null;
-}
-
-const WATCHDOG_GROUP_KEY = resolveWatchdogGroupKey();
+import { getDb } from "../../src/local/db.ts";
 
 // ============================================================
 // CONFIGURATION
 // ============================================================
 
-interface MonitoredProcess {
+export interface MonitoredProcess {
   name: string;
   alwaysOn: boolean;
 }
 
 /** Load processes to monitor from ecosystem.config.cjs (auto-discovery) */
-function loadMonitoredProcesses(): MonitoredProcess[] {
+export function loadMonitoredProcesses(): MonitoredProcess[] {
   try {
     const require = createRequire(import.meta.url);
-    const ecosystemPath = new URL("../ecosystem.config.cjs", import.meta.url).pathname;
+    const ecosystemPath = new URL("../../ecosystem.config.cjs", import.meta.url).pathname;
     const config = require(ecosystemPath);
 
     if (!config?.apps || !Array.isArray(config.apps)) {
       throw new Error("Invalid ecosystem config: missing apps array");
     }
 
-    const processes = config.apps.map((app: { name: string; autorestart?: boolean }) => ({
-      name: app.name,
-      alwaysOn: app.autorestart === true,
-    }));
+    const processes: MonitoredProcess[] = config.apps.map(
+      (app: { name: string; autorestart?: boolean }) => ({
+        name: app.name,
+        alwaysOn: app.autorestart === true,
+      })
+    );
 
-    console.log(`Loaded ${processes.length} processes from ecosystem.config.cjs`);
+    // Ensure routine-scheduler is included if not already present
+    if (!processes.some((p) => p.name === "routine-scheduler")) {
+      processes.push({ name: "routine-scheduler", alwaysOn: true });
+    }
+
     return processes;
   } catch (error) {
-    console.error("Failed to load ecosystem config, using fallback list:", error);
     return [
       { name: "telegram-relay", alwaysOn: true },
+      { name: "routine-scheduler", alwaysOn: true },
       { name: "morning-summary", alwaysOn: false },
       { name: "smart-checkin", alwaysOn: false },
       { name: "night-summary", alwaysOn: false },
@@ -89,20 +58,17 @@ function loadMonitoredProcesses(): MonitoredProcess[] {
   }
 }
 
-/** Processes managed by PM2 ecosystem.config.cjs (auto-discovered at runtime) */
-const MONITORED_PROCESSES = loadMonitoredProcesses();
-
 /** Restart count above this triggers an alert */
-const RESTART_THRESHOLD = 10;
+export const RESTART_THRESHOLD = 10;
 
 /** Auto-restart always-on processes that are stopped/errored */
-const AUTO_RESTART_ALWAYS_ON = true;
+export const AUTO_RESTART_ALWAYS_ON = true;
 
 // ============================================================
 // PM2 INTERFACE
 // ============================================================
 
-interface PM2Process {
+export interface PM2Process {
   name: string;
   pm_id: number;
   pid: number;
@@ -120,7 +86,7 @@ interface PM2Process {
   };
 }
 
-async function getPM2Processes(): Promise<PM2Process[]> {
+export async function getPM2Processes(): Promise<PM2Process[]> {
   try {
     const proc = Bun.spawn(["npx", "pm2", "jlist"], {
       stdout: "pipe",
@@ -131,21 +97,17 @@ async function getPM2Processes(): Promise<PM2Process[]> {
     const exitCode = await proc.exited;
 
     if (exitCode !== 0) {
-      const stderr = await new Response(proc.stderr).text();
-      console.error("pm2 jlist failed:", stderr);
       return [];
     }
 
-    // pm2 jlist outputs JSON array
     const parsed = JSON.parse(stdout.trim());
     return Array.isArray(parsed) ? parsed : [];
-  } catch (error) {
-    console.error("Failed to query PM2:", error);
+  } catch {
     return [];
   }
 }
 
-async function restartProcess(name: string): Promise<boolean> {
+export async function restartProcess(name: string): Promise<boolean> {
   try {
     const proc = Bun.spawn(["npx", "pm2", "restart", name], {
       stdout: "pipe",
@@ -163,14 +125,14 @@ async function restartProcess(name: string): Promise<boolean> {
 // HEALTH CHECKS
 // ============================================================
 
-interface HealthIssue {
+export interface HealthIssue {
   process: string;
   severity: "warning" | "critical";
   message: string;
   autoFixed: boolean;
 }
 
-function formatUptime(uptimeMs: number): string {
+export function formatUptime(uptimeMs: number): string {
   const seconds = Math.floor(uptimeMs / 1000);
   if (seconds < 60) return `${seconds}s`;
   const minutes = Math.floor(seconds / 60);
@@ -181,12 +143,16 @@ function formatUptime(uptimeMs: number): string {
   return `${days}d ${hours % 24}h`;
 }
 
-function formatMemory(bytes: number): string {
+export function formatMemory(bytes: number): string {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-async function checkHealth(processes: PM2Process[]): Promise<{
+export async function checkHealth(
+  processes: PM2Process[],
+  monitoredProcesses: MonitoredProcess[],
+  restartFn: (name: string) => Promise<boolean> = restartProcess
+): Promise<{
   issues: HealthIssue[];
   statusLines: string[];
 }> {
@@ -194,17 +160,15 @@ async function checkHealth(processes: PM2Process[]): Promise<{
   const statusLines: string[] = [];
   const now = Date.now();
 
-  // Map PM2 processes by name
   const pm2Map = new Map<string, PM2Process>();
   for (const p of processes) {
     pm2Map.set(p.name, p);
   }
 
-  for (const monitored of MONITORED_PROCESSES) {
+  for (const monitored of monitoredProcesses) {
     const proc = pm2Map.get(monitored.name);
 
     if (!proc) {
-      // Process not found in PM2 at all
       issues.push({
         process: monitored.name,
         severity: monitored.alwaysOn ? "critical" : "warning",
@@ -221,20 +185,17 @@ async function checkHealth(processes: PM2Process[]): Promise<{
     const memory = proc.monit?.memory || 0;
     const cpu = proc.monit?.cpu || 0;
 
-    // Status line for healthy report
     const uptimeStr = uptime > 0 ? formatUptime(uptime) : "-";
     const memStr = memory > 0 ? formatMemory(memory) : "-";
     statusLines.push(
       `  ${monitored.name}: ${status} | up ${uptimeStr} | ${memStr} | ${restarts} restarts`
     );
 
-    // Check: always-on process is stopped or errored
     if (monitored.alwaysOn && (status === "stopped" || status === "errored")) {
       let autoFixed = false;
 
       if (AUTO_RESTART_ALWAYS_ON) {
-        console.log(`Auto-restarting ${monitored.name}...`);
-        autoFixed = await restartProcess(monitored.name);
+        autoFixed = await restartFn(monitored.name);
       }
 
       issues.push({
@@ -245,7 +206,6 @@ async function checkHealth(processes: PM2Process[]): Promise<{
       });
     }
 
-    // Check: high restart count (possible crash loop)
     if (restarts > RESTART_THRESHOLD) {
       issues.push({
         process: monitored.name,
@@ -255,7 +215,6 @@ async function checkHealth(processes: PM2Process[]): Promise<{
       });
     }
 
-    // Check: cron-based process stuck in errored state
     if (!monitored.alwaysOn && status === "errored") {
       issues.push({
         process: monitored.name,
@@ -273,9 +232,8 @@ async function checkHealth(processes: PM2Process[]): Promise<{
 // ALERT BUILDER
 // ============================================================
 
-function buildAlert(issues: HealthIssue[], statusLines: string[]): string | null {
+export function buildAlert(issues: HealthIssue[], statusLines: string[]): string | null {
   if (issues.length === 0) {
-    // No issues — stay silent
     return null;
   }
 
@@ -354,9 +312,6 @@ export function checkBotResponsiveness(
 
   const pendingCount = pending?.cnt ?? 0;
 
-  // Gap = how long since the earliest unanswered user message (time waiting for a response).
-  // When user sent after bot's last reply, gap = now - lastBot (time since bot went quiet).
-  // When bot never replied, gap = now - lastUser (time user has been waiting).
   let gapMinutes = 0;
   if (lastUserAt && lastBotAt && new Date(lastUserAt) > new Date(lastBotAt)) {
     gapMinutes = Math.round((Date.now() - new Date(lastBotAt).getTime()) / 60_000);
@@ -382,46 +337,35 @@ export function buildResponsivenessAlert(result: ResponsivenessResult): string {
 }
 
 // ============================================================
-// MAIN
+// HANDLER ENTRY POINT
 // ============================================================
 
-async function main() {
-  console.log("Running Watchdog...");
+export async function run(ctx: RoutineContext): Promise<void> {
+  ctx.log("Running Watchdog...");
 
-  if (!WATCHDOG_GROUP_KEY) {
-    console.error("Cannot run — no configured group found for watchdog alerts");
-    console.error("Set WATCHDOG_GROUP env var or ensure at least one agent has a chatId in agents.json");
-    process.exit(0); // graceful skip — PM2 will retry on next cron cycle
-  }
-
-  const WATCHDOG_GROUP = GROUPS[WATCHDOG_GROUP_KEY];
-  console.log(`[watchdog] Sending alerts to group: ${WATCHDOG_GROUP_KEY}`);
-
+  const monitoredProcesses = loadMonitoredProcesses();
   const processes = await getPM2Processes();
 
   if (processes.length === 0) {
-    console.log("No PM2 processes found — PM2 may not be running");
-    // Still alert since this is unexpected if the watchdog itself is running via PM2
-    await sendToGroup(
-      WATCHDOG_GROUP.chatId,
-      "Watchdog: No PM2 processes detected. PM2 may not be running or ecosystem is not started. Run: npx pm2 start ecosystem.config.cjs",
-      { topicId: WATCHDOG_GROUP.topicId }
+    ctx.log("No PM2 processes found — PM2 may not be running");
+    await ctx.send(
+      "Watchdog: No PM2 processes detected. PM2 may not be running or ecosystem is not started. Run: npx pm2 start ecosystem.config.cjs"
     );
     return;
   }
 
-  console.log(`Found ${processes.length} PM2 processes`);
-  const { issues, statusLines } = await checkHealth(processes);
+  ctx.log(`Found ${processes.length} PM2 processes`);
+  const { issues, statusLines } = await checkHealth(processes, monitoredProcesses);
 
-  console.log(`Issues found: ${issues.length}`);
+  ctx.log(`Issues found: ${issues.length}`);
 
   const alert = buildAlert(issues, statusLines);
 
   if (alert) {
-    await sendToGroup(WATCHDOG_GROUP.chatId, alert, { topicId: WATCHDOG_GROUP.topicId });
-    console.log("Alert sent to General group");
+    await ctx.send(alert);
+    ctx.log("Alert sent to General group");
   } else {
-    console.log("All processes healthy — no alert needed");
+    ctx.log("All processes healthy — no alert needed");
   }
 
   // Heartbeat responsiveness probe
@@ -431,30 +375,14 @@ async function main() {
     const responsiveness = checkBotResponsiveness(db, thresholdMin);
     if (!responsiveness.ok) {
       const respAlert = buildResponsivenessAlert(responsiveness);
-      await sendToGroup(WATCHDOG_GROUP.chatId, respAlert, { topicId: WATCHDOG_GROUP.topicId });
-      console.log("[watchdog] Responsiveness alert sent");
+      await ctx.send(respAlert);
+      ctx.log("Responsiveness alert sent");
     } else {
-      console.log("[watchdog] Responsiveness ok");
+      ctx.log("Responsiveness ok");
     }
   } catch (err) {
-    console.warn("[watchdog] Responsiveness probe failed (non-fatal):", err instanceof Error ? err.message : err);
+    ctx.log(
+      `Responsiveness probe failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`
+    );
   }
-}
-
-// PM2's bun container uses require() internally, which sets import.meta.main = false.
-// Fall back to pm_exec_path to detect when PM2 is the entry runner.
-const _isEntry =
-  import.meta.main ||
-  process.env.pm_exec_path === import.meta.url?.replace("file://", "");
-
-if (_isEntry) {
-  main().catch(async (error) => {
-    const msg = error instanceof Error ? error.message : String(error);
-    console.error("Error running watchdog:", error);
-    try {
-      const fallbackGroup = WATCHDOG_GROUP_KEY ? GROUPS[WATCHDOG_GROUP_KEY] : null;
-      if (fallbackGroup) await sendToGroup(fallbackGroup.chatId, `⚠️ watchdog failed:\n\n${msg}`);
-    } catch { /* ignore secondary failure */ }
-    process.exit(0); // exit 0 so PM2 does not immediately restart — next run at scheduled cron time
-  });
 }
