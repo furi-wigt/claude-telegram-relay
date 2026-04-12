@@ -382,6 +382,15 @@ export function registerCommands(bot: Bot, options: CommandOptions): void {
     await ctx.reply(help);
   });
 
+  // /status - show current session status
+  bot.command("status", async (ctx) => {
+    const chatId = ctx.chat?.id;
+    if (!chatId) return;
+    const threadId = ctx.msg?.message_thread_id ?? null;
+    const summary = getSessionSummary(chatId, threadId);
+    await ctx.reply(`Session Status\n\n${summary}`);
+  });
+
   // /routines - manage user-created scheduled routines
   bot.command("routines", async (ctx) => {
     const args = ctx.match || "";
