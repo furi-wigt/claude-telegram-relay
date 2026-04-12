@@ -171,6 +171,24 @@ describe("FTS5 BM25 search", () => {
 
     expect(result.cnt).toBeGreaterThanOrEqual(0);
   });
+
+  test("question mark in natural language query does not throw FTS5 parse error", () => {
+    // Regression: "What are my active goals?" → '?' is an FTS5 wildcard operator.
+    // bm25SearchDocuments must strip it before passing to MATCH.
+    const raw = "What are my active goals?";
+    const sanitized = raw.replace(/['"(){}[\]*:^~!@#$%&?]/g, " ").trim();
+
+    expect(sanitized).toBe("What are my active goals");  // '?' removed, trim() cleans trailing space
+    expect(sanitized).not.toContain("?");
+
+    // Sanitized form must not throw when used in a MATCH clause
+    const result = db.query(`
+      SELECT COUNT(*) as cnt FROM documents_fts
+      WHERE documents_fts MATCH ?
+    `).get(sanitized) as { cnt: number };
+
+    expect(result.cnt).toBeGreaterThanOrEqual(0);
+  });
 });
 
 // ─── The core scenario: BCP query no longer matches blackboard ──────────────
