@@ -234,6 +234,27 @@ export class JobStore {
     return row ? rowToCheckpoint(row) : null;
   }
 
+  /** Return the set of agentIds in all currently-running compound jobs */
+  getRunningCompoundAgentIds(): Set<string> {
+    const rows = this.db
+      .query("SELECT payload FROM jobs WHERE type = 'compound' AND status = 'running'")
+      .all() as Array<{ payload: string }>;
+
+    const agentIds = new Set<string>();
+    for (const row of rows) {
+      try {
+        const payload = JSON.parse(row.payload) as { plan?: { tasks?: Array<{ agentId?: string }> } };
+        const tasks = payload.plan?.tasks ?? [];
+        for (const task of tasks) {
+          if (task.agentId) agentIds.add(task.agentId);
+        }
+      } catch {
+        // ignore malformed payload
+      }
+    }
+    return agentIds;
+  }
+
   /** For auto-resolve: find awaiting-intervention jobs past their timeout */
   getExpiredInterventions(): Job[] {
     const rows = this.db

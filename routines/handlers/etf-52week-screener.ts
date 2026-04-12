@@ -1,5 +1,3 @@
-#!/usr/bin/env bun
-
 /**
  * @routine etf-52week-screener
  * @description Daily ETF screener — 52W high breakout + VIX regime + volume + Triple RSI
@@ -13,28 +11,15 @@
  * - VIX regime:         Bull (<18) / Caution (18-25) / Bear (>25)
  * - Triple RSI:         RSI14 < 50 AND RSI7 < 40 AND RSI3 < 15 (weekly)
  *
- * Run manually: bun run routines/etf-52week-screener.ts
+ * Handler — pure logic only. No standalone entry point, no PM2 boilerplate.
+ * Use ctx.send() for Telegram output and ctx.log() for console output.
  */
 
+import type { RoutineContext } from "../../src/jobs/executors/routineContext.ts";
 import YahooFinance from "yahoo-finance2";
+import { USER_TIMEZONE } from "../../src/config/userConfig.ts";
+
 const yahooFinance = new YahooFinance({ suppressNotices: ["yahooSurvey", "ripHistorical"] });
-import { sendAndRecord } from "../src/utils/routineMessage.ts";
-import { sendToGroup } from "../src/utils/sendToGroup.ts";
-import { GROUPS, validateGroup } from "../src/config/groups.ts";
-import { USER_TIMEZONE } from "../src/config/userConfig.ts";
-
-function resolveEtfScreenerGroupKey(): string | undefined {
-  for (const key of [
-    process.env.ETF_SCREENER_GROUP,
-    "OPERATIONS",
-    Object.keys(GROUPS).find((k) => (GROUPS[k]?.chatId ?? 0) !== 0),
-  ]) {
-    if (key && (GROUPS[key]?.chatId ?? 0) !== 0) return key;
-  }
-  return undefined;
-}
-
-const ETF_SCREENER_GROUP_KEY = resolveEtfScreenerGroupKey();
 
 // ── ETF Universe (~55 tickers) ────────────────────────────────────────────────
 
@@ -424,70 +409,43 @@ export function formatMessage(
   return lines.join("\n");
 }
 
-// ── Main ──────────────────────────────────────────────────────────────────────
+// ── Handler — RoutineContext interface ────────────────────────────────────────
 
-async function main() {
-  console.log("Running ETF 52-Week High Screener (with VIX + Volume + Triple RSI)...");
-
-  if (!ETF_SCREENER_GROUP_KEY || !validateGroup(ETF_SCREENER_GROUP_KEY)) {
-    console.error("Cannot run — no group configured");
-    process.exit(0); // graceful skip — PM2 will retry on next cron cycle
-  }
+export async function run(ctx: RoutineContext): Promise<void> {
+  ctx.log("Running ETF 52-Week High Screener (with VIX + Volume + Triple RSI)...");
 
   // 1. VIX regime
   const vix = await fetchVix();
   if (vix) {
-    console.log(`VIX: ${vix.value.toFixed(1)} — ${vix.label}`);
+    ctx.log(`VIX: ${vix.value.toFixed(1)} — ${vix.label}`);
   } else {
-    console.warn("VIX fetch failed, continuing without regime filter");
+    ctx.log("VIX fetch failed, continuing without regime filter");
   }
 
   // 2. ETF quotes + volume
   const quotes = await fetchQuotes();
-  console.log(`Fetched ${quotes.length}/${ETF_UNIVERSE.length} ETF quotes`);
+  ctx.log(`Fetched ${quotes.length}/${ETF_UNIVERSE.length} ETF quotes`);
 
   // 3. Screen for 5% threshold
   const { breakouts, candidates } = screenETFs(quotes);
   const allPassing = [...breakouts, ...candidates];
-  console.log(`Breakouts (vol confirmed): ${breakouts.length}, Candidates: ${candidates.length}`);
+  ctx.log(`Breakouts (vol confirmed): ${breakouts.length}, Candidates: ${candidates.length}`);
 
   // 4. Enrich passing ETFs with weekly RSI
-  console.log(`Fetching weekly RSI for ${allPassing.length} passing ETFs...`);
+  ctx.log(`Fetching weekly RSI for ${allPassing.length} passing ETFs...`);
   await enrichWithRsi(allPassing);
   const tripleRsiCount = allPassing.filter(e => e.tripleRsiOversold).length;
-  console.log(`Triple RSI oversold: ${tripleRsiCount}`);
+  ctx.log(`Triple RSI oversold: ${tripleRsiCount}`);
 
   if (breakouts.length > 0) {
-    console.log("Confirmed breakouts:", breakouts.map(e => `${e.ticker} +${e.pctFromHigh.toFixed(1)}%`).join(", "));
+    ctx.log(`Confirmed breakouts: ${breakouts.map(e => `${e.ticker} +${e.pctFromHigh.toFixed(1)}%`).join(", ")}`);
   }
   if (candidates.length > 0) {
-    console.log("Near highs:", candidates.map(e => `${e.ticker} ${e.pctFromHigh.toFixed(1)}%`).join(", "));
+    ctx.log(`Near highs: ${candidates.map(e => `${e.ticker} ${e.pctFromHigh.toFixed(1)}%`).join(", ")}`);
   }
 
   const message = formatMessage(breakouts, candidates, allPassing, quotes.length, vix);
+  await ctx.send(message);
 
-  await sendAndRecord(GROUPS[ETF_SCREENER_GROUP_KEY!].chatId, message, {
-    routineName: "etf-52week-screener",
-    agentId: "general-assistant",
-    topicId: GROUPS[ETF_SCREENER_GROUP_KEY!].topicId,
-  });
-
-  console.log("ETF 52-week screener sent to General group");
-}
-
-// PM2's bun container uses require() internally, which sets import.meta.main = false.
-// Fall back to pm_exec_path to detect when PM2 is the entry runner.
-const _isEntry =
-  import.meta.main ||
-  process.env.pm_exec_path === import.meta.url?.replace("file://", "");
-
-if (_isEntry) {
-  main().catch(async (err) => {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error("ETF screener failed:", err);
-    try {
-      if (ETF_SCREENER_GROUP_KEY) await sendToGroup(GROUPS[ETF_SCREENER_GROUP_KEY].chatId, `⚠️ etf-52week-screener failed:\n\n${msg}`);
-    } catch { /* ignore secondary failure */ }
-    process.exit(0); // exit 0 so PM2 does not immediately restart — next run at scheduled cron time
-  });
+  ctx.log("ETF 52-week screener sent");
 }

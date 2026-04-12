@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { buildLearningsSummarySection } from "../../routines/night-summary";
+import { buildLearningsSummarySection } from "../../routines/handlers/night-summary.ts";
 
 describe("buildLearningsSummarySection", () => {
   test("formats learnings into summary section", () => {

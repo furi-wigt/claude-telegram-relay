@@ -20,7 +20,7 @@ import {
   type DayFact,
   type DayGoal,
   type DaySummary,
-} from "./night-summary.ts";
+} from "./handlers/night-summary.ts";
 
 // ============================================================
 // Shared test data helpers

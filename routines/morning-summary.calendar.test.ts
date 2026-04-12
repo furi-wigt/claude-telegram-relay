@@ -112,7 +112,7 @@ const {
   getTodayCalendarEvents,
   buildEnhancedBriefing,
   _deps,
-} = await import("./morning-summary.ts");
+} = await import("./handlers/morning-summary.ts");
 
 // ============================================================
 // Calendar mock helpers (plain bun mocks, NOT mock.module)

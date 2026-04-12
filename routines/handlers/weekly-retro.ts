@@ -1,39 +1,23 @@
-#!/usr/bin/env bun
-
 /**
  * @routine weekly-retro
  * @description Weekly learning retrospective — surfaces promotion candidates
  * @schedule 0 9 * * 0
  * @target General AI Assistant
+ *
+ * Handler — pure logic only. No standalone entry point, no PM2 boilerplate.
+ * Use ctx.send() for Telegram output and ctx.log() for console output.
  */
 
-import { join } from "path";
-import { sendAndRecord } from "../src/utils/routineMessage.ts";
-import { sendToGroup } from "../src/utils/sendToGroup.ts";
-import { GROUPS, validateGroup } from "../src/config/groups.ts";
-
-function resolveWeeklyRetroGroupKey(): string | undefined {
-  for (const key of [
-    process.env.WEEKLY_RETRO_GROUP,
-    "OPERATIONS",
-    Object.keys(GROUPS).find((k) => (GROUPS[k]?.chatId ?? 0) !== 0),
-  ]) {
-    if (key && (GROUPS[key]?.chatId ?? 0) !== 0) return key;
-  }
-  return undefined;
-}
-
-const WEEKLY_RETRO_GROUP_KEY = resolveWeeklyRetroGroupKey();
-import { USER_NAME } from "../src/config/userConfig.ts";
-import { shouldSkipRecently, markRanToday } from "../src/routines/runOnceGuard.ts";
-import { getPm2LogsDir } from "../config/observability.ts";
+import type { RoutineContext } from "../../src/jobs/executors/routineContext.ts";
+import { sendToGroup } from "../../src/utils/sendToGroup.ts";
+import { GROUPS } from "../../src/config/groups.ts";
+import { USER_NAME } from "../../src/config/userConfig.ts";
 import {
   storeLearningSession,
   buildRetroKeyboard,
   type RetroCandidate,
-} from "../src/callbacks/learningRetroCallbackHandler.ts";
+} from "../../src/callbacks/learningRetroCallbackHandler.ts";
 
-const LAST_RUN_FILE = join(getPm2LogsDir(), "weekly-retro.lastrun");
 const MAX_CANDIDATES = 10;
 const MIN_CONFIDENCE = 0.70;
 const MIN_AGE_DAYS = 3;
@@ -97,7 +81,7 @@ interface LearningRow {
 
 async function getPromotionCandidates(): Promise<LearningRow[]> {
   try {
-    const { getDb } = await import("../src/local/db");
+    const { getDb } = await import("../../src/local/db");
     const db = getDb();
 
     const cutoff = new Date(Date.now() - MIN_AGE_DAYS * 86400000).toISOString();
@@ -126,7 +110,7 @@ async function getLearningStats(): Promise<{
   promotedCount: number;
 }> {
   try {
-    const { getDb } = await import("../src/local/db");
+    const { getDb } = await import("../../src/local/db");
     const db = getDb();
 
     const weekAgo = new Date(Date.now() - 7 * 86400000).toISOString();
@@ -149,19 +133,14 @@ async function getLearningStats(): Promise<{
   }
 }
 
-// ── Main ─────────────────────────────────────────────────────────────────────
+// ── Handler — RoutineContext interface ────────────────────────────────────────
 
-async function main() {
-  console.log("[weekly-retro] Running weekly learning retrospective...");
+export async function run(ctx: RoutineContext): Promise<void> {
+  ctx.log("Running weekly learning retrospective...");
 
-  if (shouldSkipRecently(LAST_RUN_FILE, 12)) {
-    console.log("[weekly-retro] Already ran within the last 12 hours, skipping.");
-    process.exit(0);
-  }
-
-  if (!WEEKLY_RETRO_GROUP_KEY || !validateGroup(WEEKLY_RETRO_GROUP_KEY)) {
-    console.error("[weekly-retro] Cannot run — no group configured");
-    process.exit(0);
+  if (await ctx.skipIfRanWithin(12)) {
+    ctx.log("Already ran within the last 12 hours, skipping.");
+    return;
   }
 
   const candidates = await getPromotionCandidates();
@@ -179,14 +158,9 @@ async function main() {
       `_Learnings need confidence >= ${MIN_CONFIDENCE} and age >= ${MIN_AGE_DAYS} days._`,
     ].join("\n");
 
-    await sendAndRecord(GROUPS[WEEKLY_RETRO_GROUP_KEY!].chatId, msg, {
-      routineName: "weekly-retro",
-      agentId: "general-assistant",
-      topicId: GROUPS[WEEKLY_RETRO_GROUP_KEY!].topicId,
-    });
-    markRanToday(LAST_RUN_FILE);
-    console.log("[weekly-retro] No candidates — summary sent.");
-    process.exit(0);
+    await ctx.send(msg);
+    ctx.log("No candidates — summary sent.");
+    return;
   }
 
   // Store candidates for callback handler
@@ -211,46 +185,30 @@ async function main() {
     `Review each learning below:`,
   ].join("\n");
 
-  await sendAndRecord(GROUPS[WEEKLY_RETRO_GROUP_KEY!].chatId, header, {
-    routineName: "weekly-retro",
-    agentId: "general-assistant",
-    topicId: GROUPS[WEEKLY_RETRO_GROUP_KEY!].topicId,
-  });
+  await ctx.send(header);
 
-  // Send each candidate with inline keyboard
-  for (let i = 0; i < retroCandidates.length; i++) {
-    const c = retroCandidates[i];
-    const msg = buildRetroMessage(
-      c.content,
-      c.category,
-      c.confidence,
-      c.evidenceSummary,
-      i + 1,
-      retroCandidates.length,
-    );
-    const kb = buildRetroKeyboard(sessionId, i);
+  // Send each candidate with inline keyboard — uses sendToGroup directly for reply_markup
+  const group = ctx.config.group;
+  const groupEntry = GROUPS[group];
+  if (groupEntry) {
+    for (let i = 0; i < retroCandidates.length; i++) {
+      const c = retroCandidates[i];
+      const msg = buildRetroMessage(
+        c.content,
+        c.category,
+        c.confidence,
+        c.evidenceSummary,
+        i + 1,
+        retroCandidates.length,
+      );
+      const kb = buildRetroKeyboard(sessionId, i);
 
-    await sendToGroup(GROUPS[WEEKLY_RETRO_GROUP_KEY!].chatId, msg, {
-      topicId: GROUPS[WEEKLY_RETRO_GROUP_KEY!].topicId ?? undefined,
-      reply_markup: kb,
-    });
+      await sendToGroup(groupEntry.chatId, msg, {
+        topicId: (ctx.config.topicId ?? groupEntry.topicId) ?? undefined,
+        reply_markup: kb,
+      });
+    }
   }
 
-  markRanToday(LAST_RUN_FILE);
-  console.log(`[weekly-retro] Sent ${retroCandidates.length} candidates for review.`);
-}
-
-const _isEntry =
-  import.meta.main ||
-  process.env.pm_exec_path === import.meta.url?.replace("file://", "");
-
-if (_isEntry) {
-  main().catch(async (err) => {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error("[weekly-retro] Error:", err);
-    try {
-      if (WEEKLY_RETRO_GROUP_KEY) await sendToGroup(GROUPS[WEEKLY_RETRO_GROUP_KEY].chatId, `Weekly-retro failed:\n\n${msg}`);
-    } catch { /* ignore secondary failure */ }
-    process.exit(0);
-  });
+  ctx.log(`Sent ${retroCandidates.length} candidates for review.`);
 }

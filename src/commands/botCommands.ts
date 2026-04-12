@@ -372,6 +372,7 @@ export function registerCommands(bot: Bot, options: CommandOptions): void {
       "/agents - List all agents with capabilities",
       "/search <query> - Search across all agent groups",
       "/reboot - Restart Jarvis (with confirmation)",
+      "/schedule <prompt> - Queue a background Claude session job",
       "/help - Show this help",
       "",
       "Create routines by describing them:",
