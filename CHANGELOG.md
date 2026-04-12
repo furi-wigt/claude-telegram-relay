@@ -1,5 +1,23 @@
 # Changelog
 
+## [Unreleased] / 2026-04-12 — Job Queue Executors: Full Executor Suite
+
+### Added
+- **RoutineExecutor**: lazy handler loading from `routines/handlers/<name>.ts` via dynamic import; no startup cost; handler registration optional
+- **RoutineContext**: injected into all routine handlers — `send()`, `llm()`, `log()`, `skipIfRanWithin()` replace standalone boilerplate
+- **RoutineConfig**: `config/routines.config.json` defines all 11 routines; user overrides via `~/.claude-relay/routines.config.json`
+- **routine-scheduler**: new PM2 service — reads config, registers cron jobs, fires jobs via webhook; replaces 11 per-routine PM2 entries
+- **Prompt-type routines**: add `"type": "prompt"` + `"prompt": "..."` to routines.config.json — zero handler code needed
+- **ClaudeSessionExecutor**: `claude-session` jobs invoke orchestration layer (classifyIntent → executeBlackboardDispatch); posts result back to originating chat
+- **CompoundExecutor**: `compound` jobs run multi-step blackboard dispatch with agent-overlap guard (awaiting-intervention if target agents busy)
+- **/schedule command**: `/schedule <prompt>` enqueues a claude-session job from Telegram; result posted back to originating chat/thread
+- **auto-approve.default.json**: maintenance routines (log-cleanup, orphan-gc, memory-cleanup, memory-dedup-review) auto-approve approval interventions; cron jobs skip budget interventions
+- **interpolate utility**: `src/routines/interpolate.ts` — `{{VAR_NAME}}` substitution for prompt templates
+
+### Changed
+- All 11 routines migrated from standalone `routines/*.ts` scripts to `routines/handlers/*.ts` handlers
+- `ecosystem.config.cjs`: per-routine cron entries removed; `routine-scheduler` is now sole cron dispatcher
+
 ## [Unreleased] / 2026-04-12 — Job Queue System
 
 ### Added

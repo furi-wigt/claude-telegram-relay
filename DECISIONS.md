@@ -77,3 +77,31 @@
 **Why**: Research Analyst meshTopicId=175 was deleted. CC dispatched → `sendInitialMessage` failed silently (debug log only) → Claude ran 120s → `ctx.reply` to dead thread also silently swallowed → 7534-char response never delivered. User saw nothing.
 **Rejected**: Hard-abort on `sendInitialMessage` failure — indicator is cosmetic; Claude should still run and deliver to root chat instead.
 **Branch**: bugfix/dead_thread_fallback
+
+## 2026-04-12 — Job Queue Executors: Scheduler → Webhook single-writer pattern [43f6c59]
+
+**Change**: `routine-scheduler` submits jobs via webhook POST, not direct SQLite write.
+**Why**: Relay is the single SQLite writer. Multi-process writes to WAL-mode SQLite are safe but create contention; routing through the webhook avoids this and keeps the relay as the authoritative job source.
+**Rejected**: Direct `JobStore.insert()` from scheduler — would work but couples two processes to the same DB write path.
+**Branch**: feat/job-queue-executors
+
+## 2026-04-12 — ClaudeSessionExecutor v1 re-runs from scratch on retry [43f6c59]
+
+**Change**: `ClaudeSessionExecutor.execute()` ignores checkpoint on retry and re-runs the full dispatch.
+**Why**: `executeBlackboardDispatch` has no resume API. Implementing checkpoint resume would require storing partial agent results and resuming mid-graph — deferred to v2.
+**Rejected**: Partial resume — premature complexity without a resume API contract.
+**Branch**: feat/job-queue-executors
+
+## 2026-04-12 — All routines migrated to handlers/ + RoutineConfig [43f6c59]
+
+**Change**: 11 routines moved from standalone scripts to `routines/handlers/` with `RoutineContext` injection.
+**Why**: Eliminates 11× duplicated boilerplate (sendAndRecord, GROUPS, _isEntry, process.exit). Handlers are pure functions testable without Telegram or PM2. Scheduler owns all lifecycle boilerplate.
+**Rejected**: Thin wrappers calling original scripts — would keep the duplication.
+**Branch**: feat/job-queue-executors
+
+## 2026-04-12 — RoutineExecutor uses lazy dynamic import [43f6c59]
+
+**Change**: Handler modules loaded on first job execution, cached in Map.
+**Why**: Avoids startup cost and hardcoded handler list. Supports hot-reload: SIGUSR2 to scheduler → fresh import on next job. Zero changes to executor registration code when adding handlers.
+**Rejected**: Static import list in src/jobs/index.ts — requires code change for every new handler.
+**Branch**: feat/job-queue-executors
