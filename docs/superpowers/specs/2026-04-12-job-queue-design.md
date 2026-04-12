@@ -33,11 +33,15 @@ webhook server      →    JobStore (SQLite)            RoutineExecutor
 agent handoff       →    JobQueue                     ApiCallExecutor
   (submitJob())            priority lanes               → src/tools/*
 CLI submission      →      concurrency caps           CompoundExecutor
-  (relay jobs run)         scheduler loop               → blackboard
+  (relay jobs run)         event-driven dispatch        → blackboard
 Telegram message    →    ↓
                          InterventionManager
-                           Telegram push
-                           t3 add (T+60min)
+                           auto-approve rules
+                           auto-resolve policies
+                           Playwright E2E runner
+                           confidence-based auto-proceed
+                           Telegram push (fallback)
+                           t3 add (escalation)
                          ↓
 Visibility               JobStore (read)
 ──────────────────       /jobs Telegram command
@@ -64,6 +68,10 @@ relay jobs (CLI)         job detail cards
 | `intervention_type` | enum (nullable) | `approval` \| `clarification` \| `e2e` \| `error-recovery` \| `budget` |
 | `intervention_prompt` | text (nullable) | Message shown to user when paused |
 | `intervention_due_at` | datetime (nullable) | When to send next reminder |
+| `auto_resolve_policy` | enum (nullable) | `none` \| `approve_after_timeout` \| `skip_after_timeout` \| `abort_after_timeout` |
+| `auto_resolve_timeout_ms` | int (nullable) | How long before auto-resolve triggers (null = inherit from type default) |
+| `retry_count` | int | Default 0. Incremented on each retry. Max 3 before permanent failure |
+| `timeout_ms` | int (nullable) | Per-job override for running timeout (null = inherit from type default) |
 | `created_at` | datetime | |
 | `started_at` | datetime (nullable) | |
 | `completed_at` | datetime (nullable) | |
@@ -85,13 +93,31 @@ relay jobs (CLI)         job detail cards
 ```
 pending → running → done
                  ↘ paused ↔ running                    (manual pause/resume)
-                 ↘ awaiting-intervention → running      (user resolved)
-                              ↘ cancelled               (user aborted)
+                 ↘ awaiting-intervention → running      (user or auto-resolved)
+                              ↘ cancelled               (user aborted or auto-aborted)
                  ↘ preempted → pending                  (higher-priority job took the slot)
-                 ↘ failed → pending (retry) / cancelled
+                 ↘ failed → pending (retry, if retry_count < 3) / cancelled
+                 ↘ timed-out → failed                   (running exceeded timeout_ms)
 ```
 
-`awaiting-intervention` never self-resolves — only a user action (Telegram inline button or `relay jobs approve/abort/answer`) transitions it out.
+**Auto-resolution:** `awaiting-intervention` jobs can self-resolve based on:
+1. **Auto-resolve policy** — per-job `auto_resolve_policy` determines what happens after `auto_resolve_timeout_ms` elapses (see Intervention Protocol)
+2. **Auto-approve rules** — matching rules in `~/.claude-relay/auto-approve.json` skip human notification entirely
+3. **E2E auto-verification** — `e2e` interventions route to Playwright runner first; only genuine failures surface to user
+4. **Confidence-based auto-proceed** — executors with confidence >= 0.85 proceed with best-guess, post non-blocking FYI
+
+Jobs without a matching auto-resolve path stay in `awaiting-intervention` until a user acts (Telegram inline button or `relay jobs approve/abort/answer`).
+
+**Retry cap:** Jobs track `retry_count`. After 3 retries, the job is permanently `failed` with `intervention_type: "error-recovery"` (dead-letter). No further auto-retry — user must investigate.
+
+**Running timeout:** Each job type has a default timeout. If `started_at + timeout_ms < now`, the scheduler transitions the job to `failed`, releases the concurrency slot, and auto-retries once (if `retry_count < 3`).
+
+| Type | Default timeout |
+|---|---|
+| `routine` | 5 min |
+| `api-call` | 2 min |
+| `claude-session` | 30 min |
+| `compound` | 60 min |
 
 ---
 
@@ -119,7 +145,21 @@ The dedup key prevents double-fire on PM2 retry or scheduler restart.
 
 ### Webhook / External Events
 
-`src/jobs/sources/webhookServer.ts` — lightweight HTTP server on a configurable local port. Accepts `POST /jobs` with JSON body matching the `submitJob()` payload. Auth via shared secret (`JOBS_WEBHOOK_SECRET` in `.env`).
+`src/jobs/sources/webhookServer.ts` — lightweight HTTP server on a configurable local port. Accepts `POST /jobs` with JSON body matching the `submitJob()` payload. Auth via bearer token (`JOBS_WEBHOOK_SECRET` in `.env`).
+
+Per-source scoping: `~/.claude-relay/webhook-acl.json` maps secrets to allowed job types:
+
+```json
+{
+  "tokens": [
+    { "name": "cron-agent", "secret": "...", "allowed_types": ["routine"] },
+    { "name": "external-ci", "secret": "...", "allowed_types": ["api-call", "claude-session"] },
+    { "name": "admin", "secret": "...", "allowed_types": "*" }
+  ]
+}
+```
+
+If only `JOBS_WEBHOOK_SECRET` is set (no ACL file), it acts as an admin token allowing all types. The ACL file is optional — only needed when multiple external sources need different access levels.
 
 External tools, scripts, and other agents POST jobs without touching Telegram.
 
@@ -155,6 +195,10 @@ interface ExecutorResult {
     type: InterventionType;
     prompt: string;
     dueInMs: number;
+    autoResolvePolicy?: AutoResolvePolicy;   // override per-type default
+    autoResolveTimeoutMs?: number;
+    autoProceedConfidence?: number;           // 0-1; >= 0.85 → auto-proceed with FYI
+    e2eScenario?: string;                     // Playwright scenario for auto-verification
   };
   error?: string;
   summary?: string;
@@ -174,15 +218,17 @@ Implements the `RoutineContext` interface from the approved scheduler spec. Dyna
 
 Executes a configured HTTP request or a named integration from `src/tools/`. Stores response in `job_checkpoints`. Retries with exponential backoff before escalating to `failed`. Returns `awaiting-intervention` on budget or rate-limit responses.
 
-### `CompoundExecutor` — `maxConcurrent: 1`
+### `CompoundExecutor` — `maxConcurrent: 2`
 
 Orchestrates multi-step workflows using the existing blackboard (`src/orchestration/blackboard.ts`). Each blackboard round is a checkpoint. On restart: rehydrates the blackboard session from last checkpoint and continues from current round.
+
+Concurrency of 2 is safe because blackboard sessions are isolated by `session_id`. The scheduler enforces that no two active compound jobs target overlapping `agentId` sets (prevents context bleed via shared Telegram message routing). If agent overlap is detected, the second job stays `pending` until the first completes.
 
 ---
 
 ## Priority Lanes + Concurrency
 
-The scheduler loop runs every 500ms. It fills available concurrency slots in priority order.
+The scheduler is **event-driven** with a heartbeat safety net. It wakes on: `submitJob()`, job completion, intervention resolution, or timeout detection. A 500ms heartbeat poll runs as a fallback to catch missed events. This gives near-zero latency for urgent jobs while avoiding wasteful polling during long sessions.
 
 ### Lanes
 
@@ -199,7 +245,7 @@ Urgent is always drained before normal; normal before background.
 | Type | Max concurrent | Rationale |
 |---|---|---|
 | `claude-session` | 1 | Expensive; serialised to avoid context bleed |
-| `compound` | 1 | Single active blackboard session |
+| `compound` | 2 | Isolated by `session_id`; blocked if agent targets overlap |
 | `routine` | 3 | Lightweight handlers, safe to parallelise |
 | `api-call` | 5 | I/O-bound; high parallelism fine |
 
@@ -220,15 +266,79 @@ If an `urgent` job needs a slot held by a `background` job of the same type, the
 
 ## Intervention Protocol
 
-### Triggering
+The intervention system is designed **automation-first**: the majority of interventions should resolve without bothering the user. Human notification is the last resort, not the first action.
 
-An executor returns `status: "awaiting-intervention"` with intervention details. The job queue:
-1. Sets job status to `awaiting-intervention`
-2. Releases the concurrency slot immediately
-3. Sets `intervention_due_at = now + dueInMs`
-4. Delegates to `InterventionManager`
+### Resolution cascade
 
-### Telegram notification
+When an executor returns `status: "awaiting-intervention"`, the `InterventionManager` runs this cascade top-to-bottom. The first match resolves the job — no human involved:
+
+```
+1. Auto-approve rules     → match? → auto-confirm, log FYI
+2. Confidence auto-proceed → >= 0.85? → proceed with best-guess, post FYI
+3. E2E auto-verification  → e2e type? → run Playwright scenario → pass? → auto-confirm
+4. Auto-resolve policy     → has policy? → schedule auto-resolve at timeout
+5. (fallback)             → notify human via Telegram
+```
+
+### Step 1: Auto-approve rules
+
+Configurable rules at `~/.claude-relay/auto-approve.json`:
+
+```json
+[
+  { "executor": "log-cleanup",     "intervention_types": ["approval"], "action": "confirm" },
+  { "executor": "orphan-gc",       "intervention_types": ["approval"], "action": "confirm" },
+  { "executor": "memory-cleanup",  "intervention_types": ["approval"], "action": "confirm" },
+  { "source": "cron",              "intervention_types": ["budget"],   "action": "confirm",
+    "condition": "confidence_gte:0.9" }
+]
+```
+
+Rules checked on every intervention before any notification is sent. Matching rule → job auto-resolved, action logged to `metadata` for audit. Zero user involvement for zero-risk ops.
+
+### Step 2: Confidence-based auto-proceed
+
+Executors can set `autoProceedConfidence` in the `ExecutorResult.intervention` payload. If confidence >= 0.85, the `InterventionManager`:
+1. Resumes the job immediately with `{ resolution: "auto-proceeded", confidence: N }`
+2. Posts a non-blocking FYI to the originating chat: "Proceeded with best-guess (confidence: 0.92). Reply 'undo' within 5 min to rollback."
+3. Logs the assumption in `metadata`
+
+The 0.85 threshold is consistent with the existing `/reflect` confidence level used elsewhere in the bot.
+
+### Step 3: E2E auto-verification (Playwright)
+
+When `intervention_type === "e2e"` and the executor provides an `e2eScenario` string, the `InterventionManager` routes to the Playwright E2E runner (per the approved Playwright E2E architecture in `project_playwright_e2e_architecture.md`):
+
+1. Launch Playwright with the scenario against Telegram Web
+2. Claude Vision evaluates the result screenshot
+3. If verdict is `pass` → auto-confirm, log result
+4. If verdict is `fail` → fall through to human notification with the screenshot and failure reason attached
+
+This means most E2E verifications complete automatically. The user only sees failures — not successes.
+
+### Step 4: Auto-resolve policy
+
+Per-job `auto_resolve_policy` determines what happens after `auto_resolve_timeout_ms` elapses with no human response:
+
+| Policy | Behaviour | Default for |
+|---|---|---|
+| `none` | Never auto-resolve; stays until human acts | Destructive ops (deploys, restarts) |
+| `approve_after_timeout` | Auto-confirm after timeout | Non-destructive `approval` interventions |
+| `skip_after_timeout` | Auto-skip (mark done) after timeout | Idempotent routines, informational jobs |
+| `abort_after_timeout` | Auto-cancel after timeout | Budget interventions |
+
+Default policy per type (overridable per job):
+
+| Type | Default policy | Default timeout |
+|---|---|---|
+| `routine` | `skip_after_timeout` | 2 hours |
+| `api-call` | `abort_after_timeout` | 4 hours |
+| `claude-session` | `none` | — |
+| `compound` | `none` | — |
+
+### Step 5: Human notification (fallback)
+
+Only reached when steps 1-4 don't resolve the intervention.
 
 Bot sends a structured card to the originating `chatId`/`threadId` (from job metadata), falling back to Command Center:
 
@@ -242,24 +352,24 @@ morning-summary · routine · 4 min ago
 [✅ Confirm]  [✏️ Edit]  [⏭ Skip]  [❌ Abort]
 ```
 
-### Reminder escalation
+### Reminder escalation (human path only)
 
 | Time | Action |
 |---|---|
 | T+0 | First Telegram push |
 | T+30min | Reminder #1 (re-sent card) |
 | T+60min | Reminder #2 + `t3 add "Jarvis: <title> needs your input"` |
-| T+60min+ | Job stays in `awaiting-intervention` indefinitely — no auto-abort |
+| T+60min+ | Job stays until user acts (or auto-resolve policy fires if set) |
 
 Intervals configurable: `INTERVENTION_REMINDER_MINS` (default: 30), `INTERVENTION_T3_MINS` (default: 60).
 
-### Resolution
+### Resolution actions
 
 | Action | Result |
 |---|---|
 | Confirm | Job resumes; executor receives `{ resolution: "confirmed" }` in checkpoint |
 | Edit | Bot asks follow-up inline; answer stored in checkpoint; job resumes |
-| Skip | Job marked `done` with note "skipped by user" |
+| Skip | Job marked `done` with note "skipped by user/auto" |
 | Abort | Job marked `cancelled` |
 
 ### CLI resolution
@@ -331,9 +441,10 @@ The CLI reads SQLite directly — works even when the bot is offline.
 
 ```
 src/jobs/
-  jobQueue.ts                # scheduler loop, priority dispatch, slot management
+  jobQueue.ts                # event-driven scheduler, priority dispatch, slot management
   jobStore.ts                # SQLite read/write (Drizzle schema)
-  interventionManager.ts     # pause, notify, remind, t3 escalation
+  interventionManager.ts     # auto-resolve cascade, Playwright E2E, notifications
+  autoApproveEngine.ts       # rule matcher for ~/.claude-relay/auto-approve.json
   submitJob.ts               # shared helper — all sources use this
   executors/
     claudeSessionExecutor.ts
@@ -341,7 +452,7 @@ src/jobs/
     apiCallExecutor.ts
     compoundExecutor.ts
   sources/
-    webhookServer.ts         # POST /jobs HTTP server
+    webhookServer.ts         # POST /jobs HTTP server + ACL
   cli.ts                     # relay jobs <command> entry point
 
 routines/
@@ -379,10 +490,13 @@ Available as `bun run relay:jobs` or shell alias `relay`.
 - [ ] `jobs` and `job_checkpoints` tables created via Drizzle migration
 - [ ] `dedup_key` unique constraint prevents double-submission
 - [ ] All status transitions enforced (no invalid state jumps)
+- [ ] `retry_count` incremented on retry; job permanently `failed` after 3 retries (dead-letter)
+- [ ] `timeout_ms` defaults applied per type; timed-out running jobs transition to `failed`
 
 ### Job sources
 - [ ] `routine-scheduler` submits jobs via `submitJob()` instead of executing directly
 - [ ] Webhook server accepts `POST /jobs`, rejects requests without valid secret
+- [ ] Webhook ACL: per-token `allowed_types` enforced when `webhook-acl.json` exists
 - [ ] `relay jobs run "<prompt>"` submits a `claude-session` job
 - [ ] Telegram long-running requests enqueued with originating `chatId`/`threadId` in metadata
 
@@ -391,19 +505,28 @@ Available as `bun run relay:jobs` or shell alias `relay`.
 - [ ] `RoutineExecutor` constructs `RoutineContext` per scheduler spec and calls `run(ctx)`
 - [ ] `ApiCallExecutor` retries with backoff before marking failed
 - [ ] `CompoundExecutor` rehydrates blackboard session from checkpoint on restart
+- [ ] `CompoundExecutor` blocks second job when agent targets overlap with a running job
 
 ### Priority + concurrency
 - [ ] Urgent lane always dispatched before normal, normal before background
 - [ ] `claude-session` global cap of 1 enforced
+- [ ] `compound` cap of 2 with agent-overlap guard
 - [ ] `routine` global cap of 3 enforced
 - [ ] Background job preempted when urgent job of same type needs the slot
+- [ ] Event-driven scheduler wake on submit/complete/resolve; 500ms heartbeat as safety net
 
-### Intervention
+### Intervention — automation
+- [ ] Auto-approve rules loaded from `~/.claude-relay/auto-approve.json`; matching rules auto-confirm without notification
+- [ ] Confidence >= 0.85 auto-proceeds with non-blocking FYI message
+- [ ] `e2e` interventions route to Playwright runner; pass → auto-confirm; fail → surface to user with screenshot
+- [ ] Auto-resolve policy (`skip_after_timeout`, `approve_after_timeout`, `abort_after_timeout`) fires at configured timeout
+- [ ] Default policies applied per type: `routine` → skip@2h, `api-call` → abort@4h, `claude-session`/`compound` → none
+
+### Intervention — human fallback
 - [ ] Job status moves to `awaiting-intervention`; concurrency slot released
 - [ ] Telegram card sent to originating chat (fallback: Command Center)
 - [ ] Reminder at T+30min
 - [ ] `t3 add` called at T+60min
-- [ ] No auto-abort — job stays until user acts
 - [ ] All four resolution actions (confirm / edit / skip / abort) work via Telegram and CLI
 
 ### Visibility
@@ -424,6 +547,7 @@ Available as `bun run relay:jobs` or shell alias `relay`.
 
 - Web dashboard (browser UI) — CLI + Telegram covers v1
 - Job dependency graph (job A triggers job B on completion) — v2
-- Per-job retry policies — uniform: log + mark failed + allow manual retry
 - Job templates / saved job presets — v2
 - Multi-user / multi-bot job queues — single user only
+- Per-client API key management for webhook (v2 — v1 uses per-token ACL)
+- Handler sandboxing / process isolation for routines
