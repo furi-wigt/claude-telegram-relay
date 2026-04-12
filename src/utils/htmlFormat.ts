@@ -37,8 +37,21 @@ function markdownTableToPreAscii(tableBlock: string): string {
   const dataRows = rawRows.filter(r => !isSeparator(r));
   if (dataRows.length === 0) return tableBlock;
 
+  // Strip inline markdown markers so they don't appear literally inside <pre>.
+  // Telegram does not render HTML tags inside <pre>, so we cannot use <b>/<i>.
+  // Order: bold-italic (***) before bold (**) before italic (*).
+  const stripCellMarkdown = (cell: string): string =>
+    cell
+      .replace(/\*\*\*(.+?)\*\*\*/g, "$1")   // ***bold-italic***
+      .replace(/\*\*(.+?)\*\*/g, "$1")        // **bold**
+      .replace(/__(.+?)__/g, "$1")            // __bold__
+      .replace(/\*([^*]+)\*/g, "$1")          // *italic*
+      .replace(/_([^_]+)_/g, "$1")            // _italic_
+      .replace(/~~(.+?)~~/g, "$1")            // ~~strikethrough~~
+      .replace(/`([^`]+)`/g, "$1");           // `inline code`
+
   const parseRow = (row: string): string[] =>
-    row.replace(/^\||\|$/g, "").split("|").map(c => c.trim());
+    row.replace(/^\||\|$/g, "").split("|").map(c => stripCellMarkdown(c.trim()));
 
   const parsed = dataRows.map(parseRow);
   const numCols = Math.max(...parsed.map(r => r.length));
@@ -117,14 +130,15 @@ export function markdownToHtml(text: string): string {
   // not misidentified as quotes. Content is HTML-escaped here explicitly
   // (Step 1 has not run yet).
   const codePlaceholders: string[] = [];
-  let html = text.replace(/```(\w*)\n?([\s\S]*?)```/g, (_m, _lang, code) => {
+  let html = text.replace(/```(\w*)\n?([\s\S]*?)```/g, (_m, lang, code) => {
     const escaped = code
       .trimEnd()
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;");
+    const classAttr = lang ? ` class="language-${lang}"` : "";
     const ph = `\x00CODE${codePlaceholders.length}\x00`;
-    codePlaceholders.push(`<pre><code>${escaped}</code></pre>`);
+    codePlaceholders.push(`<pre><code${classAttr}>${escaped}</code></pre>`);
     return ph;
   });
 
