@@ -1,100 +1,106 @@
-# Claude Telegram Relay — Routines System
+# Routines System
 
-**Version**: 1.1 | **Date**: 2026-03-28
-
----
-
-## Table of Contents
-
-1. [What Are Routines](#what-are-routines)
-2. [PM2 Service Architecture](#pm2-service-architecture)
-3. [Daily Schedule Timeline](#daily-schedule-timeline)
-4. [Routine Lifecycle](#routine-lifecycle)
-5. [Routine Descriptions](#routine-descriptions)
-6. [The `_isEntry` Guard Pattern](#the-_isentry-guard-pattern)
-7. [Error Handling: Always Exit 0](#error-handling-always-exit-0)
-8. [PM2 Safety Rules](#pm2-safety-rules)
-9. [sendAndRecord vs sendToGroup](#sendandrecord-vs-sendtogroup)
-10. [Creating a New Routine](#creating-a-new-routine)
-11. [Managing Routines via Telegram](#managing-routines-via-telegram)
-12. [Log Files](#log-files)
+**Version**: 2.0 | **Date**: 2026-04-12
 
 ---
 
-## What Are Routines
+## Overview
 
-Routines are **scheduled one-shot scripts** managed by PM2 as cron jobs. Each routine is an independent TypeScript file in `routines/` that:
+A routine is a scheduled task that runs automatically at a fixed time and sends its output to a Telegram chat or group. There are two types:
 
-1. Fires at a scheduled time (PM2 cron)
-2. Fetches data (messages, goals, weather, calendar, market data)
-3. Summarises or analyses with Ollama (local LLM)
-4. Sends a formatted message to a Telegram group
-5. **Exits cleanly** — PM2 does NOT restart it (`autorestart: false`)
-6. Wakes up only at the next cron trigger
+**Handler-type routines** are TypeScript modules in `routines/handlers/<name>.ts` that export a `run(ctx: RoutineContext)` function. They can fetch data from APIs, query databases, run conditional logic, and format custom messages. Use these when the task needs real data.
 
-Routines are **separate from the main bot** (`telegram-relay`). They communicate via `sendAndRecord()` which writes to Telegram and logs to the `messages` SQLite table.
+**Prompt-type routines** require zero code. Add an entry to `config/routines.config.json` with `"type": "prompt"` and a `"prompt"` field. When the routine fires, the system sends the prompt to the LLM and posts the response to Telegram. Use these for simple scheduled AI tasks like daily reminders or goal reviews.
+
+| Situation | Type |
+|---|---|
+| "Summarise my daily activity at 9pm" | Prompt |
+| "Remind me every morning to review my goals" | Prompt |
+| "Pull AWS Cost Explorer data and analyse it" | Handler |
+| "Run a security vulnerability scan daily" | Handler |
+| "Post my ETF portfolio every Friday" | Handler |
 
 ---
 
-## PM2 Service Architecture
+## Architecture
+
+The system runs on 4 PM2 services. Per-routine PM2 entries no longer exist.
 
 ```mermaid
 graph TB
-    subgraph PM2["PM2 Process Manager"]
+    subgraph PM2["PM2 Process Manager — 4 services"]
         subgraph Infra["Infrastructure (always-on)"]
-            QD[qdrant\nautorestart: true\nalways running]
+            QD["qdrant<br/>vector database"]
+            MLX["mlx-embed<br/>bge-m3 embeddings, port 8801"]
         end
 
-        subgraph Core["Core Bot (always-on)"]
-            TR[telegram-relay\nautorestart: true\nalways running]
-        end
-
-        subgraph Proactive["Proactive Routines"]
-            MS[morning-summary\n0 7 * * *\nautorestart: false]
-            NS[night-summary\n0 23 * * *\nautorestart: false]
-            SC[smart-checkin\n*/30 * * * *\nautorestart: false]
-        end
-
-        subgraph Maintenance["Maintenance Routines"]
-            WD[watchdog\n0 */2 * * *\nautorestart: false]
-            OG[orphan-gc\n0 * * * *\nautorestart: false]
-            LC[log-cleanup\n0 6 * * 1\nautorestart: false]
-            MC[memory-cleanup\n0 3 * * *\nautorestart: false]
-            MD[memory-dedup-review\n0 16 * * 5\nautorestart: false]
-        end
-
-        subgraph Investment["Investment Routines"]
-            WE[weekly-etf\n0 7 * * *\nautorestart: false]
-            ES[etf-52week-screener\n0 7 * * *\nautorestart: false]
-        end
-
-        subgraph Learning["Learning Routines"]
-            WR[weekly-retro\n0 9 * * 0\nautorestart: false]
+        subgraph Core["Core (always-on)"]
+            TR["telegram-relay<br/>main bot + webhook server"]
+            RS["routine-scheduler<br/>cron dispatcher"]
         end
     end
+
+    RS -- "POST /jobs<br/>(webhook)" --> TR
+    TR -- "RoutineExecutor<br/>runs handler or prompt" --> H["routines/handlers/*.ts"]
+
+    CFG["config/routines.config.json<br/>(11 routines)"] -.-> RS
 ```
 
-### Full Service Table
+**How it works:**
 
-| Service | Script | Cron Schedule | autorestart | Target Group | Purpose |
-|---------|--------|---------------|-------------|-------------|---------|
-| `qdrant` | `~/.qdrant/bin/qdrant` | always | **true** | — | Local vector database |
-| `telegram-relay` | `relay-wrapper.js` | always | **true** | — | Main bot |
-| `morning-summary` | `routines/morning-summary.ts` | `0 7 * * *` | false | General | 7am daily briefing: weather, recap, goals |
-| `night-summary` | `routines/night-summary.ts` | `0 23 * * *` | false | General | 11pm summary: events, unread facts |
-| `smart-checkin` | `routines/smart-checkin.ts` | `*/30 * * * *` | false | General | Context-aware 30-min check-ins |
-| `watchdog` | `routines/watchdog.ts` | `0 */2 * * *` | false | General | Health check: services, connectivity |
-| `orphan-gc` | `routines/orphan-gc.ts` | `0 * * * *` | false | — | Cleanup orphaned sessions/temp files |
-| `log-cleanup` | `routines/log-cleanup.ts` | `0 6 * * 1` | false | — | Monday 6am: rotate + compress old logs |
-| `memory-cleanup` | `routines/memory-cleanup.ts` | `0 3 * * *` | false | — | 3am: dedup, junk-filter, decay old facts |
-| `memory-dedup-review` | `routines/memory-dedup-review.ts` | `0 16 * * 5` | false | General | Friday 4pm: semantic dedup with user review |
-| `weekly-etf` | `routines/weekly-etf.ts` | `0 7 * * *` | false | General | Daily 7am: ETF performance screening |
-| `etf-52week-screener` | `routines/etf-52week-screener.ts` | `0 7 * * *` | false | General | Daily 7am: 52-week high/low screener |
-| `weekly-retro` | `routines/weekly-retro.ts` | `0 9 * * 0` | false | General | Sunday 9am: learning retro with Promote/Reject/Later |
+1. `routine-scheduler` reads `config/routines.config.json` at startup and registers one cron job per entry.
+2. On each cron trigger, the scheduler fires a `POST /jobs` webhook to the relay (using `JOBS_WEBHOOK_PORT` and `JOBS_WEBHOOK_SECRET`).
+3. The relay enqueues the job. `RoutineExecutor` picks it up:
+   - **Handler-type**: loads `routines/handlers/<name>.ts` and calls `run(ctx)` with an injected `RoutineContext`.
+   - **Prompt-type**: sends `payload.prompt` to the LLM and posts the result to Telegram. No handler file needed.
+4. Handler modules are cached after first load. Send `SIGUSR2` to `routine-scheduler` to hot-reload handlers without a full restart.
 
 ---
 
-## Daily Schedule Timeline
+## Routine Config
+
+All routines are defined in `config/routines.config.json`. User overrides in `~/.claude-relay/routines.config.json` are merged on top at startup.
+
+### Schema
+
+```json
+{
+  "name": "my-routine",
+  "type": "handler",
+  "schedule": "0 9 * * *",
+  "group": "OPERATIONS",
+  "enabled": true,
+  "priority": "background"
+}
+```
+
+| Field | Required | Description |
+|---|---|---|
+| `name` | Yes | Kebab-case identifier. Must match the handler filename for handler-type routines. |
+| `type` | Yes | `"handler"` (TypeScript module) or `"prompt"` (LLM-only). |
+| `schedule` | Yes | Cron expression (5 fields, local system time). |
+| `group` | Yes | Target Telegram group key from `config/agents.json` (e.g. `OPERATIONS`). |
+| `enabled` | No | Default `true`. Set `false` to disable without removing the entry. |
+| `priority` | No | Job priority: `"urgent"`, `"normal"` (default), or `"background"`. |
+| `prompt` | Prompt-type only | The prompt text sent to the LLM when the routine fires. |
+
+### The 11 Built-in Routines
+
+| Routine | Type | Schedule | Group | Purpose |
+|---|---|---|---|---|
+| `morning-summary` | handler | `0 7 * * *` | OPERATIONS | 7am daily briefing: weather, recap, goals, calendar |
+| `night-summary` | handler | `0 23 * * *` | OPERATIONS | 11pm summary: events, unread facts, upcoming deadlines |
+| `smart-checkin` | handler | `*/30 * * * *` | OPERATIONS | Context-aware 30-min check-ins (silent if nothing to surface) |
+| `watchdog` | handler | `0 */2 * * *` | OPERATIONS | Health check: PM2 services, Qdrant, SQLite, model servers |
+| `orphan-gc` | handler | `0 * * * *` | OPERATIONS | Hourly cleanup of orphaned sessions and temp files |
+| `log-cleanup` | handler | `0 6 * * 1` | OPERATIONS | Monday 6am: compress old logs, delete logs > 30 days |
+| `memory-cleanup` | handler | `0 3 * * *` | OPERATIONS | 3am: dedup, junk-filter, decay stale facts |
+| `memory-dedup-review` | handler | `0 16 * * 5` | OPERATIONS | Friday 4pm: semantic dedup with interactive Telegram review |
+| `weekly-etf` | handler | `0 7 * * 1` | OPERATIONS | Monday 7am: ETF performance screening |
+| `etf-52week-screener` | handler | `0 7 * * 1` | OPERATIONS | Monday 7am: 52-week high/low screener |
+| `weekly-retro` | handler | `0 9 * * 0` | OPERATIONS | Sunday 9am: learning retrospective with Promote/Reject/Later |
+
+### Daily Schedule Timeline
 
 ```mermaid
 gantt
@@ -102,280 +108,140 @@ gantt
     dateFormat HH:mm
     axisFormat %H:%M
 
-    section Infrastructure
-    qdrant (always-on)       :active, 00:00, 24h
-    telegram-relay (always-on) :active, 00:00, 24h
+    section Always-on
+    qdrant + mlx-embed        :active, 00:00, 24h
+    telegram-relay            :active, 00:00, 24h
+    routine-scheduler         :active, 00:00, 24h
 
     section Night
     night-summary             :crit, 23:00, 5m
 
     section Morning
     morning-summary           :done, 07:00, 5m
-    weekly-etf                :done, 07:01, 5m
-    etf-52week-screener       :done, 07:02, 5m
 
     section Check-ins (every 30 min, waking hours)
-    smart-checkin 08:00       :active, 08:00, 2m
-    smart-checkin 08:30       :active, 08:30, 2m
-    smart-checkin 09:00       :active, 09:00, 2m
-    smart-checkin 14:00       :active, 14:00, 2m
-    smart-checkin 20:00       :active, 20:00, 2m
+    smart-checkin samples     :active, 08:00, 2m
 
     section Maintenance (background)
     memory-cleanup            :00:00, 5m
     orphan-gc (hourly)        :01:00, 2m
     watchdog (every 2hr)      :02:00, 3m
     log-cleanup (Mon 6am)     :06:00, 5m
-    memory-dedup-review (Fri 4pm) :16:00, 10m
 
-    section Learning (weekly)
+    section Weekly
+    weekly-etf (Mon 7am)      :07:01, 5m
+    etf-52week-screener (Mon) :07:02, 5m
+    memory-dedup-review (Fri) :16:00, 10m
     weekly-retro (Sun 9am)    :09:00, 5m
 ```
 
 ---
 
-## Routine Lifecycle
+## Creating a New Routine
 
-```mermaid
-flowchart TD
-    CRON[PM2 cron fires\nat scheduled time] --> SPAWN[PM2 spawns:\nbun routines/name.ts]
+### Handler-type (TypeScript logic)
 
-    SPAWN --> ENTRY{"_isEntry guard\nimport.meta.main or\npm_exec_path matches?"}
-
-    ENTRY -->|false - should never happen| EXIT0_EARLY[exit 0]
-    ENTRY -->|true| MAIN["main()"]
-
-    MAIN --> VALID{validateGroup\nGENERAL, AWS, etc.}
-    VALID -->|Group not configured| EXIT0_SKIP[exit 0\nlog: group not configured]
-    VALID -->|OK| FETCH[Fetch data in parallel\nPromise.allSettled]
-
-    subgraph Fetch["Data Sources"]
-        F1[SQLite:\nmessages, goals]
-        F2[Ollama:\nsummarize]
-        F3[Weather API\nor Calendar]
-        F4[Finance API\nyahoo-finance2]
-    end
-
-    FETCH --> BUILD[Build markdown message]
-    BUILD --> SEND[sendAndRecord\nTelegram + SQLite log]
-
-    SEND -->|success| EXIT0_OK[exit 0\nPM2 does NOT restart]
-    SEND -->|error| ALERT[Send error alert\nto Telegram]
-    ALERT --> EXIT0_ERR[exit 0\nNEVER exit 1]
-
-    style EXIT0_OK fill:#ccffcc
-    style EXIT0_SKIP fill:#ffffcc
-    style EXIT0_ERR fill:#ffffcc
-    style EXIT0_EARLY fill:#ffcccc
-```
-
----
-
-## Routine Descriptions
-
-### `morning-summary` — Daily 7am Briefing
-
-**Schedule**: `0 7 * * *`
-**Target**: General AI Assistant group
-
-Sends a structured morning briefing with:
-- **Weather** (Open-Meteo + NEA Singapore for configured areas)
-- **Yesterday recap** — Ollama-summarised messages from last 24h
-- **Active goals** with deadlines
-- **Calendar events** for today (via macOS Calendar integration)
-- **Suggested focus** based on goals and recent context
-
----
-
-### `night-summary` — Daily 11pm Summary
-
-**Schedule**: `0 23 * * *`
-**Target**: General AI Assistant group
-
-Sends an evening review:
-- Messages and decisions from today
-- Unreviewed or new facts extracted today
-- Upcoming deadlines in the next 7 days
-- **Learnings Captured Today** — runs correction detection on today's sessions and appends any captured learning patterns
-
----
-
-### `smart-checkin` — 30-Minute Proactive Check-ins
-
-**Schedule**: `*/30 * * * *`
-**Target**: General AI Assistant group
-
-Context-aware check-in that only sends if there's something meaningful to surface:
-- Upcoming deadline warnings
-- Pending goals with no recent activity
-- Relevant news or alerts
-- **Silent** if nothing meaningful to surface (does NOT spam empty messages)
-
----
-
-### `watchdog` — Health Monitor
-
-**Schedule**: `0 */2 * * *` (every 2 hours)
-**Target**: General AI Assistant group
-
-Checks system health:
-- PM2 service status (all services)
-- Qdrant connectivity (`GET /healthz`)
-- Ollama availability
-- SQLite DB size and WAL status
-- Sends alert if any service is down or degraded
-
----
-
-### `orphan-gc` — Hourly Cleanup
-
-**Schedule**: `0 * * * *`
-**Target**: Silent (no Telegram message)
-
-Maintenance task:
-- Remove orphaned Claude session files (> 24h old, no matching PM2 process)
-- Clean up `/tmp/` files created by vision/voice processing
-
----
-
-### `log-cleanup` — Weekly Log Rotation
-
-**Schedule**: `0 6 * * 1` (Monday 6am)
-**Target**: Silent
-
-- Compress logs older than 7 days to `.gz`
-- Delete logs older than 30 days
-- Report log directory size
-
----
-
-### `memory-cleanup` — Daily Memory Maintenance
-
-**Schedule**: `0 3 * * *`
-**Target**: Silent
-
-- Run junk filter on recently added facts (remove low-value entries)
-- Text dedup pass across all active memories
-- Decay `importance` score for very old, never-accessed facts
-
----
-
-### `memory-dedup-review` — Weekly Semantic Dedup Review
-
-**Schedule**: `0 16 * * 5` (Friday 4pm)
-**Target**: General AI Assistant group
-
-- Semantic similarity scan across all memory entries
-- Groups near-duplicate facts (cosine ≥ 0.85)
-- Sends Telegram message listing clusters with inline "Delete" buttons
-- User reviews and confirms deletions interactively
-
----
-
-### `weekly-retro` — Weekly Learning Retrospective
-
-**Schedule**: `0 9 * * 0` (Sunday 9am SGT)
-**Target**: General AI Assistant group
-
-Surfaces high-confidence learnings for human-gated promotion to `~/.claude/CLAUDE.md`:
-- Queries learning candidates: `type='learning'`, confidence ≥ 0.70, age ≥ 3 days
-- Sends one Telegram message per candidate with **Promote / Reject / Later** inline keyboard
-- **Promote** → appends rule to the "Learned Preferences" section in `~/.claude/CLAUDE.md`
-- **Reject** → confidence -0.2 (deprioritises for future retros)
-- **Later** → deferred to next Sunday
-
-Also sends a weekly stats header: total learnings this week, correction-derived count, total promoted rules.
-
----
-
-### `weekly-etf` / `etf-52week-screener` — Investment Routines
-
-**Schedule**: `0 7 * * *`
-**Target**: General AI Assistant group
-
-- Fetch ETF price data via `yahoo-finance2`
-- Screen for significant moves, new highs/lows
-- Send formatted summary with percentage changes
-
----
-
-## The `_isEntry` Guard Pattern
-
-### The Problem: `import.meta.main` is `false` Under PM2
-
-PM2's Bun process container (`ProcessContainerForkBun.js`) uses `require()` to load scripts:
-```javascript
-require(process.env.pm_exec_path)
-```
-
-When Bun `require()`s a module, `import.meta.main` is **always `false`**. If routines used the standard guard:
-```typescript
-if (import.meta.main) { main() }  // ← NEVER runs under PM2
-```
-
-**Result**: `main()` is never called. PM2 starts the process, it loads, does nothing, exits 0, PM2 marks it as online, cron never triggers a real run.
-
-### The Fix: `_isEntry` Guard
-
-All routines use this pattern instead:
+**Step 1** -- Create `routines/handlers/<name>.ts`:
 
 ```typescript
-const _isEntry =
-  import.meta.main ||
-  process.env.pm_exec_path === import.meta.url?.replace("file://", "");
+import type { RoutineContext } from "../../src/jobs/executors/routineContext.ts";
 
-if (_isEntry) {
-  main().catch((error) => {
-    console.error("Error running routine:", error);
-    process.exit(0); // exit 0 so PM2 does not immediately restart
-  });
+export async function run(ctx: RoutineContext): Promise<void> {
+  await ctx.skipIfRanWithin(6); // optional: skip if ran in last 6 hours
+
+  const data = await fetchSomeData();
+  const result = await ctx.llm(`Summarise this data:\n${data}`);
+  await ctx.send(result);
+  ctx.log("my-routine complete");
 }
 ```
 
-**Why this works**: `process.env.pm_exec_path` is set by PM2 to the full path of the script being run. `import.meta.url` is the current module's file URL. Stripping `file://` and comparing them correctly identifies PM2-launched execution.
+No `_isEntry` guard, no `loadEnv`, no `process.exit` -- the scheduler owns all lifecycle boilerplate.
+
+**Step 2** -- Add to `config/routines.config.json`:
+
+```json
+{
+  "name": "my-routine",
+  "type": "handler",
+  "schedule": "0 9 * * *",
+  "group": "OPERATIONS",
+  "enabled": true
+}
+```
+
+**Step 3** -- Restart the scheduler (only):
+
+```bash
+npx pm2 restart routine-scheduler
+npx pm2 save
+```
+
+No `ecosystem.config.cjs` edit needed.
+
+**Step 4** -- Test manually:
+
+The handler is a pure module, so you cannot run it directly with `bun`. Instead, trigger it via the CLI:
+
+```bash
+bun run relay:jobs run --type routine --executor my-routine
+```
+
+### Prompt-type (zero code, via config)
+
+Add to `config/routines.config.json`:
+
+```json
+{
+  "name": "daily-goals-review",
+  "type": "prompt",
+  "schedule": "0 9 * * *",
+  "group": "OPERATIONS",
+  "prompt": "Review my active goals. Be concise, highlight urgent items, suggest one priority action for today."
+}
+```
+
+Restart the scheduler: `npx pm2 restart routine-scheduler`. No handler file needed.
+
+### Prompt-type (via Telegram -- conversational)
+
+You can also create prompt-type routines through natural language in Telegram:
+
+1. Send a message like: *"Create a daily routine at 9am that summarizes my goals for the week"*
+2. The bot extracts name, schedule, and prompt, then shows a preview with target selection buttons.
+3. Tap a target (Personal chat, Operations group, etc.) to confirm.
+4. The routine is added to config and starts immediately.
 
 ---
 
-## Error Handling: Always Exit 0
+## RoutineContext API
 
-```mermaid
-flowchart LR
-    A[Error occurs] --> B{Recoverable?}
-    B -->|Partial failure| C[Log error\nContinue with partial data]
-    B -->|Fatal| D[Log error\nSend alert to Telegram]
-    D --> E[process.exit 0]
-    C --> F[Complete routine\nexit 0]
+`RoutineContext` is injected into every handler by `RoutineExecutor`. Import the type from `src/jobs/executors/routineContext.ts`.
 
-    style E fill:#ccffcc
-    style F fill:#ccffcc
-```
+| Method | Signature | Description |
+|---|---|---|
+| `send` | `(message: string) => Promise<void>` | Send a message to the routine's configured Telegram group and record it in the database. |
+| `llm` | `(prompt: string, opts?: LlmOpts) => Promise<string>` | Call the LLM via the ModelRegistry `routine` slot (cascade: Claude -> local model). |
+| `log` | `(message: string) => void` | Write a log line tagged with the routine name. |
+| `skipIfRanWithin` | `(hours: number) => Promise<void>` | Throw `SkipError` (job marked `skipped`) if this routine ran successfully within the last N hours. |
 
-**Rule**: Routines **always** call `process.exit(0)` on completion, success or failure.
+For developer patterns, testing conventions, and advanced topics (data fetching, parse modes, group resolution), see `routines/CLAUDE.md`.
 
-**Why**: `autorestart: false` means PM2 will not restart a routine that exits normally (exit 0). If a routine exits with code 1 (failure), PM2 may restart it, causing a restart loop.
+---
 
-**Pattern for error handling:**
-```typescript
-async function main() {
-  try {
-    const [messages, weather] = await Promise.allSettled([
-      getMessages(chatId),
-      getWeather(areas),
-    ]);
-    // Handle partial failures from allSettled
-    const message = buildMessage({ messages: messages.value, weather: weather.value });
-    await sendAndRecord(chatId, message, { routineName: "morning-summary" });
-  } catch (error) {
-    console.error("[morning-summary] Fatal error:", error);
-    // Try to send alert, but don't let send failure cascade
-    try {
-      await sendToGroup(chatId, `⚠️ morning-summary failed: ${error.message}`);
-    } catch {}
-  }
-}
-// Always exit 0
-process.exit(0);
-```
+## Managing Routines via Telegram
+
+All management happens through the `/routines` command.
+
+| Command | What it does |
+|---|---|
+| `/routines list` | List all routines with schedule, status, and type |
+| `/routines status [name]` | Check status of one or all routines |
+| `/routines run <name>` | Trigger a routine immediately |
+| `/routines enable <name>` | Resume a disabled routine |
+| `/routines disable <name>` | Pause a routine without removing it |
+| `/routines schedule <name> <cron>` | Change a routine's cron schedule |
+| `/routines delete <name>` | Delete a prompt-based routine (code routines cannot be deleted via Telegram) |
 
 ---
 
@@ -385,193 +251,85 @@ process.exit(0);
 
 ```mermaid
 flowchart TD
-    subgraph NEVER["NEVER — These restart telegram-relay"]
+    subgraph NEVER["NEVER -- These restart telegram-relay"]
         N1["npx pm2 reload ecosystem.config.cjs"]
         N2["npx pm2 restart ecosystem.config.cjs"]
         N3["npx pm2 restart all"]
     end
 
-    subgraph ALWAYS["ALWAYS — Use named service restart"]
-        A1["npx pm2 restart morning-summary"]
-        A2["npx pm2 restart watchdog memory-cleanup"]
-        A3["npx pm2 start ecosystem.config.cjs --only new-routine"]
+    subgraph ALWAYS["ALWAYS -- Use named service restart"]
+        A1["npx pm2 restart routine-scheduler"]
+        A2["npx pm2 restart mlx-embed"]
     end
 
     style NEVER fill:#ffcccc
     style ALWAYS fill:#ccffcc
 ```
 
-**Critical rule**: Never run `npx pm2 reload ecosystem.config.cjs` or `npx pm2 restart ecosystem.config.cjs`. These restart ALL services including `telegram-relay`, causing the main bot to go offline and potentially enter a restart loop.
+**Rules:**
 
-**Adding a new routine**: Do NOT reload the whole ecosystem. Use:
+1. **NEVER** run `npx pm2 reload ecosystem.config.cjs` or `npx pm2 restart ecosystem.config.cjs`. These restart ALL services including `telegram-relay`, causing the bot to go offline and potentially enter a restart loop.
+2. **ALWAYS** restart by service name: `npx pm2 restart routine-scheduler`.
+3. **NEVER** modify the `interpreter` or exec patterns in `ecosystem.config.cjs` -- a previous attempt to use `interpreter: "none"` with shell wrappers broke all services.
+4. **Treat `telegram-relay` as sacred** -- never restart it without explicit user confirmation.
+
+---
+
+## Troubleshooting
+
+### Routine does not fire on schedule
+
+1. Check `routine-scheduler` is running: `npx pm2 status routine-scheduler`
+2. Verify `JOBS_WEBHOOK_PORT` and `JOBS_WEBHOOK_SECRET` are set in `.env` (both required).
+3. Verify the routine is `"enabled": true` in `config/routines.config.json`.
+4. Confirm cron expression with [crontab.guru](https://crontab.guru). Times use local system time, not UTC.
+
+### Routine runs but sends nothing to Telegram
+
+1. Check relay logs: `npx pm2 logs telegram-relay --lines 30`
+2. Verify the target group is configured in `config/agents.json` (the `group` field in the config must match a key with a valid `chatId`).
+3. Check `TELEGRAM_BOT_TOKEN` is set correctly.
+4. Trigger manually: `bun run relay:jobs run --type routine --executor <name>`
+
+### Routine runs but LLM returns empty
+
+The `ctx.llm()` call cascades through the ModelRegistry `routine` slot. If all providers are unreachable, it returns an empty string.
+
+Check:
 ```bash
-npx pm2 start ecosystem.config.cjs --only my-new-routine
+# Claude CLI available?
+which claude && claude --version
+
+# Local model server running?
+curl http://localhost:1234/v1/models
+```
+
+### PM2 does not start on reboot
+
+```bash
+npx pm2 startup
 npx pm2 save
 ```
 
----
+Follow the instructions printed by `pm2 startup` to install the system service.
 
-## sendAndRecord vs sendToGroup
+### Handler changes not picked up
 
-| Function | Use For | Writes to SQLite? | Use Case |
-|----------|---------|-------------------|----------|
-| `sendAndRecord()` | User-facing routine messages | Yes (channel='routine') | morning-summary, night-summary, check-ins |
-| `sendToGroup()` | Error alerts, debug messages | No | watchdog alerts, error notifications |
-
-**Import**:
-```typescript
-import { sendAndRecord } from "../src/utils/routineMessage.ts";
-import { sendToGroup } from "../src/utils/sendToGroup.ts";
-```
-
-**`sendAndRecord` signature**:
-```typescript
-sendAndRecord(chatId: number, message: string, options: {
-  routineName: string;
-  agentId: string;
-  topicId?: number | null;
-  parseMode?: "HTML" | "MarkdownV2";
-}): Promise<void>
-```
-
----
-
-## Creating a New Routine
-
-### Step 1: Create the Routine File
-
-```typescript
-#!/usr/bin/env bun
-/**
- * @routine my-routine
- * @description What this routine does
- * @schedule 0 8 * * 1    ← Every Monday 8am
- * @target General AI Assistant
- */
-
-import { sendAndRecord } from "../src/utils/routineMessage.ts";
-import { GROUPS, validateGroup } from "../src/config/groups.ts";
-
-async function main() {
-  if (!validateGroup("GENERAL")) {
-    console.error("[my-routine] GENERAL group not configured — skipping");
-    return;
-  }
-
-  let message: string;
-
-  try {
-    // Fetch data
-    const data = await fetchSomeData();
-
-    // Build message
-    message = `📊 <b>Weekly Report</b>\n\n${data}`;
-  } catch (error) {
-    console.error("[my-routine] Error:", error);
-    try {
-      await sendAndRecord(GROUPS.GENERAL.chatId, `⚠️ my-routine failed: ${error.message}`, {
-        routineName: "my-routine",
-        agentId: "general-assistant",
-        topicId: GROUPS.GENERAL.topicId,
-      });
-    } catch {}
-    return;
-  }
-
-  await sendAndRecord(GROUPS.GENERAL.chatId, message, {
-    routineName: "my-routine",
-    agentId: "general-assistant",
-    topicId: GROUPS.GENERAL.topicId,
-  });
-}
-
-// _isEntry guard — required for PM2 + bun compatibility
-const _isEntry =
-  import.meta.main ||
-  process.env.pm_exec_path === import.meta.url?.replace("file://", "");
-
-if (_isEntry) {
-  main().catch((error) => {
-    console.error("[my-routine] Unhandled error:", error);
-    process.exit(0);
-  });
-}
-```
-
-### Step 2: Add to ecosystem.config.cjs
-
-```javascript
-{
-  name: "my-routine",
-  script: "routines/my-routine.ts",
-  interpreter: "bun",
-  cron_restart: "0 8 * * 1",   // Every Monday 8am
-  autorestart: false,
-  watch: false,
-  env: { NODE_ENV: "production" },
-},
-```
-
-### Step 3: Start the Routine
+Handler modules are cached after first load. To hot-reload without restarting:
 
 ```bash
-# Start ONLY this routine — never reload whole ecosystem
-npx pm2 start ecosystem.config.cjs --only my-routine
-npx pm2 save    # Persist to startup
-
-# Verify
-npx pm2 status my-routine
+kill -SIGUSR2 $(npx pm2 pid routine-scheduler)
 ```
 
-### Step 4: Test Manually
+Or restart the scheduler: `npx pm2 restart routine-scheduler`.
 
-```bash
-bun routines/my-routine.ts
-```
-
----
-
-## Managing Routines via Telegram
-
-Send `/routines` to the bot to get an interactive routine management panel:
-
-```
-📅 Routine Status
-
-✅ morning-summary     online  │  Last: 07:00
-✅ night-summary       online  │  Last: 23:00
-✅ smart-checkin       online  │  Last: 14:30
-✅ watchdog            online  │  Last: 12:00
-⚠️ memory-cleanup     errored │  Last: 03:00 (exit 1)
-
-[Restart errored]   [View logs]   [Refresh]
-```
-
----
-
-## Log Files
+### Log files
 
 All PM2 logs are written to `~/.claude-relay/logs/`:
 
-| File | Content |
-|------|---------|
-| `telegram-relay.log` | Main bot stdout |
-| `telegram-relay-error.log` | Main bot stderr |
-| `morning-summary.log` | Morning routine stdout |
-| `morning-summary-error.log` | Morning routine stderr |
-| `{service}.log` | Per-service stdout |
-| `{service}-error.log` | Per-service stderr |
-
-**View logs:**
 ```bash
-# Tail a specific routine
-npx pm2 logs morning-summary --lines 50 --nocolor
-
-# Follow in real-time
-npx pm2 logs morning-summary
-
-# View all services
-npx pm2 logs
+npx pm2 logs routine-scheduler --lines 50
+npx pm2 logs telegram-relay --lines 50
 ```
 
-**Log rotation**: `log-cleanup` runs every Monday 6am, compresses logs older than 7 days, deletes logs older than 30 days.
+Log rotation is handled by the `log-cleanup` routine (Monday 6am): compresses logs older than 7 days, deletes logs older than 30 days.

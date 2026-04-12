@@ -1,49 +1,24 @@
 # Claude Telegram Relay — Logging, Observability & Troubleshooting
 
-**Version**: 1.0 | **Date**: 2026-03-21
-
----
-
-## Table of Contents
-
-1. [Log Files](#log-files)
-2. [PM2 Service Status](#pm2-service-status)
-3. [Trace IDs](#trace-ids)
-4. [Progress Indicator](#progress-indicator)
-5. [CONTEXT_DEBUG Mode](#context_debug-mode)
-6. [Health Monitoring: Watchdog](#health-monitoring-watchdog)
-7. [Common Issues & Fixes](#common-issues--fixes)
-8. [Diagnostic Commands](#diagnostic-commands)
-9. [Log Rotation](#log-rotation)
-10. [Full Health Check](#full-health-check)
+**Version**: 1.1 | **Date**: 2026-04-12
 
 ---
 
 ## Log Files
 
-All logs are written to `~/.claude-relay/logs/`.
+All logs are written to `~/.claude-relay/logs/`. With the 4-service PM2 architecture, each always-on service produces a log pair. Routines dispatched by `routine-scheduler` log to the scheduler's output.
 
 ```
 ~/.claude-relay/logs/
+├── qdrant.log                  # Qdrant vector DB: stdout
+├── qdrant-error.log            # Qdrant vector DB: stderr
+├── mlx-embed.log               # MLX embedding server: stdout
+├── mlx-embed-error.log         # MLX embedding server: stderr
 ├── telegram-relay.log          # Main bot: stdout (info, debug, trace)
 ├── telegram-relay-error.log    # Main bot: stderr (errors, stack traces)
-├── morning-summary.log         # Routine: stdout
-├── morning-summary-error.log   # Routine: stderr
-├── night-summary.log
-├── night-summary-error.log
-├── smart-checkin.log
-├── smart-checkin-error.log
-├── watchdog.log
-├── watchdog-error.log
-├── memory-cleanup.log
-├── memory-cleanup-error.log
-├── memory-dedup-review.log
-├── memory-dedup-review-error.log
-├── orphan-gc.log
-├── orphan-gc-error.log
-├── log-cleanup.log
-├── weekly-etf.log
-└── etf-52week-screener.log
+├── routine-scheduler.log       # Scheduler: stdout (dispatches all routines)
+├── routine-scheduler-error.log # Scheduler: stderr
+└── YYYY-MM-DD.jsonl            # Structured observability events (when OBSERVABILITY_ENABLED=1)
 ```
 
 ### Key Log Commands
@@ -54,7 +29,7 @@ All logs are written to `~/.claude-relay/logs/`.
 | `npx pm2 logs telegram-relay` | Follow main bot logs |
 | `npx pm2 logs telegram-relay --lines 100` | Last 100 lines |
 | `npx pm2 logs telegram-relay --nocolor` | Plain text (for grep) |
-| `npx pm2 logs morning-summary --lines 50` | Last 50 lines of morning routine |
+| `npx pm2 logs routine-scheduler --lines 50` | Last 50 lines of routine dispatch |
 | `npx pm2 flush` | Clear all PM2 log buffers |
 | `tail -f ~/.claude-relay/logs/telegram-relay.log` | Direct tail |
 
@@ -70,12 +45,12 @@ npx pm2 status
 
 | Column | Description | Healthy Value |
 |--------|-------------|--------------|
-| `name` | Service name | — |
-| `id` | PM2 process ID | — |
+| `name` | Service name | -- |
+| `id` | PM2 process ID | -- |
 | `mode` | fork / cluster | `fork` |
 | `pid` | OS process ID | non-zero |
 | `uptime` | How long running | hours/days |
-| `↺` | Restart count | 0 or low |
+| `restart` | Restart count | 0 or low |
 | `status` | Current state | `online` |
 | `cpu` | CPU usage | < 5% idle |
 | `mem` | Memory usage | < 200MB for relay |
@@ -86,7 +61,6 @@ npx pm2 status
 graph LR
     subgraph Expected["Expected States"]
         O[online\nService running normally]
-        S[stopped\nOne-shot cron completed successfully]
     end
 
     subgraph Abnormal["Abnormal States — Investigate"]
@@ -99,17 +73,34 @@ graph LR
     style Abnormal fill:#ffcccc
 ```
 
-**Service-specific expected states:**
+### The 4 Always-On PM2 Services
 
-| Service | Normal State Between Cron Runs |
-|---------|-------------------------------|
-| `qdrant` | `online` (always-on) |
-| `telegram-relay` | `online` (always-on) |
-| `morning-summary` | `stopped` (wakes at 7am) |
-| `night-summary` | `stopped` (wakes at 11pm) |
-| `smart-checkin` | `stopped` (wakes every 30min) |
-| `watchdog` | `stopped` (wakes every 2hr) |
-| `memory-cleanup` | `stopped` (wakes at 3am) |
+All services should show `online` at all times. There are no one-shot cron jobs in PM2 — all routines are dispatched by `routine-scheduler`.
+
+| Service | What It Does | Expected State |
+|---------|-------------|----------------|
+| `qdrant` | Local vector database (port 6333) | `online` (always-on) |
+| `mlx-embed` | MLX bge-m3 embedding server (port 8801) | `online` (always-on) |
+| `telegram-relay` | The main Telegram bot | `online` (always-on) |
+| `routine-scheduler` | Reads `config/routines.config.json`, dispatches all routines on schedule via job queue webhook | `online` (always-on) |
+
+### Routines Dispatched by routine-scheduler
+
+All routines are defined in `config/routines.config.json` and executed by `routine-scheduler` — they do not appear as separate PM2 processes.
+
+| Routine | Schedule | Purpose |
+|---------|----------|---------|
+| `morning-summary` | 7am daily | Morning briefing |
+| `night-summary` | 11pm daily | Evening summary |
+| `smart-checkin` | Every 30 min | Context-aware proactive check-ins |
+| `watchdog` | Every 2 hours | Health monitoring and alerts |
+| `orphan-gc` | Every hour | Garbage-collect orphaned resources |
+| `log-cleanup` | Monday 6am | Compress and rotate old logs |
+| `memory-cleanup` | 3am daily | Dedup, junk-filter, decay old facts |
+| `memory-dedup-review` | Friday 4pm | Semantic near-duplicate review with user confirmation |
+| `weekly-etf` | Monday 7am | Weekly ETF market summary |
+| `etf-52week-screener` | Monday 7am | ETF 52-week high/low screener |
+| `weekly-retro` | Sunday 9am | Weekly learning retrospective |
 
 ---
 
@@ -123,8 +114,8 @@ Every incoming Telegram message is assigned a **trace ID** that follows the requ
 [trace:a3f8b2] Agent resolved: aws-architect
 [trace:a3f8b2] Session loaded: sessionId=abc123 (resumable)
 [trace:a3f8b2] Spawning Claude stream...
-[trace:a3f8b2] Progress: 💭 Thinking...
-[trace:a3f8b2] Tool use: bash → ls -la /src
+[trace:a3f8b2] Progress: Thinking...
+[trace:a3f8b2] Tool use: bash -> ls -la /src
 [trace:a3f8b2] Stream complete: 1,243 tokens, 8.2s
 [trace:a3f8b2] Memory intent: [REMEMBER: fact extracted]
 [trace:a3f8b2] Response sent to Telegram
@@ -150,11 +141,11 @@ sequenceDiagram
     U->>B: Send message
     B->>C: claudeStream(prompt)
     Note over B: Wait 8 seconds...
-    B->>U: Send "💭 Thinking..."
+    B->>U: Send "Thinking..."
     C-->>B: tool_use: bash
-    B->>U: Edit → "🔧 bash: ls -la /src"
+    B->>U: Edit -> "bash: ls -la /src"
     C-->>B: tool_use: Read (src/relay.ts)
-    B->>U: Edit → "📖 Read: src/relay.ts"
+    B->>U: Edit -> "Read: src/relay.ts"
     C-->>B: assistant text
     B->>U: Delete indicator
     B->>U: Send final response
@@ -164,13 +155,13 @@ sequenceDiagram
 
 | Prefix | Tool / State |
 |--------|-------------|
-| `💭 Thinking...` | Claude reasoning (no tool) |
-| `🔧 bash:` | Shell command execution |
-| `📖 Read:` | File read |
-| `✏️ Edit:` | File edit |
-| `🔍 Grep:` | Code search |
-| `🌐 WebFetch:` | URL fetch |
-| `⏳ Still working...` | Long-running (> soft ceiling) |
+| Thinking... | Claude reasoning (no tool) |
+| bash: | Shell command execution |
+| Read: | File read |
+| Edit: | File edit |
+| Grep: | Code search |
+| WebFetch: | URL fetch |
+| Still working... | Long-running (> soft ceiling) |
 
 **Configuration:**
 ```bash
@@ -207,35 +198,101 @@ Disable after debugging — generates significant log volume under normal use.
 
 ## Health Monitoring: Watchdog
 
-The `watchdog` routine runs every 2 hours and checks all system components.
+The `watchdog` routine runs every 2 hours (dispatched by `routine-scheduler`) and checks all system components. Alerts are sent to the Operations Hub group via Telegram.
 
-```mermaid
-flowchart TD
-    WD[watchdog starts\nevery 2 hours] --> PM2{npx pm2 status:\nAll services online?}
+| Property | Value |
+|---|---|
+| Script | `routines/handlers/watchdog.ts` |
+| Dispatched by | `routine-scheduler` via `config/routines.config.json` |
+| Schedule | Every 2 hours (`0 */2 * * *`) |
+| Alert target | Operations Hub group |
 
-    PM2 -->|All online| QD{Qdrant:\nGET /healthz = 200?}
-    PM2 -->|Service errored or offline| ALERT1[Send alert:\n⚠️ Service X is offline\nAction: npx pm2 restart X]
+### What It Monitors
 
-    QD -->|200 OK| OSR{Osaurus:\nGET /v1/models on port 1337\nreturns model list?}
-    QD -->|Error| ALERT2[Send alert:\n⚠️ Qdrant unreachable\nAction: check port 6333]
+**PM2 process health:** The watchdog auto-discovers all services from `ecosystem.config.cjs` at runtime. For each process it checks:
 
-    OSR -->|OK| DB{SQLite:\nDB size + WAL size OK?}
-    OSR -->|Error| ALERT3[Send alert:\n⚠️ Osaurus unavailable\nFallback AI disabled]
+1. **Existence** — Is the process registered in PM2?
+2. **Status** — Is it `online`, `stopped`, or `errored`?
+3. **Restart count** — Has it exceeded the restart threshold (default: 10), indicating a crash loop?
 
-    DB -->|OK| DONE[No issues — silent exit]
-    DB -->|WAL > 100MB| ALERT4[Send alert:\n⚠️ SQLite WAL large\nConsider PRAGMA wal_checkpoint]
+**Bot responsiveness:** After checking PM2 processes, the watchdog probes the SQLite database to detect whether the bot is actually responding to user messages:
+
+- Compares timestamps of the most recent user message vs. the most recent bot response
+- If the gap exceeds a threshold (default: 10 minutes) and there are pending unanswered messages, it sends a responsiveness alert
+- Configurable via `WATCHDOG_HEARTBEAT_THRESHOLD_MIN` env var
+
+**Auto-restart:** Always-on processes (such as `telegram-relay`) are automatically restarted if found in a `stopped` or `errored` state. The alert notes whether the auto-restart succeeded.
+
+### Alert Behavior
+
+- Alerts are sent **only when problems are detected** — no noise when everything is healthy
+- Each alert includes issue severity, affected service, error details, and current status of all processes
+- Severity levels: **CRITICAL** (always-on process down, extreme restart count) and **WARNING** (routine errored, elevated restart count, missing process)
+
+### Example Alerts
+
+**Service health alert:**
+```
+Watchdog Alert
+
+CRITICAL:
+  [!] telegram-relay: Status: stopped (auto-restarted)
+
+WARNINGS:
+  [~] morning-summary: Last run errored — check logs
+
+Process status:
+  qdrant: online | up 2d 5h | 120.3 MB | 0 restarts
+  mlx-embed: online | up 2d 5h | 450.1 MB | 0 restarts
+  telegram-relay: online | up 2h 15m | 45.2 MB | 1 restarts
+  routine-scheduler: online | up 2d 5h | 38.7 MB | 0 restarts
+
+Run 'npx pm2 logs <name>' to inspect. Reply to acknowledge.
 ```
 
-**Alert message format:**
+**Bot responsiveness alert:**
 ```
-⚠️ Watchdog Alert — 2026-03-21 14:00
+Bot Responsiveness Alert
 
-Services:  ✅ qdrant ✅ telegram-relay ❌ morning-summary (errored)
-Qdrant:    ✅ healthy (port 6333)
-Osaurus:   ✅ Qwen3.5-4B-MLX-4bit available (port 1337)
-SQLite:    ✅ 42MB (WAL: 1.2MB)
+Last user message: 2026-03-23T14:05:00Z
+Last bot response: 2026-03-23T13:50:00Z
+Gap: 15 minutes
+Pending messages: 3
 
-Action needed: npx pm2 restart morning-summary
+The bot may be stuck in a long-running session. Check PM2 logs or send /cancel.
+```
+
+### Watchdog Configuration
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `WATCHDOG_HEARTBEAT_THRESHOLD_MIN` | `10` | Minutes before an unanswered message triggers a responsiveness alert |
+
+Group routing (Operations Hub chat ID and topic ID) is resolved from `config/agents.json` via the `GROUPS` registry. The watchdog exits gracefully if the Operations group is not configured.
+
+### Watchdog Troubleshooting
+
+**Watchdog not running:**
+```bash
+# Check routine-scheduler is online
+npx pm2 status
+
+# Run watchdog manually outside the scheduler
+bun run routines/handlers/watchdog.ts
+```
+
+**No alerts despite known issues:**
+1. Check routine-scheduler logs: `npx pm2 logs routine-scheduler --lines 50`
+2. Verify the Operations Hub group is configured: ensure `chatId` is set for the operations-hub agent in `config/agents.json`
+3. Run manually to see output: `bun run routines/handlers/watchdog.ts`
+
+**False positives for cron-dispatched routines:**
+Routines dispatched by `routine-scheduler` do not have their own PM2 processes, so the watchdog only monitors the 4 always-on services. For cron jobs, check `routine-scheduler` logs for dispatch errors.
+
+**Watchdog itself fails:**
+If the watchdog encounters a fatal error, it sends a failure notification to the Operations group before exiting. Check logs with:
+```bash
+npx pm2 logs routine-scheduler --lines 50
 ```
 
 ---
@@ -261,24 +318,24 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    A[Routine not sending] --> B{npx pm2 logs\nroutine-name --lines 50}
-    B --> C{_isEntry guard hit?}
-    C -->|No log output at all| D[PM2 cron not triggering\nCheck cron_restart in ecosystem.config.cjs]
-    C -->|"group not configured"| E[Set GROUP_*_CHAT_ID in .env\nor set chatId in agents.json]
-    C -->|Error in fetch| F[Check Osaurus running\ncurl http://localhost:1337/v1/models]
+    A[Routine not sending] --> B{npx pm2 logs\nroutine-scheduler --lines 50}
+    B --> C{Dispatch logged?}
+    C -->|No dispatch log| D[Check config/routines.config.json\nVerify enabled: true and schedule]
+    C -->|Dispatch logged, handler error| E[Check handler code\nbun run routines/handlers/name.ts]
+    C -->|"group not configured"| F[Set chatId in agents.json\nor GROUP_*_CHAT_ID in .env]
     C -->|Telegram send error| G[Bot token valid?\nnpx pm2 logs telegram-relay]
 ```
 
 **Quick fix for most routine issues:**
 ```bash
-# Check the routine ran
-npx pm2 logs morning-summary --lines 100
+# Check routine-scheduler dispatch logs
+npx pm2 logs routine-scheduler --lines 100
 
-# Manually trigger a routine (bypass PM2 cron)
-bun routines/morning-summary.ts
+# Manually trigger a routine (bypass scheduler)
+bun run routines/handlers/morning-summary.ts
 
-# Restart a specific routine
-npx pm2 restart morning-summary
+# Restart the scheduler
+npx pm2 restart routine-scheduler
 ```
 
 ### Session Resume Failing
@@ -313,21 +370,17 @@ rm ~/.claude-relay/sessions/{chatId}_null.json
 ```bash
 # Check Qdrant
 curl http://localhost:6333/healthz
-# Expected: {"title":"qdrant - vector search engine","version":"...","commit":"..."}
+# Expected: {"title":"qdrant - vector search engine","version":"..."}
 
-# Check Osaurus server
-curl http://localhost:1337/v1/models
-# Expected: {"object":"list","data":[...]}
-
-# Check Ollama embed
-curl -s http://localhost:11434/api/embed -d '{"model":"bge-m3","input":"test"}' | head -c 80
-# Expected: {"model":"bge-m3","embeddings":[[...]]}
+# Check MLX embed server
+curl http://localhost:8801/health
+# Expected: {"status":"ok","model":"...bge-m3..."}
 
 # Check SQLite write
 sqlite3 ~/.claude-relay/data/local.sqlite "SELECT count(*) FROM memory;"
 
 # Check for embedding errors in relay logs
-npx pm2 logs telegram-relay --nocolor | grep -i "embed\|ollama\|osaurus\|qdrant"
+npx pm2 logs telegram-relay --nocolor | grep -i "embed\|mlx\|qdrant"
 ```
 
 ### Voice Transcription Failing
@@ -356,7 +409,7 @@ sqlite3 ~/.claude-relay/data/local.sqlite "SELECT name, COUNT(*) FROM documents 
 # Check Qdrant documents collection
 curl "http://localhost:6333/collections/documents" | jq '.result.points_count'
 
-# If 0 points but documents in SQLite → Qdrant data was lost
+# If 0 points but documents in SQLite -> Qdrant data was lost
 # Re-ingest: upload the document again via Telegram
 ```
 
@@ -379,17 +432,16 @@ cat config/agents.json | jq '.[].id, .[].chatId, .[].groupName'
 
 | Command | Purpose | Expected Output |
 |---------|---------|----------------|
-| `npx pm2 status` | All service states | All `online` or `stopped` |
+| `npx pm2 status` | All service states | All 4 services `online` |
 | `npx pm2 logs telegram-relay --lines 50` | Recent bot activity | Message processing logs |
-| `npx pm2 logs morning-summary --lines 30` | Last routine run | Fetch + send log |
-| `bun run setup:verify` | Full health check | All ✅ |
+| `npx pm2 logs routine-scheduler --lines 30` | Recent routine dispatches | Dispatch and completion logs |
+| `bun run setup:verify` | Full health check | All checks pass |
 | `bun run test:telegram` | Bot connectivity | Test message sent |
 | `bun run test:groups` | Group discovery | All groups found |
 | `bun run test:voice` | Voice transcription | Sample transcribed |
-| `bun run test:fallback` | MLX fallback | Sample response |
+| `bun run test:fallback` | Local AI fallback | Sample response |
 | `curl http://localhost:6333/healthz` | Qdrant health | `{"title":"qdrant..."` |
-| `curl http://localhost:1337/v1/models` | Osaurus health | `{"object":"list","data":[...]}` |
-| `curl -s http://localhost:11434/api/embed -d '{"model":"bge-m3","input":"test"}'` | Ollama embed health | `{"model":"bge-m3","embeddings":[[...]]}` |
+| `curl http://localhost:8801/health` | MLX embed health | `{"status":"ok","model":"...bge-m3..."}` |
 | `sqlite3 ~/.claude-relay/data/local.sqlite ".tables"` | DB tables exist | `documents memory messages ...` |
 | `sqlite3 ~/.claude-relay/data/local.sqlite "SELECT count(*) FROM memory;"` | Memory count | number > 0 |
 | `ls -la ~/.claude-relay/sessions/` | Session files | JSON files per group |
@@ -400,7 +452,7 @@ cat config/agents.json | jq '.[].id, .[].chatId, .[].groupName'
 
 ## Log Rotation
 
-The `log-cleanup` routine manages log retention automatically.
+The `log-cleanup` routine manages log retention automatically (dispatched by `routine-scheduler`).
 
 **Schedule**: Every Monday at 6am (`0 6 * * 1`)
 
@@ -408,12 +460,12 @@ The `log-cleanup` routine manages log retention automatically.
 | Age | Action |
 |-----|--------|
 | < 7 days | Keep as-is |
-| 7–30 days | Compress to `.gz` |
+| 7-30 days | Compress to `.gz` |
 | > 30 days | Delete |
 
 **Manual trigger:**
 ```bash
-bun routines/log-cleanup.ts
+bun run routines/handlers/log-cleanup.ts
 ```
 
 **Check log directory size:**
@@ -437,25 +489,24 @@ flowchart TD
     SV[bun run setup:verify] --> ENV[Check .env:\nRequired vars present?]
     ENV --> TG[Check Telegram:\nBot token valid?]
     TG --> CL[Check Claude CLI:\nclaude --version?]
-    CL --> OSR[Check Osaurus:\nGET /v1/models on port 1337?]
-    OSR --> QD[Check Qdrant:\n/healthz = 200?]
+    CL --> MLX[Check MLX embed:\nGET /health on port 8801?]
+    MLX --> QD[Check Qdrant:\n/healthz = 200?]
     QD --> DB[Check SQLite:\nall tables exist?]
-    DB --> PM2[Check PM2:\ntelegram-relay online?]
-    PM2 --> OUT[Print summary:\n✅/❌ per component]
+    DB --> PM2[Check PM2:\nall 4 services online?]
+    PM2 --> OUT[Print summary:\npass/fail per component]
 ```
 
 **Example healthy output:**
 ```
 Claude Telegram Relay — Health Check
 
-✅ .env: TELEGRAM_BOT_TOKEN, TELEGRAM_USER_ID present
-✅ Telegram: Bot connected, username @myrelaybot
-✅ Claude CLI: claude 1.x.x
-✅ Osaurus: Qwen3.5-4B-MLX-4bit available (127.0.0.1:1337)
-✅ Ollama: bge-m3 available (127.0.0.1:11434)
-✅ Qdrant: healthy v1.x (127.0.0.1:6333)
-✅ SQLite: 4 tables, 342 memory entries, 1,847 messages
-✅ PM2: telegram-relay online (uptime: 3d 14h)
+[ok] .env: TELEGRAM_BOT_TOKEN, TELEGRAM_USER_ID present
+[ok] Telegram: Bot connected, username @myrelaybot
+[ok] Claude CLI: claude 1.x.x
+[ok] MLX embed: bge-m3 available (127.0.0.1:8801)
+[ok] Qdrant: healthy v1.x (127.0.0.1:6333)
+[ok] SQLite: 4 tables, 342 memory entries, 1,847 messages
+[ok] PM2: 4 services online (qdrant, mlx-embed, telegram-relay, routine-scheduler)
 
 All checks passed. Bot is healthy.
 ```

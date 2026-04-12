@@ -8,23 +8,23 @@ The job queue supports four executor types. Each executor is registered in `src/
 
 ### routine
 
-`RoutineExecutor` — runs scheduled routines.
+`RoutineExecutor` -- runs scheduled routines.
 
-- **Handler-type routine**: executor looks up `routines/handlers/<executor-name>.ts` and calls `run(ctx)` with an injected `RoutineContext`. Handler module is loaded on first execution and cached — no startup cost.
+- **Handler-type routine**: executor looks up `routines/handlers/<executor-name>.ts` and calls `run(ctx)` with an injected `RoutineContext`. Handler module is loaded on first execution and cached -- no startup cost.
 - **Prompt-type routine**: if no handler file exists and `payload.prompt` is set, the executor sends the prompt to the LLM inline and posts the result to Telegram. No TypeScript handler needed.
 - Handler modules are loaded via dynamic import; send `SIGUSR2` to `routine-scheduler` to reset the cache and hot-reload handlers without a full restart.
 
 ### claude-session
 
-`ClaudeSessionExecutor` — runs an agentic Claude session.
+`ClaudeSessionExecutor` -- runs an agentic Claude session.
 
-- Invokes the orchestration layer: `classifyIntent` → `executeBlackboardDispatch`.
+- Invokes the orchestration layer: `classifyIntent` -> `executeBlackboardDispatch`.
 - If `metadata.chatId` is set, posts the result back to the originating Telegram chat (and `metadata.threadId` if present).
-- On retry: re-runs the full dispatch from scratch (no partial resume — checkpoint resume deferred to v2).
+- On retry: re-runs the full dispatch from scratch (no partial resume -- checkpoint resume deferred to v2).
 
 ### compound
 
-`CompoundExecutor` — multi-step blackboard dispatch.
+`CompoundExecutor` -- multi-step blackboard dispatch.
 
 - Runs a sequence of blackboard dispatch steps defined in `payload.steps`.
 - Agent-overlap guard: returns `awaiting-intervention` if any target agent is currently busy handling another job.
@@ -32,7 +32,7 @@ The job queue supports four executor types. Each executor is registered in `src/
 
 ### api-call
 
-`ApiCallExecutor` — makes an outbound HTTP request.
+`ApiCallExecutor` -- makes an outbound HTTP request.
 
 - Supports configurable retry with exponential backoff.
 - Payload: `{ url, method, headers, body, retries, backoffMs }`.
@@ -101,7 +101,7 @@ No `ecosystem.config.cjs` edit needed. The `routine-scheduler` service reads `co
 3. On each trigger, fires a `POST /jobs` webhook to the relay (using `JOBS_WEBHOOK_PORT` and `JOBS_WEBHOOK_SECRET`).
 4. The relay enqueues the job and the appropriate executor handles it.
 
-This replaces the previous pattern of one PM2 entry per routine. `ecosystem.config.cjs` no longer needs per-routine cron entries — only `routine-scheduler` and `telegram-relay` are always-running services.
+This replaces the previous pattern of one PM2 entry per routine. `ecosystem.config.cjs` no longer needs per-routine cron entries -- only `routine-scheduler` and `telegram-relay` are always-running services.
 
 ---
 
@@ -130,9 +130,9 @@ bun run relay:jobs cancel <id>        # cancel a pending job
 ```
 
 ### Telegram
-- `/jobs` — list recent jobs with status indicators
-- `/jobs pending` / `/jobs failed` — filtered views
-- `/schedule <prompt>` — enqueue a `claude-session` job; result is posted back to the originating chat/thread
+- `/jobs` -- list recent jobs with status indicators
+- `/jobs pending` / `/jobs failed` -- filtered views
+- `/schedule <prompt>` -- enqueue a `claude-session` job; result is posted back to the originating chat/thread
 - Intervention cards appear automatically with inline action buttons
 
 ## Job Sources
@@ -198,7 +198,7 @@ To add your own rules, create `~/.claude-relay/auto-approve.json`:
 ]
 ```
 
-User rules in `~/.claude-relay/auto-approve.json` are merged with repo defaults — you only need to add rules beyond the defaults.
+User rules in `~/.claude-relay/auto-approve.json` are merged with repo defaults -- you only need to add rules beyond the defaults.
 
 ## Environment Variables
 
@@ -210,3 +210,100 @@ User rules in `~/.claude-relay/auto-approve.json` are merged with repo defaults 
 | `INTERVENTION_T3_MINS` | 60 | Minutes before Things 3 escalation |
 
 > `JOBS_WEBHOOK_PORT` and `JOBS_WEBHOOK_SECRET` must both be set for the `routine-scheduler` service to function. Without them, the webhook server does not start and scheduled routines cannot be submitted.
+
+---
+
+## Testing
+
+### Automated tests
+
+```bash
+bun run test
+```
+
+All job queue tests should pass. Pre-existing failures in `tests/local/local-stack.test.ts` (MLX embed server not running) are unrelated.
+
+### Schema verification
+
+```bash
+sqlite3 ~/.claude-relay/data/local.sqlite ".tables" | tr ' ' '\n' | grep -E '^(jobs|job_checkpoints)$'
+```
+
+Both `jobs` and `job_checkpoints` tables must be present. If missing, start the relay once (`bun run start`) to trigger schema creation.
+
+### CLI smoke tests
+
+- [ ] `bun run relay:jobs` -- lists jobs or shows "No jobs found"
+- [ ] `bun run relay:jobs run "test" --type routine --executor test-cli` -- inserts a job
+- [ ] `bun run relay:jobs <id>` -- shows detail view (use 8-char prefix from list)
+- [ ] `bun run relay:jobs cancel <id>` -- cancels a pending job
+- [ ] `bun run relay:jobs --status pending` / `--status cancelled` / `--intervention` -- filtered views
+- [ ] `bun run relay:jobs --json` -- valid JSON output
+
+### Telegram smoke tests
+
+- [ ] `/jobs` -- reply with job list and inline buttons (Needs attention, Running, History)
+- [ ] Inline buttons respond within 3 seconds, no stuck loading spinners
+- [ ] `/jobs pending` / `/jobs failed` -- filtered views work
+
+### Webhook tests
+
+Start the relay with webhook enabled:
+```bash
+JOBS_WEBHOOK_PORT=8900 JOBS_WEBHOOK_SECRET=test-secret bun run start
+```
+
+```bash
+# Health check -- expect 200
+curl -s http://localhost:8900/health | jq .
+
+# Submit job -- expect 201
+curl -s -X POST http://localhost:8900/jobs \
+  -H "Authorization: Bearer test-secret" \
+  -H "Content-Type: application/json" \
+  -d '{"type":"routine","executor":"webhook-test","title":"Webhook smoke test"}'
+
+# No auth -- expect 401
+curl -s -o /dev/null -w "%{http_code}" -X POST http://localhost:8900/jobs \
+  -H "Content-Type: application/json" \
+  -d '{"type":"routine","executor":"test","title":"Unauthorized"}'
+
+# Missing required fields -- expect 400
+curl -s -o /dev/null -w "%{http_code}" -X POST http://localhost:8900/jobs \
+  -H "Authorization: Bearer test-secret" \
+  -H "Content-Type: application/json" \
+  -d '{"executor":"test","title":"Missing type"}'
+
+# Dedup rejection -- expect 409 on second call
+curl -s -X POST http://localhost:8900/jobs \
+  -H "Authorization: Bearer test-secret" \
+  -H "Content-Type: application/json" \
+  -d '{"type":"routine","executor":"dup-test","title":"First","dedup_key":"dedup:test:1"}'
+curl -s -o /dev/null -w "%{http_code}" -X POST http://localhost:8900/jobs \
+  -H "Authorization: Bearer test-secret" \
+  -H "Content-Type: application/json" \
+  -d '{"type":"routine","executor":"dup-test","title":"Second","dedup_key":"dedup:test:1"}'
+```
+
+### Clean shutdown
+
+```bash
+bun run start &
+RELAY_PID=$!
+sleep 3
+kill -TERM $RELAY_PID
+wait $RELAY_PID
+```
+
+Verify exit code 0 or 143 (SIGTERM). No orphaned running jobs:
+```bash
+sqlite3 ~/.claude-relay/data/local.sqlite "SELECT id, status FROM jobs WHERE status='running';"
+# Expected: empty result
+```
+
+### Regression
+
+After any job queue changes, verify existing bot functionality:
+- [ ] Regular chat message gets a Claude response
+- [ ] `/status`, `/help`, `/memory` all respond correctly
+- [ ] Group agent messages route correctly (if using multi-agent groups)

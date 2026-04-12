@@ -1,5 +1,37 @@
 # Changelog
 
+## [Unreleased] / 2026-04-12 — Documentation Consolidation
+
+### Changed
+- **CLAUDE.md**: Rewritten as the single comprehensive project document — absorbs architecture.md, user-guide.md, and chat-groups.md. Includes system overview diagram, component map, session lifecycle, multi-agent groups, bot usage guide, all 8 setup phases (updated to 4 PM2 services), commands reference, troubleshooting, and deep-dive doc index.
+- **README.md**: Trimmed to elevator pitch pointing to CLAUDE.md for all details.
+- **docs/memory-system.md**: Consolidated from 3 files (memory-system.md + memory-system-user-guide.md + prompt_builder.md).
+- **docs/routines-system.md**: Rewritten to reflect config-driven architecture (4 PM2 services, routine-scheduler, RoutineContext API). Absorbs ROUTINES_USER_JOURNEY.md and ADDING-NEW-JOBS.md.
+- **docs/features-job-queue.md**: Updated to absorb testing-job-queue.md pre-merge testing guide.
+- **docs/observability.md**: Updated to absorb WATCHDOG.md monitoring details.
+
+### Added
+- **docs/weather.md**: New consolidated weather reference (from WEATHER_INTEGRATION.md + WEATHER_QUICK_REFERENCE.md + WEATHER_UPDATE_SUMMARY.md + integrations/weather.md).
+- **docs/model-registry.md**: New consolidated ModelRegistry + MLX embed + fallback reference (from FALLBACK.md + mlx-local-inference.md).
+
+### Removed
+- **docs/architecture.md** — absorbed into CLAUDE.md
+- **docs/user-guide.md** — absorbed into CLAUDE.md
+- **docs/chat-groups.md** — absorbed into CLAUDE.md
+- **docs/memory-system-user-guide.md** — absorbed into docs/memory-system.md
+- **docs/prompt_builder.md** — absorbed into docs/memory-system.md
+- **docs/WATCHDOG.md** — absorbed into docs/observability.md
+- **docs/WEATHER_INTEGRATION.md** — absorbed into docs/weather.md
+- **docs/WEATHER_QUICK_REFERENCE.md** — absorbed into docs/weather.md
+- **docs/WEATHER_UPDATE_SUMMARY.md** — absorbed into docs/weather.md
+- **docs/FALLBACK.md** — absorbed into docs/model-registry.md
+- **docs/mlx-local-inference.md** — absorbed into docs/model-registry.md
+- **docs/ROUTINES_USER_JOURNEY.md** — absorbed into docs/routines-system.md
+- **docs/ADDING-NEW-JOBS.md** — absorbed into docs/routines-system.md
+- **docs/testing-job-queue.md** — absorbed into docs/features-job-queue.md
+- **docs/claude-skills-reference.md** — generic Claude Code reference, not project-specific
+- **integrations/weather.md** — absorbed into docs/weather.md
+
 ## [Unreleased] / 2026-04-12 — Job Queue Executors: Full Executor Suite
 
 ### Added
