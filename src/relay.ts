@@ -55,6 +55,7 @@ import { registerCallbackHandler } from "./routines/routineHandler.ts";
 import { getTROQAState, appendQAAnswer } from "./tro/troQAState.ts";
 import { registerDedupReviewCallbackHandler } from "./memory/dedupReviewCallbackHandler.ts";
 import { registerConflictCallbackHandler } from "./memory/conflictCallbackHandler.ts";
+import { initJobQueue } from "./jobs/index.ts";
 import { registerTaskSuggestionHandler } from "./callbacks/taskSuggestionHandler.ts";
 import { registerLearningRetroHandler } from "./callbacks/learningRetroCallbackHandler.ts";
 import { registerReflectCommand } from "./callbacks/reflectCommandHandler.ts";
@@ -838,6 +839,9 @@ registerLearningRetroHandler(bot);
 
 // Register /reflect command for explicit learning feedback
 registerReflectCommand(bot, (chatId) => getAgentForChat(chatId).id);
+
+// Job Queue subsystem
+const jobSystem = initJobQueue(bot);
 
 // Kept for backward compat: handles "New topic / Continue" button clicks from any
 // context-switch prompts that were sent before topic detection was removed. Safe to
@@ -3350,6 +3354,7 @@ if (_isEntry) {
     // FM-1: flush any pending text burst accumulators before queue drains
     for (const [key, acc] of textBurstAccumulators) { clearTimeout(acc.timer); flushTextBurst(key); }
     await queueManager.shutdown(QUEUE_SHUTDOWN_GRACE);
+    jobSystem.stop();
     bot.stop();
     process.exit(0);
   });
@@ -3359,6 +3364,7 @@ if (_isEntry) {
     // FM-1: flush any pending text burst accumulators before queue drains
     for (const [key, acc] of textBurstAccumulators) { clearTimeout(acc.timer); flushTextBurst(key); }
     await queueManager.shutdown(QUEUE_SHUTDOWN_GRACE);
+    jobSystem.stop();
     bot.stop();
     process.exit(0);
   });
@@ -3503,4 +3509,7 @@ if (_isEntry) {
   });
 
   console.log("bot.start() initiated - waiting for connection...");
+
+  jobSystem.start();
+  console.log("[relay] job queue started");
 }
