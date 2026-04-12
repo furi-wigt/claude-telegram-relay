@@ -8,9 +8,12 @@ import { CronJob } from "cron";
 import { watch } from "fs";
 import { join } from "path";
 import { homedir } from "os";
+import { loadEnv } from "../src/config/envLoader.ts";
 import { loadRoutineConfigs } from "../src/routines/routineConfig.ts";
 import { interpolate } from "../src/routines/interpolate.ts";
 import type { RoutineConfig } from "../src/routines/routineConfig.ts";
+
+loadEnv();
 
 // ============================================================
 // DATE KEY
