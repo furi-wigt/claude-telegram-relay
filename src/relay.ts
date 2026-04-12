@@ -841,7 +841,21 @@ registerLearningRetroHandler(bot);
 registerReflectCommand(bot, (chatId) => getAgentForChat(chatId).id);
 
 // Job Queue subsystem
-const jobSystem = initJobQueue(bot);
+let jobSystem: ReturnType<typeof initJobQueue>;
+try {
+  jobSystem = initJobQueue(bot);
+} catch (err) {
+  console.error("[relay] job queue init failed — running without job queue:", err);
+  jobSystem = {
+    store: null as any,
+    queue: null as any,
+    submitJob: null as any,
+    registry: null as any,
+    intervention: null as any,
+    start: () => {},
+    stop: async () => {},
+  };
+}
 
 // Kept for backward compat: handles "New topic / Continue" button clicks from any
 // context-switch prompts that were sent before topic detection was removed. Safe to
@@ -3354,7 +3368,7 @@ if (_isEntry) {
     // FM-1: flush any pending text burst accumulators before queue drains
     for (const [key, acc] of textBurstAccumulators) { clearTimeout(acc.timer); flushTextBurst(key); }
     await queueManager.shutdown(QUEUE_SHUTDOWN_GRACE);
-    jobSystem.stop();
+    await jobSystem.stop();
     bot.stop();
     process.exit(0);
   });
@@ -3364,7 +3378,7 @@ if (_isEntry) {
     // FM-1: flush any pending text burst accumulators before queue drains
     for (const [key, acc] of textBurstAccumulators) { clearTimeout(acc.timer); flushTextBurst(key); }
     await queueManager.shutdown(QUEUE_SHUTDOWN_GRACE);
-    jobSystem.stop();
+    await jobSystem.stop();
     bot.stop();
     process.exit(0);
   });

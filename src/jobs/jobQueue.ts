@@ -11,6 +11,7 @@ const MAX_RETRIES = 3;
 export class JobQueue {
   private wakeResolve: (() => void) | null = null;
   private running = false;
+  private loopPromise: Promise<void> | null = null;
 
   constructor(
     private store: JobStore,
@@ -31,13 +32,17 @@ export class JobQueue {
     if (this.running) return;
     this.running = true;
     console.log("[jobs:queue] scheduler started");
-    this.loop();
+    this.loopPromise = this.loop();
   }
 
-  /** Stop the scheduler */
-  stop(): void {
+  /** Stop the scheduler and wait for the in-flight loop to finish */
+  async stop(): Promise<void> {
     this.running = false;
     this.wake(); // unblock any waiting tick
+    if (this.loopPromise) {
+      await this.loopPromise;
+      this.loopPromise = null;
+    }
   }
 
   /** Main loop — waits for wake signal or heartbeat, then dispatches */

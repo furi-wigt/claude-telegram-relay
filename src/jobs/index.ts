@@ -27,7 +27,7 @@ export interface JobQueueSystem {
   registry: ExecutorRegistry;
   intervention: InterventionManager;
   start: () => void;
-  stop: () => void;
+  stop: () => Promise<void>;
 }
 
 export function initJobQueue(bot: Bot<Context>): JobQueueSystem {

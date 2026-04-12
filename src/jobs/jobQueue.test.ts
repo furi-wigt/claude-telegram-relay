@@ -43,8 +43,8 @@ describe("JobQueue", () => {
     execLog.length = 0;
   });
 
-  afterEach(() => {
-    queue.stop();
+  afterEach(async () => {
+    await queue.stop();
     db.close();
   });
 
