@@ -49,7 +49,7 @@ describe("telegramJobCommands", () => {
   test("buildInterventionKeyboard creates correct callback data", () => {
     const keyboard = buildInterventionKeyboard("abc-123");
     const buttons = keyboard.inline_keyboard.flat();
-    const callbackData = buttons.map((b: any) => b.callback_data);
+    const callbackData = buttons.map((b: { text: string; callback_data: string }) => b.callback_data);
     expect(callbackData).toContain("job:confirm:abc-123");
     expect(callbackData).toContain("job:skip:abc-123");
     expect(callbackData).toContain("job:abort:abc-123");

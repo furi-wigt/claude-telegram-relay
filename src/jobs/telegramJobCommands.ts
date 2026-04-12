@@ -4,7 +4,7 @@ import type { Job, JobStatus, JobType } from "./types.ts";
 import type { JobStore } from "./jobStore.ts";
 import type { InterventionManager } from "./interventionManager.ts";
 
-const STATUS_EMOJI: Record<string, string> = {
+const STATUS_EMOJI: Partial<Record<JobStatus, string>> = {
   pending: "⏳",
   running: "▶️",
   done: "✅",
@@ -130,14 +130,17 @@ export function registerJobCommands(
 
     // List filter callbacks
     if (action === "list") {
+      let jobs;
       if (jobIdOrFilter === "intervention") {
-        const jobs = store.getAwaitingIntervention();
-        const text = formatJobList(jobs);
-        await ctx.editMessageText(text);
+        jobs = store.getAwaitingIntervention();
       } else {
-        const jobs = store.listJobs({ status: jobIdOrFilter as JobStatus, limit: 20 });
-        const text = formatJobList(jobs);
+        jobs = store.listJobs({ status: jobIdOrFilter as JobStatus, limit: 20 });
+      }
+      const text = formatJobList(jobs);
+      try {
         await ctx.editMessageText(text);
+      } catch {
+        // "message is not modified" or deleted — ignore
       }
       await ctx.answerCallbackQuery();
       return;
