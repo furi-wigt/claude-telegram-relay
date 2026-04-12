@@ -326,3 +326,86 @@ describe("decodeHtmlEntities", () => {
     expect(decodeHtmlEntities(stripped)).toBe("output-<timestamp>.md");
   });
 });
+
+// ────────────────────────────────────────────────────────────────────────────
+// Gap 1 + 3 — Markdown markers and backticks in table cells stripped in <pre>
+// ────────────────────────────────────────────────────────────────────────────
+
+describe("table cell markdown stripping", () => {
+  test("**bold** markers in cell are stripped (not shown as asterisks)", () => {
+    const md = "| Service | Value |\n|---|---|\n| Headroom | **~12 GB** |";
+    const result = markdownToHtml(md);
+    expect(result).toContain("~12 GB");
+    expect(result).not.toContain("**~12 GB**");
+    expect(result).not.toContain("**");
+  });
+
+  test("*italic* markers in cell are stripped", () => {
+    const md = "| State | Note |\n|---|---|\n| Idle | *0 idle* |";
+    const result = markdownToHtml(md);
+    expect(result).toContain("0 idle");
+    expect(result).not.toContain("*0 idle*");
+  });
+
+  test("__bold__ markers in cell are stripped", () => {
+    const md = "| A | B |\n|---|---|\n| x | __bold__ |";
+    const result = markdownToHtml(md);
+    expect(result).toContain("bold");
+    expect(result).not.toContain("__bold__");
+  });
+
+  test("~~strikethrough~~ markers in cell are stripped", () => {
+    const md = "| A | B |\n|---|---|\n| x | ~~old~~ |";
+    const result = markdownToHtml(md);
+    expect(result).toContain("old");
+    expect(result).not.toContain("~~old~~");
+  });
+
+  test("backtick spans in cell are stripped (Gap 3)", () => {
+    const md = "| A | B |\n|---|---|\n| x | `value` |";
+    const result = markdownToHtml(md);
+    expect(result).toContain("value");
+    expect(result).not.toContain("`value`");
+  });
+
+  test("plain cell content is unaffected", () => {
+    const md = "| Service | Memory |\n|---|---|\n| Qdrant | ~60 MB |";
+    const result = markdownToHtml(md);
+    expect(result).toContain("Qdrant");
+    expect(result).toContain("~60 MB");
+  });
+
+  test("table output is still wrapped in <pre>", () => {
+    const md = "| A | B |\n|---|---|\n| x | y |";
+    const result = markdownToHtml(md);
+    expect(result).toContain("<pre>");
+    expect(result).toContain("</pre>");
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// Gap 2 — Fenced code block language class
+// ────────────────────────────────────────────────────────────────────────────
+
+describe("fenced code block language class", () => {
+  test("language tag emits class='language-{lang}'", () => {
+    const result = markdownToHtml("```typescript\nconst x = 1;\n```");
+    expect(result).toBe('<pre><code class="language-typescript">const x = 1;</code></pre>');
+  });
+
+  test("no language tag → no class attribute (plain <code>)", () => {
+    const result = markdownToHtml("```\nconst x = 1;\n```");
+    expect(result).toBe("<pre><code>const x = 1;</code></pre>");
+  });
+
+  test("python language tag", () => {
+    const result = markdownToHtml("```python\nprint('hi')\n```");
+    expect(result).toContain('class="language-python"');
+  });
+
+  test("language class does not affect content escaping", () => {
+    const result = markdownToHtml("```html\n<div>test</div>\n```");
+    expect(result).toContain("&lt;div&gt;");
+    expect(result).toContain('class="language-html"');
+  });
+});
