@@ -248,7 +248,7 @@ This enables 6 specialised AI agents, each living in their own Telegram supergro
 
 1. For each agent, create a Telegram supergroup with the **exact group name** from the table above
 2. In each group: go to Settings → Make it a Supergroup (required for forum topic routing)
-3. Add the bot to each group as an admin
+3. Add the bot to each group as an admin with **Manage Topics** permission enabled (required for forum topic routing)
 4. Run `bun run test:groups` — the bot auto-discovers groups by matching their exact title
 
 ### Setting Chat IDs
