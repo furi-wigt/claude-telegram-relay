@@ -71,10 +71,26 @@ export class RoutineExecutor implements JobExecutor {
         handler = mod.run as RoutineHandler;
         this.handlers.set(job.executor, handler);
         console.log(`[routineExecutor] lazy-loaded handler: ${job.executor}`);
-      } catch (err) {
+      } catch (_importErr) {
+        // No handler file found — check for inline prompt payload
+        const prompt = job.payload?.prompt as string | undefined;
+        if (prompt) {
+          const config = getRoutineConfig(job.executor) ?? minimalConfig(job);
+          const ctx = createRoutineContext(config);
+          try {
+            const response = await ctx.llm(prompt);
+            await ctx.send(response);
+            return { status: "done" };
+          } catch (llmErr) {
+            return {
+              status: "failed",
+              error: `inline prompt failed for "${job.executor}": ${llmErr instanceof Error ? llmErr.message : String(llmErr)}`,
+            };
+          }
+        }
         return {
           status: "failed",
-          error: `no handler registered for "${job.executor}": ${err instanceof Error ? err.message : String(err)}`,
+          error: `no handler registered for "${job.executor}" and no inline prompt provided: ${_importErr instanceof Error ? _importErr.message : String(_importErr)}`,
         };
       }
     }

@@ -251,5 +251,21 @@ module.exports = {
       out_file: LOGS_DIR + "/weekly-retro-out.log",
       log_date_format: "YYYY-MM-DD HH:mm:ss Z",
     },
+
+    // ── Routine scheduler (cron-to-webhook dispatcher) ─────────────────────
+    {
+      name: "routine-scheduler",
+      script: "routines/scheduler.ts",
+      interpreter: BUN,
+      exec_mode: "fork",
+      cwd: CWD,
+      instances: 1,
+      autorestart: true,
+      watch: false,
+      env: ENV,
+      error_file: LOGS_DIR + "/routine-scheduler-error.log",
+      out_file: LOGS_DIR + "/routine-scheduler-out.log",
+      log_date_format: "YYYY-MM-DD HH:mm:ss Z",
+    },
   ],
 };

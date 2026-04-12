@@ -28,6 +28,7 @@
     "@azure/msal-node": "^5.0.4",
     "@microsoft/microsoft-graph-client": "^3.0.7",
     "@qdrant/js-client-rest": "^1.17.0",
+    "cron": "^4.4.0",
     "grammy": "^1.21.1",
     "groq-sdk": "^0.8.0",
     "isomorphic-fetch": "^3.0.0",
