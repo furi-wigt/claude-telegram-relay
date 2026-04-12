@@ -1,12 +1,29 @@
 // src/jobs/executors/routineExecutor.ts
 import type { JobExecutor, ExecutorResult } from "./types.ts";
 import type { Job, JobCheckpoint } from "../types.ts";
+import { createRoutineContext } from "./routineContext.ts";
+import { getRoutineConfig } from "../../routines/routineConfig.ts";
+import type { RoutineContext } from "./routineContext.ts";
+import type { RoutineConfig } from "../../routines/routineConfig.ts";
 
-type RoutineHandler = (job: Job) => Promise<string | void>;
+type RoutineHandler = (ctx: RoutineContext) => Promise<void>;
+
+function minimalConfig(job: Job): RoutineConfig {
+  return {
+    name: job.executor,
+    type: "handler",
+    schedule: "",
+    group: "OPERATIONS",
+    enabled: true,
+  };
+}
 
 /**
  * Executes routine handlers (routines/handlers/*.ts).
  * Handlers are registered at startup or dynamically imported.
+ *
+ * Handler signature: (ctx: RoutineContext) => Promise<void>
+ * Legacy `(job: Job) => Promise<string | void>` handlers should be updated to new signature.
  */
 export class RoutineExecutor implements JobExecutor {
   readonly type = "routine" as const;
@@ -30,7 +47,7 @@ export class RoutineExecutor implements JobExecutor {
         console.warn(`[routineExecutor] ${path} does not export a run() function`);
         return;
       }
-      this.registerHandler(name, mod.run);
+      this.registerHandler(name, mod.run as RoutineHandler);
       console.log(`[routineExecutor] loaded handler: ${name}`);
     } catch (err) {
       console.error(`[routineExecutor] failed to load ${path}:`, err);
@@ -38,20 +55,36 @@ export class RoutineExecutor implements JobExecutor {
   }
 
   async execute(job: Job, _checkpoint?: JobCheckpoint): Promise<ExecutorResult> {
-    const handler = this.handlers.get(job.executor);
+    let handler = this.handlers.get(job.executor);
+
     if (!handler) {
-      return {
-        status: "failed",
-        error: `no handler registered for "${job.executor}"`,
-      };
+      // Lazy dynamic import from routines/handlers/<name>.ts
+      try {
+        const handlerPath = `../../routines/handlers/${job.executor}.ts`;
+        const mod = await import(handlerPath);
+        if (typeof mod.run !== "function") {
+          return {
+            status: "failed",
+            error: `handler ${job.executor} does not export run()`,
+          };
+        }
+        handler = mod.run as RoutineHandler;
+        this.handlers.set(job.executor, handler);
+        console.log(`[routineExecutor] lazy-loaded handler: ${job.executor}`);
+      } catch (err) {
+        return {
+          status: "failed",
+          error: `no handler registered for "${job.executor}": ${err instanceof Error ? err.message : String(err)}`,
+        };
+      }
     }
 
+    const config = getRoutineConfig(job.executor) ?? minimalConfig(job);
+    const ctx = createRoutineContext(config);
+
     try {
-      const summary = await handler(job);
-      return {
-        status: "done",
-        summary: typeof summary === "string" ? summary : undefined,
-      };
+      await handler(ctx);
+      return { status: "done" };
     } catch (err) {
       return {
         status: "failed",
