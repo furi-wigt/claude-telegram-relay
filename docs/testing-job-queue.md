@@ -380,11 +380,11 @@ Confirm the 4 changes to `relay.ts` did not break existing bot behaviour.
 
 With the relay running from the worktree:
 
-- [ ] Send a regular chat message to your bot → receives a Claude response
-- [ ] Send `/status` → bot replies with session info
-- [ ] Send `/help` → bot replies with command list
-- [ ] Send `/memory` → bot replies with memory browser
-- [ ] (If using groups) Send a message in an agent group → correct agent responds
+- [x] Send a regular chat message to your bot → receives a Claude response
+- [x] Send `/status` → bot replies with session info
+- [x] Send `/help` → bot replies with command list
+- [x] Send `/memory` → bot replies with memory browser
+- [x] (If using groups) Send a message in an agent group → correct agent responds
 
 **Pass criteria:** All commands work as before. No regressions.
 
@@ -394,16 +394,16 @@ With the relay running from the worktree:
 
 Check each section before marking ready to merge:
 
-- [ ] **Section 1** — 2546 automated tests pass
-- [ ] **Section 2** — `jobs` and `job_checkpoints` tables present in SQLite
-- [ ] **Section 3** — All CLI commands work (list, submit, cancel, detail, filter, JSON, prefix lookup)
-- [ ] **Section 4** — Relay boots with job queue log lines, bot responds normally
-- [ ] **Section 5** — `/jobs` command renders and inline buttons work without stuck spinners
-- [ ] **Section 6** — Intervention state visible in Telegram, callbacks respond promptly
-- [ ] **Section 7** — Webhook: health, submit 201, unauth 401, missing fields 400, dedup 409
-- [ ] **Section 8** — Relay shuts down cleanly on SIGTERM, no orphaned running jobs
-- [ ] **Section 9** — Auto-approve.json loads without error (optional)
-- [ ] **Section 10** — All existing bot commands still work (regression check)
+- [x] **Section 1** — 2546 automated tests pass
+- [x] **Section 2** — `jobs` and `job_checkpoints` tables present in SQLite
+- [x] **Section 3** — All CLI commands work (list, submit, cancel, detail, filter, JSON, prefix lookup)
+- [x] **Section 4** — Relay boots with job queue log lines, bot responds normally
+- [x] **Section 5** — `/jobs` command renders and inline buttons work without stuck spinners
+- [x] **Section 6** — Intervention state visible in Telegram, callbacks respond promptly
+- [x] **Section 7** — Webhook: health, submit 201, unauth 401, missing fields 400, dedup 409
+- [x] **Section 8** — Relay shuts down cleanly on SIGTERM, no orphaned running jobs
+- [x] **Section 9** — Auto-approve.json loads without error (optional)
+- [x] **Section 10** — All existing bot commands still work (regression check)
 
 **All 10 checked → ready to merge.**
 
