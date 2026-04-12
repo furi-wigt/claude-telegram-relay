@@ -26,25 +26,78 @@ This project turns Telegram into a personal AI assistant powered by Claude Code 
 **What you get:**
 - 6 specialised AI agents, each in their own Telegram supergroup (Command Center, Cloud, Security, Engineering, Strategy, Operations)
 - Long-term memory: facts, goals, preferences stored locally with semantic search (SQLite + Qdrant + MLX bge-m3)
-- Scheduled routines: morning briefing, evening summary, proactive check-ins, health watchdog
+- Scheduled routines: morning briefing, evening summary, proactive check-ins, health watchdog — all config-driven via `config/routines.config.json`
 - Document RAG: upload PDFs, ask questions, get answers grounded in your documents
 - Voice transcription: send voice messages, bot transcribes and responds
+- Job queue: persistent background job system with priority dispatch, interventions, and CLI/webhook/Telegram sources
 
 **Everything runs locally.** No cloud database required. Once deployed, you talk to Claude through your phone.
 
+---
+
 ## Architecture
+
+### System Overview
+
+```mermaid
+graph TB
+    subgraph Telegram["Telegram (User Interface)"]
+        TG[Telegram API]
+        G1["Command Center"]
+        G2["Cloud & Infrastructure"]
+        G3["Security & Compliance"]
+        G4["Engineering & Quality"]
+        G5["Strategy & Communications"]
+        G6["Operations Hub"]
+    end
+
+    subgraph Core["Core — src/relay.ts"]
+        Router[Group Router]
+        Queue[Message Queue]
+        SessionMgr[Session Manager]
+        MemMgr[Memory Manager]
+        DocMgr[Document Processor]
+        Jobs[Job Queue]
+    end
+
+    subgraph AI["AI Layer"]
+        Claude[Claude Code CLI]
+        Registry[ModelRegistry\nmodels.json cascade]
+    end
+
+    subgraph Storage["Local Storage — ~/.claude-relay/"]
+        SQLite[(SQLite)]
+        Qdrant[(Qdrant)]
+    end
+
+    subgraph PM2["PM2 — 4 Always-On Services"]
+        S1[qdrant]
+        S2[mlx-embed\nbge-m3 port 8801]
+        S3[telegram-relay]
+        S4[routine-scheduler\nreads routines.config.json]
+    end
+
+    TG --> Router --> Queue --> SessionMgr --> Claude
+    Claude --> MemMgr --> SQLite & Qdrant
+    Registry -.->|fallback| Claude
+    S4 -->|webhook| Jobs
+    Jobs --> Core
+```
+
+### Data Directory
 
 All user data lives outside the project directory in `~/.claude-relay/`:
 
 ```
 ~/.claude-relay/
   .env              # User-level environment overrides
-  agents.json       # Agent chat IDs and topic IDs (copied from agents.example.json by setup)
+  agents.json       # Agent chat IDs and topic IDs
+  models.json       # ModelRegistry provider definitions + cascade order
   data/
-    local.sqlite    # Messages, memory, goals, logs (SQLite via Drizzle)
+    local.sqlite    # Messages, memory, goals, documents (SQLite)
+  sessions/         # Per-chat Claude session state files
   logs/             # PM2 service logs
   prompts/          # Customizable agent prompts (copied from repo defaults)
-    diagnostics/    # Diagnostic prompt templates
   research/         # Artifact outputs (reports, docs, security audits)
 ```
 
@@ -56,9 +109,137 @@ All user data lives outside the project directory in `~/.claude-relay/`:
 **Prompt customization:** Agent prompts are loaded from `~/.claude-relay/prompts/` first, falling back to `config/prompts/` in the repo. Edit your user copy to personalize any agent without touching the repo.
 
 **Storage stack:**
-- **SQLite** (`~/.claude-relay/data/local.sqlite`) — messages, memory entries, goals, conversation summaries, logs
-- **Qdrant** (local vector DB) — semantic search over messages and memory
+- **SQLite** (`~/.claude-relay/data/local.sqlite`) — messages, memory entries, goals, conversation summaries, documents
+- **Qdrant** (local vector DB, port 6333) — semantic search over messages and memory
 - **MLX** — `mlx serve-embed` for embeddings (bge-m3, port 8801). Text generation is handled by LM Studio (or any OpenAI-compatible server) via ModelRegistry — see `~/.claude-relay/models.json`.
+
+### Component Map
+
+| Component | File | Purpose |
+|-----------|------|---------|
+| Bot Core | `src/relay.ts` | Message routing, command handling, response pipeline |
+| Claude Spawner | `src/claude-process.ts` | Spawn Claude CLI as subprocess; text and streaming modes |
+| Memory Manager | `src/memory.ts` | Parse intent tags, dedup check, store to SQLite+Qdrant |
+| Group Router | `src/routing/groupRouter.ts` | Map chatId to agentId; auto-discovery from group title |
+| Prompt Builder | `src/agents/promptBuilder.ts` | Assemble final system prompt: agent + profile + context + memory |
+| Session Manager | `src/session/groupSessions.ts` | Per-chat Claude session state, resume, /new reset |
+| Message Queue | `src/queue/groupQueueManager.ts` | Per-chat FIFO queues with backpressure |
+| Short-Term Memory | `src/memory/shortTermMemory.ts` | Rolling window (20 verbatim) + LLM summarization |
+| Search Service | `src/local/searchService.ts` | Hybrid search: keyword (SQLite FTS5) + semantic (Qdrant) |
+| Document Processor | `src/documents/documentProcessor.ts` | Ingest PDFs/XLSX/CSV: extract, chunk, embed, store |
+| Job Queue | `src/jobs/jobQueue.ts` | Persistent background job system with priority dispatch |
+| Model Registry | `src/model-registry/ModelRegistry.ts` | Cascade logic, health checks, provider selection |
+
+### Session Lifecycle
+
+```mermaid
+stateDiagram-v2
+    [*] --> Fresh: First message or session not found
+    Fresh --> Resumable: claudeStream returns sessionId
+    Resumable --> ResumeAttempt: New message, lastActivity < 4h
+    ResumeAttempt --> Resumable: resume succeeds
+    ResumeAttempt --> ContextInjection: resume fails (expired)
+    ContextInjection --> Resumable: Full context injected, new sessionId
+    Resumable --> Fresh: /new command
+    Resumable --> Stale: lastActivity > 4h
+    Stale --> Fresh: Next message arrives
+```
+
+Session files: `~/.claude-relay/sessions/{chatId}_{threadId}.json`
+
+---
+
+## Multi-Agent Groups
+
+The relay supports 6 specialised AI agents, each in its own Telegram supergroup with isolated sessions and scoped memory.
+
+### Agent Directory
+
+| Group Name | Agent ID | Specialty |
+|---|---|---|
+| Jarvis Command Center | `command-center` | Orchestration, task routing, dispatch audit log |
+| Cloud & Infrastructure | `cloud-architect` | AWS, CDK, GCC 2.0, cost optimisation, Well-Architected |
+| Security & Compliance | `security-compliance` | IM8 v4, PDPA, security audits, threat modelling, runbooks |
+| Engineering & Quality | `engineering` | Code review, TDD, refactoring, implementation |
+| Strategy & Communications | `strategy-comms` | Proposals, BD materials, decks, research, ADRs |
+| Operations Hub | `operations-hub` | General Q&A, meeting prep, task management (default) |
+
+### How Routing Works
+
+1. Message arrives with `chat_id`
+2. Group router checks: runtime cache → auto-discovery (match group title) → env vars → agents.json → fallback to `operations-hub`
+3. Matched agent's system prompt is loaded from `~/.claude-relay/prompts/{id}.md` (user copy) or `config/prompts/{id}.md` (repo default)
+4. Claude spawns with the agent-specific prompt; memory queries filter by `chat_id`
+
+### agents.json Schema
+
+```json
+{
+  "id": "cloud-architect",
+  "name": "Cloud & Infrastructure",
+  "groupName": "Cloud & Infrastructure",
+  "shortName": "Cloud",
+  "groupKey": "CLOUD",
+  "chatId": -1001234567890,
+  "topicId": null,
+  "capabilities": ["infrastructure-design", "cost-optimization"],
+  "isDefault": false
+}
+```
+
+- `config/agents.json` is **gitignored** — your real chat IDs stay local
+- `config/agents.example.json` is the committed clean template
+- `~/.claude-relay/agents.json` is created by setup and lives outside the repo
+
+### Adding a Custom Agent
+
+1. Create prompt: `~/.claude-relay/prompts/my-agent.md`
+2. Create Telegram supergroup with exact `groupName`
+3. Add entry to `config/agents.json` with `chatId`
+4. Add bot as admin with **Manage Topics** permission
+5. Restart relay — bot auto-discovers or uses explicit `chatId`
+
+### Forum Topics
+
+If supergroups have Forum Topics enabled, the bot routes messages to specific topics. Set `topicId` in agents.json or `GROUP_*_TOPIC_ID` in `.env`. Get a topic ID by right-clicking a topic in Telegram Desktop → Copy Link → extract the trailing number.
+
+---
+
+## Using the Bot
+
+### Model Selection
+
+| Prefix | Model | When to use |
+|--------|-------|-------------|
+| *(none)* | Claude Sonnet | Default — balanced speed and quality |
+| `[O]` | Claude Opus | Complex architecture, deep reasoning |
+| `[H]` | Claude Haiku | Quick questions, low-latency responses |
+
+### Memory
+
+The bot automatically extracts facts, goals, and preferences from conversations using intent tags (`[REMEMBER:]`, `[GOAL:]`, `[DONE:]`). Memory is scoped per-chat (or global with `[REMEMBER_GLOBAL:]`).
+
+**Commands:** `/memory` (browse), `/remember [text]` (save), `/forget [text]` (remove), `/reflect [feedback]` (save learning)
+
+### Goals
+
+**Commands:** `/goals` (list), `/goals +text` (add), `/goals -text` (remove), `/goals *N` (mark done), `/goals *` (view completed)
+
+### Documents
+
+Upload PDFs/XLSX/CSV directly to Telegram. The bot extracts, chunks, embeds, and indexes them. Query with `/doc query [question]`.
+
+**Commands:** `/doc list`, `/doc forget [name]`, `/doc query [question]`
+
+### Voice
+
+Send a voice message — the bot transcribes and responds. Configure `VOICE_PROVIDER=groq` (cloud, fast) or `VOICE_PROVIDER=local` (offline, whisper-cpp).
+
+### Self-Learning
+
+The bot captures learnings from corrections and `/reflect` feedback. Weekly retro (Sundays 9am) surfaces promotion candidates for `~/.claude/CLAUDE.md`. See [docs/memory-system.md](docs/memory-system.md) for details.
+
+---
 
 ## Prerequisites
 
@@ -173,7 +354,7 @@ docker run -d --name qdrant -p 6333:6333 -v ~/.qdrant/storage:/qdrant/storage qd
 
 ### Step 4: Verify
 
-1. Confirm MLX embed server: `curl http://localhost:8801/health` → `{"status":"ok","model":"...bge-m3..."}`
+1. Confirm MLX embed server: `curl http://localhost:8801/health`
 2. Confirm Qdrant is reachable: `curl http://localhost:6333/healthz`
 3. Confirm SQLite database path exists: `ls ~/.claude-relay/data/`
 
@@ -201,13 +382,11 @@ docker run -d --name qdrant -p 6333:6333 -v ~/.qdrant/storage:/qdrant/storage qd
 ### Step 3b: Artifact Output
 
 Agents save research, documentation, and security reports to `~/.claude-relay/research/`:
-- `~/.claude-relay/research/ai-research/` — research reports (Research Analyst)
-- `~/.claude-relay/research/ai-docs/` — documentation and write-ups (Docs Specialist, General Assistant, AWS Architect)
-- `~/.claude-relay/research/ai-security/` — security reports (Security Analyst)
+- `~/.claude-relay/research/ai-research/` — research reports
+- `~/.claude-relay/research/ai-docs/` — documentation and write-ups
+- `~/.claude-relay/research/ai-security/` — security reports
 
 This directory is created automatically. No `.env` configuration needed.
-
-> Code plans and implementation todos stay in `.claude/todos/` (project-local, not affected by this setting).
 
 **Done when:** `config/profile.md` exists with the user's details.
 
@@ -233,24 +412,13 @@ This directory is created automatically. No `.env` configuration needed.
 
 ## Phase 5: Multi-Agent Groups (Optional, ~15 min)
 
-This enables 6 specialised AI agents, each living in their own Telegram supergroup with a tailored persona.
-
-**The 6 agents:**
-
-| Group Name | Agent ID | Specialty |
-|---|---|---|
-| Jarvis Command Center | `command-center` | Orchestration, task routing, dispatch audit log |
-| Cloud & Infrastructure | `cloud-architect` | AWS, CDK, GCC 2.0, cost optimisation, Well-Architected |
-| Security & Compliance | `security-compliance` | IM8 v4, PDPA, security audits, threat modelling, runbooks |
-| Engineering & Quality | `engineering` | Code review, TDD, refactoring, implementation |
-| Strategy & Communications | `strategy-comms` | Proposals, BD materials, decks, research, ADRs |
-| Operations Hub | `operations-hub` | General Q&A, meeting prep, task management (default) |
+This enables 6 specialised AI agents, each living in their own Telegram supergroup with a tailored persona. See the [Agent Directory](#agent-directory) above for the full list.
 
 **Steps:**
 
-1. For each agent, create a Telegram supergroup with the **exact group name** from the table above
+1. For each agent, create a Telegram supergroup with the **exact group name** from the Agent Directory table
 2. In each group: go to Settings → Make it a Supergroup (required for forum topic routing)
-3. Add the bot to each group as an admin with **Manage Topics** permission enabled (required for forum topic routing)
+3. Add the bot to each group as an admin with **Manage Topics** permission enabled
 4. Run `bun run test:groups` — the bot auto-discovers groups by matching their exact title
 
 ### Setting Chat IDs
@@ -275,21 +443,6 @@ GROUP_OPERATIONS_CHAT_ID=-100xxxxxxxxxx
 > **Note:** `~/.claude-relay/agents.json` is your personal config — it lives outside the repo and survives `git clean`.
 > `config/agents.example.json` is the committed clean template. Never edit it directly.
 
-### Forum Topic Setup (Optional)
-
-If you enable Forum Topics in your supergroups, the bot can route messages to specific topics.
-
-To get a topic ID: right-click any topic in Telegram desktop → Copy Link → extract the trailing number from the URL.
-
-**In agents.json:**
-- `topicId` — topic where regular messages from this agent appear
-
-**In .env (alternative):**
-```
-GROUP_AWS_TOPIC_ID=123
-GROUP_GENERAL_TOPIC_ID=789
-```
-
 **Done when:** `bun run test:groups` shows all groups discovered, or `chatId` values are set and the bot responds in each group.
 
 ---
@@ -303,16 +456,16 @@ Make the bot and all services run in the background, start on boot, restart on c
 bun run setup:pm2 -- --service all
 ```
 
-This starts several services:
+This starts 4 always-on PM2 services:
 
-| Service | What it does | Type |
-|---|---|---|
-| `qdrant` | Local vector database — always running | Infrastructure |
-| `telegram-relay` | The main bot — always running | Core |
-| `morning-summary` | Daily morning briefing (7am) | Core |
-| `smart-checkin` | Periodic context-aware check-ins (every 30 min, waking hours) | Core |
-| `night-summary` | Daily night summary (11pm) | Core |
-| `watchdog` | Health monitor (every 2 hours) | Core |
+| Service | What it does |
+|---|---|
+| `qdrant` | Local vector database |
+| `mlx-embed` | MLX embedding server (bge-m3, port 8801) |
+| `telegram-relay` | The main bot |
+| `routine-scheduler` | Cron dispatcher — reads `config/routines.config.json` and submits jobs via webhook |
+
+All scheduled routines (morning-summary, night-summary, smart-checkin, watchdog, etc.) are **config-driven** — defined in `config/routines.config.json`, not as individual PM2 entries. The routine-scheduler dispatches them automatically.
 
 > To start only core services: `bun run setup:pm2 -- --service core`
 
@@ -326,8 +479,6 @@ bun run setup:launchd -- --service all
 bun run setup:routines
 ```
 
-This lets you create natural-language routines or enable/disable individual services.
-
 **Verify:** `npx pm2 status`
 
 > **Morning weather areas:** To show weather for specific areas in the morning summary, set:
@@ -337,7 +488,7 @@ This lets you create natural-language routines or enable/disable individual serv
 
 > **Routine guides:** `routines/CLAUDE.md` — developer code patterns and PM2 safety rules (read this before writing any routine). `routines/user_journey.md` — complete lifecycle guide for creating, scheduling, and managing routines via Telegram.
 
-**Done when:** `npx pm2 status` shows the relay as "online" and survives a terminal close.
+**Done when:** `npx pm2 status` shows all 4 services as "online" and survives a terminal close.
 
 ---
 
@@ -417,6 +568,8 @@ Summarise what was set up and what is running. Remind the user:
 | `/help` | All available commands |
 | `/new` | Start a fresh conversation |
 | `/status` | Session status |
+| `/cancel` | Cancel in-progress Claude response |
+| `/cwd [path]` | Set or show working directory for coding sessions |
 | `/memory` | Browse your memory (goals, facts, prefs, dates) |
 | `/remember [text]` | Save something to memory |
 | `/forget [text]` | Remove something from memory |
@@ -428,18 +581,51 @@ Summarise what was set up and what is running. Remind the user:
 | `/goals *` | View completed/archived goals |
 | `/history` | Recent messages |
 | `/routines` | Manage scheduled routines |
+| `/jobs` | View and manage background jobs |
+| `/schedule <prompt>` | Enqueue a Claude session job |
 | `/doc list` | List uploaded documents |
 | `/doc forget [name]` | Remove a document from memory |
 | `/doc query [question]` | Search across all uploaded documents |
 
 ---
 
+## Troubleshooting
+
+| Symptom | Likely Cause | Fix |
+|---------|-------------|-----|
+| Bot not responding | Service offline | `npx pm2 status` — restart if `errored` |
+| Response very slow | Large context window | `/new` to reset session |
+| "Working..." never resolves | Claude stream hung | Send `/cancel` or restart relay |
+| Memory not saving | Qdrant or MLX embed down | `curl http://localhost:6333/healthz`, `curl http://localhost:8801/health` |
+| Voice not transcribing | Missing API key or binary | Check `VOICE_PROVIDER` + `GROQ_API_KEY` in `.env` |
+| Document search returns nothing | No docs indexed or Qdrant down | `/doc list` to check, `bun run setup:verify` |
+| Wrong group / agent not responding | Group not registered | Check `GROUP_*_CHAT_ID` or re-run `bun run test:groups` |
+| Session resume fails every time | Stale session file | `/new` to reset, or delete `~/.claude-relay/sessions/{chatId}*.json` |
+| Routine messages not arriving | routine-scheduler down | `npx pm2 logs routine-scheduler --lines 50` |
+
+For deeper diagnostics, see [docs/observability.md](docs/observability.md).
+
+---
+
+## Deep Dive Documentation
+
+| Document | What it covers |
+|----------|----------------|
+| [docs/memory-system.md](docs/memory-system.md) | Memory architecture: 3 layers, intent tags, dedup, prompt assembly, self-learning pipeline |
+| [docs/routines-system.md](docs/routines-system.md) | Routines architecture: config-driven scheduling, handler API, creating routines |
+| [docs/features-job-queue.md](docs/features-job-queue.md) | Job queue: executors, CLI, webhook API, interventions, auto-approve |
+| [docs/observability.md](docs/observability.md) | Logging, PM2 status, trace IDs, watchdog, troubleshooting |
+| [docs/model-registry.md](docs/model-registry.md) | ModelRegistry cascade, MLX embed setup, local AI fallback |
+| [docs/weather.md](docs/weather.md) | Weather integration: Singapore NEA + Open-Meteo, API reference |
+| [routines/CLAUDE.md](routines/CLAUDE.md) | Developer guide for writing routine handlers |
+| [integrations/CLAUDE.md](integrations/CLAUDE.md) | Claude CLI integration API: runPrompt, claudeText, claudeStream |
+
+---
+
 ## What Comes Next
 
-This relay already includes significant capabilities beyond basic chat:
-
-- **6 Specialised AI Agents** — each with a tailored persona in its own Telegram supergroup (Command Center, Cloud, Security, Engineering, Strategy, Operations). Edit prompts at `~/.claude-relay/prompts/` to change any agent's focus, tone, or save paths.
-- **Production Routines** — the `routines/` directory has ready-to-use scheduled tasks. Read `routines/CLAUDE.md` (code patterns and PM2 safety rules) then `routines/user_journey.md` (full lifecycle guide) before creating your own.
+- **6 Specialised AI Agents** — each with a tailored persona in its own Telegram supergroup. Edit prompts at `~/.claude-relay/prompts/` to change any agent's focus, tone, or save paths.
+- **Production Routines** — the `routines/` directory has ready-to-use scheduled tasks. Read `routines/CLAUDE.md` then `routines/user_journey.md` before creating your own.
 - **Document RAG** — upload PDFs to Telegram, query them with natural language via `/doc query`
 - **Forum Topic Support** — route messages to specific topics within supergroups for clean separation
 - **Fallback AI** — auto-cascade to local LM Studio / Ollama when Claude is unavailable, via ModelRegistry (`~/.claude-relay/models.json`)
