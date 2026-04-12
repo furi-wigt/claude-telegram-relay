@@ -58,7 +58,11 @@ sqlite3 ~/.claude-relay/data/local.sqlite ".schema job_checkpoints"
 
 ## Section 3: CLI — Basic Operations
 
-Run each command against the real database. The relay does NOT need to be running for these.
+Run each command against the real database.
+
+> **If the relay is already running with the job queue code**, submitted jobs will be picked up and dispatched immediately. Jobs with non-existent executors will fail fast (correct behaviour). For a clean "stays pending" state, stop the relay first or use the dedup approach in 3b.
+>
+> To check if the relay is running: `npx pm2 status | grep telegram-relay`
 
 ```bash
 cd .claude/worktrees/feat/job-queue
@@ -183,7 +187,7 @@ bun run relay:jobs run "Telegram visibility test" --type routine --executor test
 
 Then send `/jobs` to your bot again.
 
-**Expected:** The job appears in the list with `⏳` emoji, title "Telegram visibility test", and `pending` status.
+**Expected:** The job appears in the list. If the relay is running, status may be `❌ failed` (executor `test-tg` has no handler) — that is still a pass for this visibility test. The key check is that the job title appears in the Telegram message.
 
 ### 5d. /jobs with filter argument
 
