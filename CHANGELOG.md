@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased] / 2026-04-12 — Fix: Markdown markers literal in table cells; language class dropped
+
+### Fixed
+- **htmlFormat**: `markdownTableToPreAscii` now strips inline markdown markers (`**`, `*`, `__`, `_`, `~~`, backticks) from table cell content before rendering the `<pre>` ASCII block. Previously `*0 idle*` and `**~12 GB**` appeared as literal asterisks — Telegram does not render HTML inside `<pre>`.
+- **htmlFormat**: Fenced code blocks with a language tag (e.g. ` ```typescript `) now emit `<code class="language-typescript">` instead of a bare `<code>`. Enables syntax highlighting in Telegram clients that support it.
+
 ## [Unreleased] / 2026-04-09 — Fix: Document Query Collection Mismatch
 
 ### Fixed
