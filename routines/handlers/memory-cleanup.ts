@@ -1,50 +1,22 @@
-#!/usr/bin/env bun
-
 /**
  * @routine memory-cleanup
  * @description Deduplicate memory items (facts, goals, preferences) using semantic similarity
  * @schedule 0 3 * * *
  * @target General AI Assistant group
+ *
+ * Handler — pure logic only. No standalone entry point, no PM2 boilerplate.
+ * Use ctx.send() for Telegram output and ctx.log() for console output.
  */
 
-/**
- * Memory Cleanup Routine — Local Stack (SQLite + Qdrant + Ollama BGE-M3)
- *
- * Schedule: 3:00 AM daily (cron: 0 3 * * *)
- * Target: General AI Assistant group
- *
- * Finds semantically duplicate memory items and removes the newer duplicates,
- * keeping the oldest item in each cluster. Sends a summary to Telegram when
- * duplicates are found.
- *
- * Run manually: bun run routines/memory-cleanup.ts
- * Dry run:      DRY_RUN=true bun run routines/memory-cleanup.ts
- */
-
-import { getDb } from "../src/local/db.ts";
-import { localEmbed, localEmbedBatch } from "../src/local/embed.ts";
+import type { RoutineContext } from "../../src/jobs/executors/routineContext.ts";
+import { getDb } from "../../src/local/db.ts";
+import { localEmbed, localEmbedBatch } from "../../src/local/embed.ts";
 import {
   search as qdrantSearch,
   deletePoints as qdrantDeletePoints,
   ensureCollection,
-} from "../src/local/vectorStore.ts";
-import { sendAndRecord } from "../src/utils/routineMessage.ts";
-import { sendToGroup } from "../src/utils/sendToGroup.ts";
-import { GROUPS, validateGroup } from "../src/config/groups.ts";
-import { initRegistry } from "../src/models/index.ts";
-
-function resolveMemoryCleanupGroupKey(): string | undefined {
-  for (const key of [
-    process.env.MEMORY_CLEANUP_GROUP,
-    "OPERATIONS",
-    Object.keys(GROUPS).find((k) => (GROUPS[k]?.chatId ?? 0) !== 0),
-  ]) {
-    if (key && (GROUPS[key]?.chatId ?? 0) !== 0) return key;
-  }
-  return undefined;
-}
-
-const MEMORY_CLEANUP_GROUP_KEY = resolveMemoryCleanupGroupKey();
+} from "../../src/local/vectorStore.ts";
+import { initRegistry } from "../../src/models/index.ts";
 
 // ============================================================
 // TYPES
@@ -635,6 +607,84 @@ export async function purgeOldSummaries(
 }
 
 // ============================================================
+// DEMOTION PASS
+// ============================================================
+
+export interface DemotionResult {
+  candidates: number;
+  archived: number;
+  dryRun: boolean;
+}
+
+export function runDemotionPass(
+  config: { dryRun: boolean; maxArchives?: number }
+): DemotionResult {
+  const db = getDb();
+  const maxArchives = config.maxArchives ?? 100;
+  const now = Date.now();
+  const cutoffDate = new Date(now - 30 * 24 * 60 * 60 * 1000).toISOString();
+
+  const candidates = db
+    .prepare(
+      `SELECT id, importance, stability, created_at, last_used_at, access_count, type, category
+       FROM memory
+       WHERE status = 'active'
+         AND (category IS NULL OR category != 'constraint')
+         AND created_at < ?`
+    )
+    .all(cutoffDate) as Array<{
+    id: string;
+    importance: number | null;
+    stability: number | null;
+    created_at: string;
+    last_used_at: string | null;
+    access_count: number | null;
+    type: string;
+    category: string | null;
+  }>;
+
+  if (candidates.length === 0) {
+    return { candidates: 0, archived: 0, dryRun: config.dryRun };
+  }
+
+  const toArchive: string[] = [];
+
+  for (const m of candidates) {
+    if (toArchive.length >= maxArchives) break;
+    if (m.category === "constraint") continue;
+
+    const ageDays = (now - new Date(m.created_at).getTime()) / (1000 * 60 * 60 * 24);
+    const lastUsedDays = m.last_used_at
+      ? (now - new Date(m.last_used_at).getTime()) / (1000 * 60 * 60 * 24)
+      : ageDays;
+
+    const ageFactor = Math.exp(-ageDays / 90);
+    const accessBoost = Math.min(2, 1 + (m.access_count ?? 0) * 0.1);
+    const recencyFactor = Math.exp(-lastUsedDays / 60);
+    const effectiveScore =
+      (m.importance ?? 0.7) * (m.stability ?? 0.7) * ageFactor * accessBoost * recencyFactor;
+
+    if (effectiveScore < 0.05) {
+      toArchive.push(m.id);
+    }
+  }
+
+  if (!config.dryRun && toArchive.length > 0) {
+    const placeholders = toArchive.map(() => "?").join(",");
+    db.prepare(
+      `UPDATE memory SET status = 'archived', updated_at = datetime('now')
+       WHERE id IN (${placeholders})`
+    ).run(...toArchive);
+  }
+
+  return {
+    candidates: candidates.length,
+    archived: config.dryRun ? 0 : toArchive.length,
+    dryRun: config.dryRun,
+  };
+}
+
+// ============================================================
 // MAIN ORCHESTRATOR (exported for tests)
 // ============================================================
 
@@ -761,119 +811,16 @@ export async function runCleanup(
 }
 
 // ============================================================
-// DEMOTION PASS
+// HANDLER — RoutineContext interface
 // ============================================================
 
-export interface DemotionResult {
-  candidates: number;
-  archived: number;
-  dryRun: boolean;
-}
-
-export function runDemotionPass(
-  config: { dryRun: boolean; maxArchives?: number }
-): DemotionResult {
-  const db = getDb();
-  const maxArchives = config.maxArchives ?? 100;
-  const now = Date.now();
-  const cutoffDate = new Date(now - 30 * 24 * 60 * 60 * 1000).toISOString();
-
-  const candidates = db
-    .prepare(
-      `SELECT id, importance, stability, created_at, last_used_at, access_count, type, category
-       FROM memory
-       WHERE status = 'active'
-         AND (category IS NULL OR category != 'constraint')
-         AND created_at < ?`
-    )
-    .all(cutoffDate) as Array<{
-    id: string;
-    importance: number | null;
-    stability: number | null;
-    created_at: string;
-    last_used_at: string | null;
-    access_count: number | null;
-    type: string;
-    category: string | null;
-  }>;
-
-  if (candidates.length === 0) {
-    return { candidates: 0, archived: 0, dryRun: config.dryRun };
-  }
-
-  const toArchive: string[] = [];
-
-  for (const m of candidates) {
-    if (toArchive.length >= maxArchives) break;
-    if (m.category === "constraint") continue;
-
-    const ageDays = (now - new Date(m.created_at).getTime()) / (1000 * 60 * 60 * 24);
-    const lastUsedDays = m.last_used_at
-      ? (now - new Date(m.last_used_at).getTime()) / (1000 * 60 * 60 * 24)
-      : ageDays;
-
-    const ageFactor = Math.exp(-ageDays / 90);
-    const accessBoost = Math.min(2, 1 + (m.access_count ?? 0) * 0.1);
-    const recencyFactor = Math.exp(-lastUsedDays / 60);
-    const effectiveScore =
-      (m.importance ?? 0.7) * (m.stability ?? 0.7) * ageFactor * accessBoost * recencyFactor;
-
-    if (effectiveScore < 0.05) {
-      toArchive.push(m.id);
-    }
-  }
-
-  if (!config.dryRun && toArchive.length > 0) {
-    const placeholders = toArchive.map(() => "?").join(",");
-    db.prepare(
-      `UPDATE memory SET status = 'archived', updated_at = datetime('now')
-       WHERE id IN (${placeholders})`
-    ).run(...toArchive);
-  }
-
-  return {
-    candidates: candidates.length,
-    archived: config.dryRun ? 0 : toArchive.length,
-    dryRun: config.dryRun,
-  };
-}
-
-// ============================================================
-// ENTRY POINT
-// ============================================================
-
-async function main(): Promise<void> {
+export async function run(ctx: RoutineContext): Promise<void> {
   initRegistry();
   const result = await runCleanup();
 
-  if (result.duplicatesFound > 0 && MEMORY_CLEANUP_GROUP_KEY && validateGroup(MEMORY_CLEANUP_GROUP_KEY)) {
-    const message = buildTelegramMessage(result);
-    await sendAndRecord(GROUPS[MEMORY_CLEANUP_GROUP_KEY].chatId, message, {
-      routineName: "memory-cleanup",
-      agentId: "general-assistant",
-      topicId: GROUPS[MEMORY_CLEANUP_GROUP_KEY].topicId,
-    });
-    console.log(`Summary sent to ${MEMORY_CLEANUP_GROUP_KEY} group`);
-  } else if (result.duplicatesFound === 0) {
-    console.log("No duplicates found — no Telegram message sent");
+  if (result.duplicatesFound > 0) {
+    await ctx.send(buildTelegramMessage(result));
   } else {
-    console.warn("No group configured — skipping Telegram notification");
+    ctx.log("No duplicates found — no message sent");
   }
-
-  process.exit(0);
-}
-
-const _isEntry =
-  import.meta.main ||
-  process.env.pm_exec_path === import.meta.url?.replace("file://", "");
-
-if (_isEntry) {
-  main().catch(async (error) => {
-    const msg = error instanceof Error ? error.message : String(error);
-    console.error("Error running memory cleanup:", error);
-    try {
-      if (MEMORY_CLEANUP_GROUP_KEY) await sendToGroup(GROUPS[MEMORY_CLEANUP_GROUP_KEY].chatId, `⚠️ memory-cleanup failed:\n\n${msg}`);
-    } catch { /* ignore secondary failure */ }
-    process.exit(0);
-  });
 }

@@ -51,7 +51,7 @@ import {
   type MemoryItem,
   type DuplicateCluster,
   type CleanupConfig,
-} from "./memory-cleanup.ts";
+} from "./handlers/memory-cleanup.ts";
 import {
   savePendingCandidates,
   loadPendingCandidates,
