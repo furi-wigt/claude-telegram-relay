@@ -75,8 +75,10 @@ bun run relay:jobs
 ### 3b. Submit a test job
 
 ```bash
-bun run relay:jobs run --type routine --executor test-cli --title "CLI smoke test"
+bun run relay:jobs run "CLI smoke test" --type routine --executor test-cli
 ```
+
+> The title/prompt must come immediately after `run`, before any flags.
 
 **Expected:** Job is inserted. Re-run `bun run relay:jobs` and confirm a row appears with status `⏳ pending`.
 
@@ -176,7 +178,7 @@ Tap each button and verify:
 First submit a job via CLI (from another terminal):
 
 ```bash
-bun run relay:jobs run --type routine --executor test-tg --title "Telegram visibility test"
+bun run relay:jobs run "Telegram visibility test" --type routine --executor test-tg
 ```
 
 Then send `/jobs` to your bot again.
@@ -202,7 +204,7 @@ This tests the inline keyboard callback data. Create a job manually in `awaiting
 
 ```bash
 # Submit a job
-bun run relay:jobs run --type routine --executor approval-test --title "Approval Test"
+bun run relay:jobs run "Approval Test" --type routine --executor approval-test
 ```
 
 Get the job ID, then manually set it to awaiting-intervention using sqlite:
