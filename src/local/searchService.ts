@@ -195,9 +195,12 @@ export function bm25SearchDocuments(
   const limit = opts?.limit ?? 10;
 
   // Sanitize query for FTS5: remove special characters that break MATCH syntax.
-  // '?' is a FTS5 wildcard (0-or-1 token) — a trailing '?' in natural language
-  // questions (e.g. "What are my active goals?") causes a parse error.
-  const sanitized = query.replace(/['"(){}[\]*:^~!@#$%&?]/g, " ").trim();
+  // '?' is a FTS5 wildcard (0-or-1 token) — trailing '?' in natural language questions causes parse errors.
+  // ',' and '.' break FTS5 syntax (e.g. "e.g.", "LM Studio, Ollama").
+  const sanitized = query
+    .replace(/['"(){}[\]*:^~!@#$%&?,\.]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
   if (!sanitized) return [];
 
   try {
