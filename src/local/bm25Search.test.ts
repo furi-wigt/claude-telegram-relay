@@ -176,12 +176,42 @@ describe("FTS5 BM25 search", () => {
     // Regression: "What are my active goals?" → '?' is an FTS5 wildcard operator.
     // bm25SearchDocuments must strip it before passing to MATCH.
     const raw = "What are my active goals?";
-    const sanitized = raw.replace(/['"(){}[\]*:^~!@#$%&?]/g, " ").trim();
+    const sanitized = raw.replace(/['"(){}[\]*:^~!@#$%&?,\.]/g, " ").replace(/\s+/g, " ").trim();
 
-    expect(sanitized).toBe("What are my active goals");  // '?' removed, trim() cleans trailing space
+    expect(sanitized).toBe("What are my active goals");  // '?' removed
     expect(sanitized).not.toContain("?");
 
     // Sanitized form must not throw when used in a MATCH clause
+    const result = db.query(`
+      SELECT COUNT(*) as cnt FROM documents_fts
+      WHERE documents_fts MATCH ?
+    `).get(sanitized) as { cnt: number };
+
+    expect(result.cnt).toBeGreaterThanOrEqual(0);
+  });
+
+  test("comma in query does not throw FTS5 parse error", () => {
+    // Regression: "LM Studio, Ollama" → comma causes 'fts5: syntax error near ","'
+    const raw = "LM Studio, Ollama local model setup";
+    const sanitized = raw.replace(/['"(){}[\]*:^~!@#$%&?,\.]/g, " ").replace(/\s+/g, " ").trim();
+
+    expect(sanitized).not.toContain(",");
+
+    const result = db.query(`
+      SELECT COUNT(*) as cnt FROM documents_fts
+      WHERE documents_fts MATCH ?
+    `).get(sanitized) as { cnt: number };
+
+    expect(result.cnt).toBeGreaterThanOrEqual(0);
+  });
+
+  test("dot in query does not throw FTS5 parse error", () => {
+    // Regression: "e.g. security controls" → dot causes 'fts5: syntax error near "."'
+    const raw = "e.g. security controls for agent workflow";
+    const sanitized = raw.replace(/['"(){}[\]*:^~!@#$%&?,\.]/g, " ").replace(/\s+/g, " ").trim();
+
+    expect(sanitized).not.toContain(".");
+
     const result = db.query(`
       SELECT COUNT(*) as cnt FROM documents_fts
       WHERE documents_fts MATCH ?
