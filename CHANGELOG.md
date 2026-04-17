@@ -1,5 +1,28 @@
 # Changelog
 
+## [Unreleased] / 2026-04-18 — NLAH Harness Replacement
+
+### Added
+- **src/orchestration/harness.ts**: Thin NLAH event loop (~120 LOC) — loads contract, dispatches steps sequentially, writes flat JSON state file, posts results to CC thread.
+- **src/orchestration/contractLoader.ts**: Loads Markdown contracts from `~/.claude-relay/contracts/<intent>.md`, falls back to `default.md`. Parses YAML frontmatter + numbered step lists.
+- **~/.claude-relay/contracts/**: Five default contracts — `default.md`, `code-review.md`, `security-audit.md`, `architecture.md`, `research.md`. Add or edit contracts here to change routing without touching code.
+- **tests/orchestration/contractLoader.test.ts**: 6 unit tests covering load, fallback, step parsing.
+- **tests/orchestration/harness.test.ts**: 3 unit tests covering sequential dispatch, state persistence, CC thread posts.
+
+### Changed
+- **src/orchestration/commandCenter.ts**: Removed `InterviewStateMachine`, `executeBlackboardDispatch`; replaced with `runHarness`. Simplified `buildAgentPickerKeyboard` (no longer needs `userMessage`).
+- **src/orchestration/dispatchEngine.ts**: Removed `executeBlackboardDispatch`, `_executeBlackboardDispatchInner`, all blackboard session/record/topic functions. Kept `executeSingleDispatch`, dispatch runner registry, DB persistence helpers.
+- **src/orchestration/types.ts**: Removed all `Bb*` types. Kept `ClassificationResult`, `DispatchPlan`, `DispatchEvent`, `DispatchRow`, `DispatchTaskRow`, etc.
+- **src/orchestration/index.ts**: Exports updated — removed deleted modules, added `runHarness`, `loadContract`, `Contract`, `ContractStep`, `DispatchState`, `StepState`.
+- **src/orchestration/schema.ts**: Added `DROP TABLE IF EXISTS` for all `bb_*` tables on init. Kept `dispatches` + `dispatch_tasks` for audit trail.
+- **src/relay.ts**: Removed mesh notifier registration, `setInterviewStateMachine`, finalizer governance callback (~35 lines removed).
+- **src/jobs/executors/claudeSessionExecutor.ts**: Replaced `executeBlackboardDispatch` with direct `runner(agentChatId, null, prompt)` call. Simpler, no DB dependency.
+- **src/jobs/executors/compoundExecutor.ts**: Same simplification — sequential `runner` calls per task.
+
+### Removed
+- **13 orchestration source files deleted**: `blackboard.ts`, `blackboardSchema.ts`, `boardDispatch.ts`, `controlPlane.ts`, `meshPolicy.ts`, `agentComms.ts`, `reviewLoop.ts`, `finalizer.ts`, `interviewPipeline.ts`, `taskDecomposer.ts`, `responseAggregator.ts`, `tagParser.ts` (~2500 LOC removed)
+- **15 orchestration test files deleted** (all tested removed modules)
+
 ## [Unreleased] / 2026-04-12 — Documentation Consolidation
 
 ### Changed

@@ -6,9 +6,18 @@
  */
 
 import type { Database } from "bun:sqlite";
-import { initBlackboardSchema } from "./blackboardSchema.ts";
 
 export function initOrchestrationSchema(db: Database): void {
+  // Drop blackboard tables — removed in NLAH harness replacement (2026-04-18)
+  db.exec(`
+    DROP TABLE IF EXISTS bb_audit_log;
+    DROP TABLE IF EXISTS bb_status_log;
+    DROP TABLE IF EXISTS agent_messages;
+    DROP TABLE IF EXISTS bb_records;
+    DROP TABLE IF EXISTS agent_mesh;
+    DROP TABLE IF EXISTS bb_sessions;
+  `);
+
   db.exec(`
     CREATE TABLE IF NOT EXISTS dispatches (
       id TEXT PRIMARY KEY,
@@ -46,6 +55,4 @@ export function initOrchestrationSchema(db: Database): void {
     CREATE INDEX IF NOT EXISTS idx_dispatch_tasks_dispatch ON dispatch_tasks(dispatch_id);
     CREATE INDEX IF NOT EXISTS idx_dispatch_tasks_status ON dispatch_tasks(status);
   `);
-
-  initBlackboardSchema(db);
 }

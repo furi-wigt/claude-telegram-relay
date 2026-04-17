@@ -18,30 +18,20 @@ const mockClassification: ClassificationResult = {
   reasoning: "mock",
 };
 
-const mockDispatchResult = {
-  success: true,
-  response: "test response",
-  durationMs: 100,
-  sessionId: "sess-123",
-};
-
-// Mock the orchestration dispatch engine
 mock.module("../../orchestration/dispatchEngine.ts", () => ({
   getDispatchRunner: mock(() => mockRunner),
-  executeBlackboardDispatch: mock(async () => mockDispatchResult),
 }));
 
-// Mock the intent classifier
 mock.module("../../orchestration/intentClassifier.ts", () => ({
   classifyIntent: mock(async () => mockClassification),
 }));
 
-// Mock the database
-mock.module("../../local/db.ts", () => ({
-  getDb: mock(() => ({})),
+mock.module("../../agents/config.ts", () => ({
+  AGENTS: {
+    "operations-hub": { id: "operations-hub", name: "Operations Hub", chatId: -100999 },
+  },
 }));
 
-// Mock sendToGroup
 mock.module("../../utils/sendToGroup.ts", () => ({
   sendToGroup: mock(async () => {}),
 }));
@@ -112,9 +102,7 @@ describe("ClaudeSessionExecutor", () => {
   });
 
   test("returns failed when dispatch runner is null", async () => {
-    // Override getDispatchRunner to return null for this test
     const dispatchEngine = await import("../../orchestration/dispatchEngine.ts");
-    const original = (dispatchEngine.getDispatchRunner as ReturnType<typeof mock>).mock;
     (dispatchEngine.getDispatchRunner as ReturnType<typeof mock>).mockImplementation(() => null);
 
     const { ClaudeSessionExecutor } = await import("./claudeSessionExecutor.ts");
@@ -124,7 +112,6 @@ describe("ClaudeSessionExecutor", () => {
     expect(result.status).toBe("failed");
     expect(result.error).toContain("dispatch runner");
 
-    // Restore
     (dispatchEngine.getDispatchRunner as ReturnType<typeof mock>).mockImplementation(() => mockRunner);
   });
 
@@ -137,7 +124,7 @@ describe("ClaudeSessionExecutor", () => {
     expect(result.summary).toContain("test response");
   });
 
-  test("inserts checkpoint on success", async () => {
+  test("inserts checkpoint on success with job.id as sessionId", async () => {
     const { ClaudeSessionExecutor } = await import("./claudeSessionExecutor.ts");
     const store = makeStore();
     const executor = new ClaudeSessionExecutor(store as any);
@@ -145,7 +132,7 @@ describe("ClaudeSessionExecutor", () => {
     expect(store.insertCheckpoint).toHaveBeenCalledWith(
       "test-claude-job-id-123456",
       0,
-      { sessionId: "sess-123" }
+      { sessionId: "test-claude-job-id-123456" }
     );
   });
 
@@ -167,11 +154,8 @@ describe("ClaudeSessionExecutor", () => {
   });
 
   test("truncates summary to 500 chars for very long responses", async () => {
-    const dispatchEngine = await import("../../orchestration/dispatchEngine.ts");
     const longResponse = "x".repeat(1000);
-    (dispatchEngine.executeBlackboardDispatch as ReturnType<typeof mock>).mockImplementationOnce(
-      async () => ({ ...mockDispatchResult, response: longResponse })
-    );
+    mockRunner.mockImplementationOnce(async () => longResponse);
 
     const { ClaudeSessionExecutor } = await import("./claudeSessionExecutor.ts");
     const store = makeStore();
@@ -181,19 +165,14 @@ describe("ClaudeSessionExecutor", () => {
     expect((result.summary ?? "").length).toBe(500);
   });
 
-  test("returns failed when executeBlackboardDispatch throws", async () => {
-    const dispatchEngine = await import("../../orchestration/dispatchEngine.ts");
-    (dispatchEngine.executeBlackboardDispatch as ReturnType<typeof mock>).mockImplementationOnce(
-      async () => { throw new Error("dispatch exploded"); }
-    );
+  test("returns failed when runner throws", async () => {
+    mockRunner.mockImplementationOnce(async () => { throw new Error("runner exploded"); });
 
     const { ClaudeSessionExecutor } = await import("./claudeSessionExecutor.ts");
     const store = makeStore();
     const executor = new ClaudeSessionExecutor(store as any);
     const result = await executor.execute(makeJob());
     expect(result.status).toBe("failed");
-    expect(result.error).toContain("dispatch exploded");
+    expect(result.error).toContain("runner exploded");
   });
-
-  // TODO: integration test — end-to-end with real DB, running bot, and live runner
 });

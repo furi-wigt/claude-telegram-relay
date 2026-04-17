@@ -2,8 +2,8 @@
 import type { JobExecutor, ExecutorResult } from "./types.ts";
 import type { Job, JobCheckpoint } from "../types.ts";
 import type { JobStore } from "../jobStore.ts";
-import { getDispatchRunner, executeBlackboardDispatch } from "../../orchestration/dispatchEngine.ts";
-import { getDb } from "../../local/db.ts";
+import { getDispatchRunner } from "../../orchestration/dispatchEngine.ts";
+import { AGENTS } from "../../agents/config.ts";
 import type { DispatchPlan } from "../../orchestration/types.ts";
 
 export class CompoundExecutor implements JobExecutor {
@@ -48,15 +48,19 @@ export class CompoundExecutor implements JobExecutor {
     }
 
     try {
-      const db = getDb();
-      const result = await executeBlackboardDispatch(db, plan, runner);
-      this.store.insertCheckpoint(job.id, 0, { sessionId: result.sessionId ?? job.id });
+      // Execute tasks sequentially via dispatch runner
+      const responses: string[] = [];
+      for (const task of plan.tasks ?? []) {
+        const agent = AGENTS[task.agentId];
+        if (!agent?.chatId) continue;
+        const resp = await runner(agent.chatId, null, task.taskDescription);
+        if (resp) responses.push(resp);
+      }
 
-      return {
-        status: result.success ? "done" : "failed",
-        summary: result.response?.slice(0, 500),
-        error: result.success ? undefined : (result.response ?? "Dispatch failed"),
-      };
+      this.store.insertCheckpoint(job.id, 0, { sessionId: job.id });
+
+      const summary = responses.join("\n\n---\n\n").slice(0, 500);
+      return { status: "done", summary };
     } catch (err) {
       return {
         status: "failed",

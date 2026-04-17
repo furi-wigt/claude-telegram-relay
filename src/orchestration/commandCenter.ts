@@ -1,63 +1,45 @@
 /**
  * Command Center Handler
  *
- * Intercepts messages sent to the CC Telegram group and orchestrates them:
- * 1. Classify intent → determine target agent
- * 2. Show routing plan with confidence + reasoning
- * 3. Start 5s countdown with Pause/Edit/Cancel buttons
- * 4. On countdown complete → dispatch to target agent group
- * 5. Monitor response → post summary back to CC
+ * Intercepts messages in the CC Telegram group and routes them:
+ * 1. Classify intent (200ms MLX)
+ * 2. Low confidence → inline keyboard picker
+ * 3. High confidence → show plan + 5s countdown
+ * 4. On confirm → runHarness (contract-driven sequential dispatch)
  *
- * Entry point: orchestrateMessage() — called from relay.ts when chatId matches CC group.
+ * Entry point: orchestrateMessage() — called from relay.ts.
  */
 
 import type { Bot, Context } from "grammy";
 import { AGENTS, DEFAULT_AGENT, type AgentConfig } from "../agents/config.ts";
 import { classifyIntent, AUTO_DISPATCH_THRESHOLD } from "./intentClassifier.ts";
 import { chunkMessage } from "../utils/sendToGroup.ts";
+import { executeSingleDispatch } from "./dispatchEngine.ts";
 import { markdownToHtml, splitMarkdown } from "../utils/htmlFormat.ts";
-import { executeSingleDispatch, executeBlackboardDispatch, getDispatchRunner } from "./dispatchEngine.ts";
-import { getDb } from "../local/db.ts";
 import {
   buildPlanKeyboard,
   buildPausedKeyboard,
   startCountdown,
   handleInterrupt,
   parseOrchCallback,
-  clearCountdown,
   ORCH_CB_PREFIX,
 } from "./interruptProtocol.ts";
 import { resolveModelPrefix } from "../utils/modelPrefix.ts";
 import { InlineKeyboard } from "grammy";
-import type { ClassificationResult, DispatchPlan, SubTask } from "./types.ts";
-import type { InteractiveStateMachine } from "../interactive/stateMachine.ts";
+import { runHarness } from "./harness.ts";
+import type { ClassificationResult, DispatchPlan } from "./types.ts";
 
 const COUNTDOWN_SECONDS = 5;
 
-/** Confidence threshold below which compound interview is triggered */
-const INTERVIEW_CONFIDENCE_THRESHOLD = 0.8;
-
-/** Registered state machine instance — set by relay.ts at startup */
-let _stateMachine: InteractiveStateMachine | null = null;
-
-export function setInterviewStateMachine(sm: InteractiveStateMachine): void {
-  _stateMachine = sm;
-}
-
-export function getInterviewStateMachine(): InteractiveStateMachine | null {
-  return _stateMachine;
-}
+/** Confidence threshold below which inline picker is shown */
+const PICKER_CONFIDENCE_THRESHOLD = 0.8;
 
 /**
- * Stores the full user message for pending agent-picker dispatches keyed by dispatchId.
- * Prevents truncation when extracting the query from the plan display text (which is capped at 100 chars).
- * Entries are deleted after dispatch or cancellation; unresolved pickers are cleared on restart.
+ * Stores the full user message for pending agent-picker dispatches.
+ * Cleared after dispatch or cancellation.
  */
 const pendingPickerMessages = new Map<string, string>();
 
-/**
- * Check if a chat ID belongs to the Command Center agent.
- */
 export function isCommandCenter(chatId: number): boolean {
   const ccAgent = AGENTS["command-center"];
   return ccAgent?.chatId === chatId && chatId !== 0 && chatId != null;
@@ -65,9 +47,7 @@ export function isCommandCenter(chatId: number): boolean {
 
 /**
  * Main orchestration entry point.
- *
  * Called from relay.ts when a text message arrives in the CC group.
- * Replaces the normal processTextMessage() flow for CC messages.
  */
 export async function orchestrateMessage(
   bot: Bot,
@@ -76,65 +56,42 @@ export async function orchestrateMessage(
   chatId: number,
   threadId: number | null,
 ): Promise<void> {
-  // Strip model prefix before classification so [O]/[H]/[L] doesn't confuse intent routing.
-  // The FULL original text (including prefix) flows to the dispatch runner so the target
-  // agent's processTextMessage() can call resolveModelPrefix() and honour the choice.
   const { label: modelLabel, text: classifyText } = resolveModelPrefix(text);
-  const effectiveClassifyText = classifyText.trim() || text;
+  const effectiveText = classifyText.trim() || text;
 
-  // 1. Classify intent (using prefix-stripped text)
-  const classification = await classifyIntent(effectiveClassifyText);
+  const classification = await classifyIntent(effectiveText);
   const agent = AGENTS[classification.primaryAgent];
 
   if (!agent) {
-    await ctx.reply(`\u26A0\uFE0F Could not determine target agent for: "${text}"`);
+    await ctx.reply(`⚠️ Could not determine target agent for: "${text}"`);
     return;
   }
 
-  // 2. Interview branch — compound or ambiguous tasks get clarifying questions
-  const shouldInterview =
-    classification.isCompound ||
-    (classification.confidence < INTERVIEW_CONFIDENCE_THRESHOLD && classification.primaryAgent !== DEFAULT_AGENT.id);
-
-  if (shouldInterview && _stateMachine) {
-    await _stateMachine.startOrchestrationInterview(chatId, threadId, text, classification);
-    return;
-  }
-
-  // 3. Show routing plan
   const dispatchId = crypto.randomUUID();
   const planText = formatPlanMessage(classification, agent, text, modelLabel);
 
-  if (classification.confidence < AUTO_DISPATCH_THRESHOLD && classification.primaryAgent !== DEFAULT_AGENT.id) {
-    // Low confidence on a non-default agent → show inline keyboard picker so user can choose.
-    // Skip picker when agent is already the default (ops-hub): low confidence on ops-hub just means
-    // "no domain match = general question", and ops-hub is always the correct fallback.
+  // Low confidence on a non-default agent → show inline picker
+  if (classification.confidence < PICKER_CONFIDENCE_THRESHOLD && classification.primaryAgent !== DEFAULT_AGENT.id) {
     pendingPickerMessages.set(dispatchId, text);
-    const keyboard = buildAgentPickerKeyboard(dispatchId, text);
+    const keyboard = buildAgentPickerKeyboard(dispatchId);
     await ctx.reply(
-      `${planText}\n\n\u26A0\uFE0F Low confidence (${(classification.confidence * 100).toFixed(0)}%) \u2014 please pick the right agent:`,
+      `${planText}\n\n⚠️ Low confidence (${(classification.confidence * 100).toFixed(0)}%) — please pick the right agent:`,
       { reply_markup: keyboard }
     );
     return;
   }
 
-  // 3. Post plan with countdown keyboard
+  // Show plan with countdown
   const planMsg = await ctx.reply(
-    `${planText}\n\n\u23F3 Auto-dispatching in ${COUNTDOWN_SECONDS}s...`,
+    `${planText}\n\n⏳ Auto-dispatching in ${COUNTDOWN_SECONDS}s...`,
     { reply_markup: buildPlanKeyboard(dispatchId, COUNTDOWN_SECONDS) }
   );
 
-  // 4. Start countdown
   const plan: DispatchPlan = {
     dispatchId,
     userMessage: text,
     classification,
-    tasks: [{
-      seq: 1,
-      agentId: classification.primaryAgent,
-      topicHint: classification.topicHint,
-      taskDescription: text,
-    }],
+    tasks: [{ seq: 1, agentId: classification.primaryAgent, topicHint: classification.topicHint, taskDescription: text }],
     planMessageId: planMsg.message_id,
   };
 
@@ -145,17 +102,15 @@ export async function orchestrateMessage(
     planMsg.message_id,
     COUNTDOWN_SECONDS,
     (secondsLeft) => {
-      // Update the plan message with new countdown
       bot.api.editMessageText(
         chatId,
         planMsg.message_id,
-        `${planText}\n\n\u23F3 Auto-dispatching in ${secondsLeft}s...`,
+        `${planText}\n\n⏳ Auto-dispatching in ${secondsLeft}s...`,
         { reply_markup: buildPlanKeyboard(dispatchId, secondsLeft) }
-      ).catch(() => {}); // ignore "message not modified"
+      ).catch(() => {});
     },
   );
 
-  // 5. Handle countdown outcome
   switch (outcome) {
     case "dispatched":
       await executeAndReport(bot, plan, chatId, threadId, planMsg.message_id, planText);
@@ -165,7 +120,7 @@ export async function orchestrateMessage(
       await bot.api.editMessageText(
         chatId,
         planMsg.message_id,
-        `${planText}\n\n\u23F8\uFE0F Paused. Type a new instruction or tap Resume.`,
+        `${planText}\n\n⏸️ Paused. Type a new instruction or tap Resume.`,
         { reply_markup: buildPausedKeyboard(dispatchId) }
       ).catch(() => {});
       break;
@@ -174,7 +129,7 @@ export async function orchestrateMessage(
       await bot.api.editMessageText(
         chatId,
         planMsg.message_id,
-        `${planText}\n\n\u270F\uFE0F Edit mode. Send your updated instruction.`,
+        `${planText}\n\n✏️ Edit mode. Send your updated instruction.`,
       ).catch(() => {});
       break;
 
@@ -182,14 +137,14 @@ export async function orchestrateMessage(
       await bot.api.editMessageText(
         chatId,
         planMsg.message_id,
-        `${planText}\n\n\u274C Dispatch cancelled.`,
+        `${planText}\n\n❌ Dispatch cancelled.`,
       ).catch(() => {});
       break;
   }
 }
 
 /**
- * Execute dispatch and post results back to CC.
+ * Update plan message to "dispatching" and hand off to the NLAH harness.
  */
 async function executeAndReport(
   bot: Bot,
@@ -199,64 +154,33 @@ async function executeAndReport(
   planMessageId: number,
   planText: string,
 ): Promise<void> {
-  const agent = AGENTS[plan.classification.primaryAgent];
-  const agentName = agent?.name ?? plan.classification.primaryAgent;
+  const agentName = AGENTS[plan.classification.primaryAgent]?.name ?? plan.classification.primaryAgent;
 
-  // Update plan message to show "dispatching"
   await bot.api.editMessageText(
     ccChatId,
     planMessageId,
-    `${planText}\n\n\u{1F680} Dispatching to ${agentName}...`,
+    `${planText}\n\n🚀 Dispatching to ${agentName}...`,
   ).catch(() => {});
 
-  const runner = getDispatchRunner();
-  if (!runner) {
-    await bot.api.sendMessage(ccChatId, "⚠️ Dispatch runner not registered — cannot execute", {
-      message_thread_id: ccThreadId ?? undefined,
-    });
-    return;
-  }
-  const db = getDb();
-  const result = await executeBlackboardDispatch(db, plan, runner);
+  await runHarness(bot, plan, ccChatId, ccThreadId);
 
-  // Post final result to CC — convert markdown → HTML, chunk to stay within Telegram's 4096-char limit
-  const durationSec = (result.durationMs / 1000).toFixed(1);
-  const statusIcon = result.success ? "\u2705" : "\u274C";
-  const header = `${statusIcon} <b>${agentName}</b> \u2014 ${result.success ? "completed" : "failed"} (${durationSec}s)`;
-  const mdChunks = splitMarkdown(result.response, 3800);
-  for (let i = 0; i < mdChunks.length; i++) {
-    const html = i === 0 ? `${header}\n\n${markdownToHtml(mdChunks[i])}` : markdownToHtml(mdChunks[i]);
-    await bot.api.sendMessage(ccChatId, html, {
-      parse_mode: "HTML",
-      message_thread_id: ccThreadId ?? undefined,
-    }).catch(async () => {
-      // Telegram rejected HTML — fall back to plain text
-      const plain = i === 0 ? `${statusIcon} ${agentName} — ${result.success ? "completed" : "failed"} (${durationSec}s)\n\n${mdChunks[i]}` : mdChunks[i];
-      for (const chunk of chunkMessage(plain)) {
-        await bot.api.sendMessage(ccChatId, chunk, {
-          message_thread_id: ccThreadId ?? undefined,
-        }).catch(() => {});
-      }
-    });
-  }
-
-  // Update plan message with final status
   await bot.api.editMessageText(
     ccChatId,
     planMessageId,
-    `${planText}\n\n${statusIcon} Dispatch complete (${durationSec}s)`,
+    `${planText}\n\n✅ Dispatch complete`,
   ).catch(() => {});
 }
 
 /**
- * Register the callback query handler for orchestration inline buttons.
+ * Register callback query handlers for orchestration inline buttons.
  * Called once at bot startup.
  */
 export function registerOrchestrationCallbacks(bot: Bot): void {
+  // Countdown interrupt buttons (Pause / Edit / Cancel / Resume)
   bot.on("callback_query:data", async (ctx, next) => {
     const data = ctx.callbackQuery.data;
     const parsed = parseOrchCallback(data);
-    if (!parsed) return next(); // not an orchestration callback — pass to next handler
+    if (!parsed) return next();
 
     const { action, dispatchId } = parsed;
     const result = handleInterrupt(dispatchId, action);
@@ -267,23 +191,17 @@ export function registerOrchestrationCallbacks(bot: Bot): void {
     }
 
     switch (result) {
-      case "paused":
-        await ctx.answerCallbackQuery({ text: "\u23F8\uFE0F Paused" });
-        break;
-      case "resumed":
-        await ctx.answerCallbackQuery({ text: "\u25B6\uFE0F Resumed" });
-        break;
-      case "edit":
-        await ctx.answerCallbackQuery({ text: "\u270F\uFE0F Send your updated instruction" });
-        break;
+      case "paused":    await ctx.answerCallbackQuery({ text: "⏸️ Paused" }); break;
+      case "resumed":   await ctx.answerCallbackQuery({ text: "▶️ Resumed" }); break;
+      case "edit":      await ctx.answerCallbackQuery({ text: "✏️ Send your updated instruction" }); break;
       case "cancelled":
-        await ctx.answerCallbackQuery({ text: "\u274C Cancelled" });
+        await ctx.answerCallbackQuery({ text: "❌ Cancelled" });
         pendingPickerMessages.delete(dispatchId);
         break;
     }
   });
 
-  // Handle agent picker callbacks (low-confidence fallback)
+  // Agent picker callbacks (low-confidence fallback)
   bot.on("callback_query:data", async (ctx, next) => {
     const data = ctx.callbackQuery.data;
     if (!data.startsWith("op:")) return next();
@@ -300,14 +218,11 @@ export function registerOrchestrationCallbacks(bot: Bot): void {
 
     await ctx.answerCallbackQuery({ text: `Routing to ${agent.name}...` });
 
-    // Retrieve the full user message stored when the picker was shown.
-    // Falls back to plan-text extraction only if the entry was evicted (e.g. after a restart).
     const storedMessage = pendingPickerMessages.get(dispatchId);
     const msgText = ctx.callbackQuery.message?.text;
     const userMessage = storedMessage ?? extractUserMessageFromPlan(msgText ?? "");
     pendingPickerMessages.delete(dispatchId);
 
-    // Remove the keyboard
     if (ctx.callbackQuery.message) {
       await bot.api.editMessageReplyMarkup(
         ctx.callbackQuery.message.chat.id,
@@ -327,12 +242,7 @@ export function registerOrchestrationCallbacks(bot: Bot): void {
         confidence: 1.0,
         reasoning: `User selected ${agent.name}`,
       },
-      tasks: [{
-        seq: 1,
-        agentId,
-        topicHint: null,
-        taskDescription: userMessage,
-      }],
+      tasks: [{ seq: 1, agentId, topicHint: null, taskDescription: userMessage }],
     };
 
     const chatId = ctx.callbackQuery.message?.chat.id;
@@ -341,17 +251,17 @@ export function registerOrchestrationCallbacks(bot: Bot): void {
 
     const result = await executeSingleDispatch(bot, plan, chatId, threadId);
 
-    const durationSec = (result.durationMs / 1000).toFixed(1);
-    const icon = result.success ? "\u2705" : "\u274C";
-    const pickerHeader = `${icon} <b>${agent.name}</b> \u2014 ${result.success ? "completed" : "failed"} (${durationSec}s)`;
-    const pickerMdChunks = splitMarkdown(result.response, 3800);
-    for (let i = 0; i < pickerMdChunks.length; i++) {
-      const html = i === 0 ? `${pickerHeader}\n\n${markdownToHtml(pickerMdChunks[i])}` : markdownToHtml(pickerMdChunks[i]);
+    const sec = (result.durationMs / 1000).toFixed(1);
+    const icon = result.success ? "✅" : "❌";
+    const header = `${icon} <b>${agent.name}</b> — ${result.success ? "completed" : "failed"} (${sec}s)`;
+    const chunks = splitMarkdown(result.response, 3800);
+    for (let i = 0; i < chunks.length; i++) {
+      const html = i === 0 ? `${header}\n\n${markdownToHtml(chunks[i])}` : markdownToHtml(chunks[i]);
       await bot.api.sendMessage(chatId, html, {
         parse_mode: "HTML",
         message_thread_id: threadId ?? undefined,
       }).catch(async () => {
-        const plain = i === 0 ? `${icon} ${agent.name} — ${result.success ? "completed" : "failed"} (${durationSec}s)\n\n${pickerMdChunks[i]}` : pickerMdChunks[i];
+        const plain = i === 0 ? `${icon} ${agent.name} — ${result.success ? "completed" : "failed"} (${sec}s)\n\n${chunks[i]}` : chunks[i];
         for (const chunk of chunkMessage(plain)) {
           await bot.api.sendMessage(chatId, chunk, { message_thread_id: threadId ?? undefined }).catch(() => {});
         }
@@ -360,7 +270,7 @@ export function registerOrchestrationCallbacks(bot: Bot): void {
   });
 }
 
-// ── Formatting ──────────────────────────────────────────────────────────────
+// ── Formatting ────────────────────────────────────────────────────────────────
 
 function formatPlanMessage(
   classification: ClassificationResult,
@@ -369,11 +279,9 @@ function formatPlanMessage(
   modelLabel?: string,
 ): string {
   const confidence = (classification.confidence * 100).toFixed(0);
-  const modelLine = modelLabel && modelLabel !== "Sonnet"
-    ? `Model: \u{1F9E0} ${modelLabel}`
-    : null;
+  const modelLine = modelLabel && modelLabel !== "Sonnet" ? `Model: 🧠 ${modelLabel}` : null;
   return [
-    `\u{1F3AF} DISPATCH PLAN`,
+    `🎯 DISPATCH PLAN`,
     ``,
     `Query: "${truncate(userMessage, 100)}"`,
     ...(modelLine ? [modelLine] : []),
@@ -381,29 +289,23 @@ function formatPlanMessage(
     `Target: ${agent.name} (${confidence}% confidence)`,
     `Reasoning: ${classification.reasoning}`,
     ``,
-    `1. \u{1F4E4} ${agent.shortName ?? agent.name} \u2192 "${truncate(classification.reasoning, 60)}"`,
+    `1. 📤 ${agent.shortName ?? agent.name} → "${truncate(classification.reasoning, 60)}"`,
   ].join("\n");
 }
 
-function buildAgentPickerKeyboard(dispatchId: string, userMessage: string): InlineKeyboard {
+function buildAgentPickerKeyboard(dispatchId: string): InlineKeyboard {
   const keyboard = new InlineKeyboard();
   const agents = Object.values(AGENTS).filter((a) => a.id !== "command-center");
-
-  // 2 agents per row
   for (let i = 0; i < agents.length; i++) {
-    const agent = agents[i];
-    keyboard.text(agent.shortName ?? agent.name, `op:${dispatchId}:${agent.id}`);
+    keyboard.text(agents[i].shortName ?? agents[i].name, `op:${dispatchId}:${agents[i].id}`);
     if (i % 2 === 1 || i === agents.length - 1) keyboard.row();
   }
-
-  keyboard.text("\u274C Cancel", `${ORCH_CB_PREFIX}cancel:${dispatchId}`);
+  keyboard.text("❌ Cancel", `${ORCH_CB_PREFIX}cancel:${dispatchId}`);
   return keyboard;
 }
 
 function extractUserMessageFromPlan(planText: string): string {
-  // Extract original user query from the "Query: ..." line embedded in the plan
-  const lines = planText.split("\n");
-  for (const line of lines) {
+  for (const line of planText.split("\n")) {
     const match = line.match(/^Query: "(.+)"$/);
     if (match) return match[1].replace(/\.\.\.$/g, "");
   }
