@@ -873,15 +873,22 @@ async function callClaude(
     onQuestion?: (event: AskUserQuestionEvent) => Promise<Record<string, string>>;
     /** Raw tool_use event callback — used to detect worktree/branch changes. */
     onToolUse?: (toolName: string, input: Record<string, unknown>) => void;
+    /**
+     * Pre-created AbortController to reuse instead of creating a new one.
+     * Set by processTextMessage so the controller is registered in activeStreams
+     * before indicator.start() fires — closing the cancel race window.
+     */
+    externalController?: AbortController;
   }
 ): Promise<string> {
   console.log(`Calling Claude: ${prompt.substring(0, 50)}...`);
 
-  const controller = new AbortController();
+  const controller = options?.externalController ?? new AbortController();
   const key = options?.chatId != null
     ? streamKey(options.chatId, options.threadId ?? null)
     : null;
-  if (key) activeStreams.set(key, { controller });
+  // Only register if not already pre-registered by the caller (externalController path)
+  if (key && !activeStreams.has(key)) activeStreams.set(key, { controller });
 
   try {
     const chatId = options?.chatId;
@@ -930,6 +937,10 @@ async function callClaude(
     });
   } catch (error) {
     console.error("Claude error:", error);
+
+    // User cancelled before subprocess spawned — signal was already aborted when
+    // claudeStream was called. Return empty string; no fallback needed.
+    if (error instanceof Error && error.name === "AbortError") return "";
 
     // Don't fall back to MLX for idle timeouts — stalled streams won't recover.
     const isIdleTimeout = error instanceof Error && error.message.includes("idle timeout");
@@ -1909,6 +1920,11 @@ async function processTextMessage(
     // SQLite queries, MLX embeds, and Qdrant searches run in the background.
     // Previously placed after all pre-processing, causing a 600ms–1.4s blank window.
     const cancelKey = streamKey(chatId, threadId);
+    // Pre-register AbortController BEFORE indicator.start() to close the race window
+    // where the Cancel button is visible but activeStreams has no entry yet.
+    // handleCancelCallback will find this entry immediately even during context fetches.
+    const cancelController = new AbortController();
+    activeStreams.set(cancelKey, { controller: cancelController });
     const indicator = new ProgressIndicator();
     indicator.start(chatId, bot, threadId, {
       cancelKey,
@@ -2146,6 +2162,7 @@ async function processTextMessage(
         cwd: session.activeCwd,
         onQuestion,
         onToolUse: makeWorktreeTracker(session),
+        externalController: cancelController,
       });
       await indicator.finish(true);
     } catch (claudeErr) {
@@ -2191,6 +2208,7 @@ async function processTextMessage(
             cwd: session.cwd ?? PROJECT_DIR ?? undefined,
             onQuestion,
             onToolUse: makeWorktreeTracker(session),
+            externalController: cancelController,
           });
           await indicator.finish(true);
           staleCorrected = true;  // retry succeeded — suppress false resumeFailed detection below
@@ -2223,6 +2241,11 @@ async function processTextMessage(
     const callDurationMs = Date.now() - callStart;
     trace({ event: "claude_complete", traceId, chatId, responseLength: rawResponse.length, durationMs: callDurationMs, fallback: rawResponse.startsWith("[via "), error: null });
     console.log(`Claude raw response length: ${rawResponse.length} (${callDurationMs}ms)`);
+
+    // If the user cancelled before any output was generated, skip sending a response.
+    // handleCancelCallback already sent the cancellation notification.
+    // (If there IS partial output, fall through and send it — intended UX.)
+    if (cancelController.signal.aborted && !rawResponse) return;
 
     const { nextStep, response: rawWithoutNext } = extractNextStep(rawResponse);
     // Strip tags synchronously so the user sees clean text immediately.
