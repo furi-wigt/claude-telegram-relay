@@ -19,9 +19,18 @@
 - **src/jobs/executors/claudeSessionExecutor.ts**: Replaced `executeBlackboardDispatch` with direct `runner(agentChatId, null, prompt)` call. Simpler, no DB dependency.
 - **src/jobs/executors/compoundExecutor.ts**: Same simplification — sequential `runner` calls per task.
 
+### Added (docs)
+- **docs/nlah-harness.md**: New reference — contract format, built-in contracts, dispatch state schema, customisation guide, key file map.
+
+### Changed (docs)
+- **CLAUDE.md**: Updated architecture diagram (Orchestration subgraph), Component Map (+5 NLAH entries), Data Directory (contracts/ and harness/state/), Agent Directory CC description, Deep Dive table.
+- **docs/features-job-queue.md**: Updated `claude-session` and `compound` executor descriptions — removed stale "blackboard dispatch" references; clarified CompoundExecutor as sequential runner.
+- **docs/superpowers/specs/2026-04-12-job-queue-design.md**: Added superseded note — blackboard/roundtrip references were aspirational; v1 is a thin sequential runner.
+
 ### Removed
 - **13 orchestration source files deleted**: `blackboard.ts`, `blackboardSchema.ts`, `boardDispatch.ts`, `controlPlane.ts`, `meshPolicy.ts`, `agentComms.ts`, `reviewLoop.ts`, `finalizer.ts`, `interviewPipeline.ts`, `taskDecomposer.ts`, `responseAggregator.ts`, `tagParser.ts` (~2500 LOC removed)
 - **15 orchestration test files deleted** (all tested removed modules)
+- **SQLite**: Dropped `bb_mesh_links`, `dispatches`, `dispatch_tasks` tables (2026-04-18)
 
 ## [Unreleased] / 2026-04-12 — Documentation Consolidation
 

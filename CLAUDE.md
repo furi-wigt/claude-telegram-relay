@@ -629,6 +629,7 @@ For deeper diagnostics, see [docs/observability.md](docs/observability.md).
 
 | Document | What it covers |
 |----------|----------------|
+| [docs/nlah-harness.md](docs/nlah-harness.md) | NLAH harness: contract format, built-in contracts, dispatch state, customisation guide |
 | [docs/memory-system.md](docs/memory-system.md) | Memory architecture: 3 layers, intent tags, dedup, prompt assembly, self-learning pipeline |
 | [docs/routines-system.md](docs/routines-system.md) | Routines architecture: config-driven scheduling, handler API, creating routines |
 | [docs/features-job-queue.md](docs/features-job-queue.md) | Job queue: executors, CLI, webhook API, interventions, auto-approve |
