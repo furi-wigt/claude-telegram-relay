@@ -25,6 +25,7 @@ This project turns Telegram into a personal AI assistant powered by Claude Code 
 
 **What you get:**
 - 6 specialised AI agents, each in their own Telegram supergroup (Command Center, Cloud, Security, Engineering, Strategy, Operations)
+- **NLAH command routing**: Command Center classifies intent, loads a Markdown contract, confirms with an inline button, then dispatches — single-agent or multi-step compound tasks
 - Long-term memory: facts, goals, preferences stored locally with semantic search (SQLite + Qdrant + MLX bge-m3)
 - Scheduled routines: morning briefing, evening summary, proactive check-ins, health watchdog — all config-driven via `config/routines.config.json`
 - Document RAG: upload PDFs, ask questions, get answers grounded in your documents
@@ -60,6 +61,12 @@ graph TB
         Jobs[Job Queue]
     end
 
+    subgraph Orchestration["Command Center Orchestration"]
+        Classify[Intent Classifier]
+        Contract[Contract Loader\n~/.claude-relay/contracts/]
+        Harness[NLAH Harness\nsequential dispatch]
+    end
+
     subgraph AI["AI Layer"]
         Claude[Claude Code CLI]
         Registry[ModelRegistry\nmodels.json cascade]
@@ -68,6 +75,7 @@ graph TB
     subgraph Storage["Local Storage — ~/.claude-relay/"]
         SQLite[(SQLite)]
         Qdrant[(Qdrant)]
+        State[harness/state/\nflat JSON per dispatch]
     end
 
     subgraph PM2["PM2 — 4 Always-On Services"]
@@ -78,6 +86,8 @@ graph TB
     end
 
     TG --> Router --> Queue --> SessionMgr --> Claude
+    G1 --> Classify --> Contract --> Harness --> Queue
+    Harness --> State
     Claude --> MemMgr --> SQLite & Qdrant
     Registry -.->|fallback| Claude
     S4 -->|webhook| Jobs
@@ -94,8 +104,11 @@ All user data lives outside the project directory in `~/.claude-relay/`:
   agents.json       # Agent chat IDs and topic IDs
   models.json       # ModelRegistry provider definitions + cascade order
   data/
-    local.sqlite    # Messages, memory, goals, documents (SQLite)
+    local.sqlite    # Messages, memory, conversation summaries, documents (SQLite)
   sessions/         # Per-chat Claude session state files
+  contracts/        # NLAH task contracts: <intent>.md (architecture, code-review, security-audit, research, default)
+  harness/
+    state/          # Flat JSON dispatch state per run: {dispatchId}.json
   logs/             # PM2 service logs
   prompts/          # Customizable agent prompts (copied from repo defaults)
   research/         # Artifact outputs (reports, docs, security audits)
@@ -129,6 +142,11 @@ All user data lives outside the project directory in `~/.claude-relay/`:
 | Document Processor | `src/documents/documentProcessor.ts` | Ingest PDFs/XLSX/CSV: extract, chunk, embed, store |
 | Job Queue | `src/jobs/jobQueue.ts` | Persistent background job system with priority dispatch |
 | Model Registry | `src/model-registry/ModelRegistry.ts` | Cascade logic, health checks, provider selection |
+| **Command Center** | `src/orchestration/commandCenter.ts` | CC group handler: intent confirm, inline keyboard, audit thread |
+| **Intent Classifier** | `src/orchestration/intentClassifier.ts` | Classify free-text intent + confidence via local model |
+| **Contract Loader** | `src/orchestration/contractLoader.ts` | Load `~/.claude-relay/contracts/<intent>.md`, parse steps |
+| **NLAH Harness** | `src/orchestration/harness.ts` | Execute contract steps sequentially; write state JSON; post to CC thread |
+| **Dispatch Engine** | `src/orchestration/dispatchEngine.ts` | Send task prompt to agent group, stream and collect response |
 
 ### Session Lifecycle
 
@@ -157,7 +175,7 @@ The relay supports 6 specialised AI agents, each in its own Telegram supergroup 
 
 | Group Name | Agent ID | Specialty |
 |---|---|---|
-| Jarvis Command Center | `command-center` | Orchestration, task routing, dispatch audit log |
+| Jarvis Command Center | `command-center` | NLAH intent routing, contract-driven dispatch, CC thread audit log |
 | Cloud & Infrastructure | `cloud-architect` | AWS, CDK, GCC 2.0, cost optimisation, Well-Architected |
 | Security & Compliance | `security-compliance` | IM8 v4, PDPA, security audits, threat modelling, runbooks |
 | Engineering & Quality | `engineering` | Code review, TDD, refactoring, implementation |
@@ -619,6 +637,7 @@ For deeper diagnostics, see [docs/observability.md](docs/observability.md).
 | [docs/weather.md](docs/weather.md) | Weather integration: Singapore NEA + Open-Meteo, API reference |
 | [routines/CLAUDE.md](routines/CLAUDE.md) | Developer guide for writing routine handlers |
 | [integrations/CLAUDE.md](integrations/CLAUDE.md) | Claude CLI integration API: runPrompt, claudeText, claudeStream |
+| `~/.claude-relay/contracts/` | NLAH contracts: edit `<intent>.md` to change routing without touching code |
 
 ---
 
