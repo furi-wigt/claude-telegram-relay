@@ -1,6 +1,6 @@
 /**
  * @routine log-cleanup
- * @description Delete PM2 logs from ~/.claude-relay/logs/ and observability JSONL logs older than the retention threshold
+ * @description Delete PM2 logs, observability JSONL logs, and NLAH harness state JSON files older than the retention threshold
  * @schedule 0 6 * * 1  (Monday 6:00 AM)
  * @target no Telegram message unless files were deleted
  *
@@ -11,6 +11,7 @@
 import type { RoutineContext } from "../../src/jobs/executors/routineContext.ts";
 import { readdir, stat, unlink } from "fs/promises";
 import { join, dirname } from "path";
+import { homedir } from "os";
 import { getObservabilityConfig, getPm2LogsDir } from "../../config/observability.ts";
 
 // ============================================================
@@ -21,6 +22,7 @@ export interface CleanupConfig {
   retainDays: number;
   pm2LogDir: string;
   obsLogDir: string;
+  harnessStateDir: string;
   dryRun: boolean;
 }
 
@@ -32,8 +34,10 @@ export interface FileEntry {
 export interface CleanupResult {
   pm2Deleted: number;
   obsDeleted: number;
+  harnessDeleted: number;
   pm2Total: number;
   obsTotal: number;
+  harnessTotal: number;
   dryRun: boolean;
   retainDays: number;
   errors: string[];
@@ -46,11 +50,17 @@ export interface CleanupResult {
 export function parseConfig(projectRoot: string): CleanupConfig {
   const retainDays = Number(process.env.LOG_CLEANUP_RETAIN_DAYS) || 7;
   const obsConfig = getObservabilityConfig();
+  const relayDir =
+    process.env.RELAY_USER_DIR ||
+    process.env.RELAY_DIR ||
+    join(homedir(), ".claude-relay");
 
   return {
     retainDays,
     pm2LogDir: process.env.LOG_CLEANUP_PM2_DIR || getPm2LogsDir(projectRoot),
     obsLogDir: process.env.LOG_CLEANUP_OBS_DIR || obsConfig.logDir,
+    harnessStateDir:
+      process.env.LOG_CLEANUP_HARNESS_DIR || join(relayDir, "harness", "state"),
     dryRun: process.env.DRY_RUN === "true",
   };
 }
@@ -162,6 +172,8 @@ export function buildReport(result: CleanupResult): string {
   lines.push(`PM2 logs deleted:    ${result.pm2Deleted}`);
   lines.push(`Obs logs scanned:    ${result.obsTotal}`);
   lines.push(`Obs logs deleted:    ${result.obsDeleted}`);
+  lines.push(`Harness state scanned: ${result.harnessTotal}`);
+  lines.push(`Harness state deleted: ${result.harnessDeleted}`);
 
   if (result.errors.length > 0) {
     lines.push("");
@@ -176,7 +188,7 @@ export function buildReport(result: CleanupResult): string {
 
 export function buildTelegramMessage(result: CleanupResult): string {
   const mode = result.dryRun ? " (dry run)" : "";
-  const totalDeleted = result.pm2Deleted + result.obsDeleted;
+  const totalDeleted = result.pm2Deleted + result.obsDeleted + result.harnessDeleted;
   const lines: string[] = [];
 
   if (totalDeleted === 0) {
@@ -188,11 +200,12 @@ export function buildTelegramMessage(result: CleanupResult): string {
   lines.push(`Log Cleanup Complete${mode}`);
   lines.push("");
   lines.push(`Retention: ${result.retainDays} days`);
-  lines.push(`PM2 logs:  ${result.pm2Deleted} deleted of ${result.pm2Total} scanned`);
-  lines.push(`Obs logs:  ${result.obsDeleted} deleted of ${result.obsTotal} scanned`);
+  lines.push(`PM2 logs:      ${result.pm2Deleted} deleted of ${result.pm2Total} scanned`);
+  lines.push(`Obs logs:      ${result.obsDeleted} deleted of ${result.obsTotal} scanned`);
+  lines.push(`Harness state: ${result.harnessDeleted} deleted of ${result.harnessTotal} scanned`);
 
   if (result.errors.length > 0) {
-    lines.push(`Errors:    ${result.errors.length}`);
+    lines.push(`Errors:        ${result.errors.length}`);
   }
 
   return lines.join("\n");
@@ -214,8 +227,9 @@ export async function runLogCleanup(
   console.log(
     `Starting log cleanup (retainDays=${config.retainDays}, dryRun=${config.dryRun})`
   );
-  console.log(`  PM2 logs dir:  ${config.pm2LogDir}`);
-  console.log(`  Obs logs dir:  ${config.obsLogDir}`);
+  console.log(`  PM2 logs dir:      ${config.pm2LogDir}`);
+  console.log(`  Obs logs dir:      ${config.obsLogDir}`);
+  console.log(`  Harness state dir: ${config.harnessStateDir}`);
 
   const errors: string[] = [];
 
@@ -231,11 +245,19 @@ export async function runLogCleanup(
   console.log(`Obs logs: ${obsAll.length} total, ${obsStale.length} stale`);
   const obsDeleted = await deleteFiles(obsStale, config.dryRun);
 
+  // --- NLAH harness state files ---
+  const harnessAll = await scanFiles(config.harnessStateDir, [".json"]);
+  const harnessStale = filterStale(harnessAll, config.retainDays);
+  console.log(`Harness state: ${harnessAll.length} total, ${harnessStale.length} stale`);
+  const harnessDeleted = await deleteFiles(harnessStale, config.dryRun);
+
   const result: CleanupResult = {
     pm2Deleted,
     obsDeleted,
+    harnessDeleted,
     pm2Total: pm2All.length,
     obsTotal: obsAll.length,
+    harnessTotal: harnessAll.length,
     dryRun: config.dryRun,
     retainDays: config.retainDays,
     errors,
@@ -251,7 +273,7 @@ export async function runLogCleanup(
 
 export async function run(ctx: RoutineContext): Promise<void> {
   const result = await runLogCleanup();
-  const totalDeleted = result.pm2Deleted + result.obsDeleted;
+  const totalDeleted = result.pm2Deleted + result.obsDeleted + result.harnessDeleted;
 
   if (totalDeleted > 0) {
     await ctx.send(buildTelegramMessage(result));

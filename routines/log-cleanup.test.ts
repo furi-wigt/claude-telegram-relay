@@ -83,7 +83,7 @@ describe("parseConfig()", () => {
 
   afterEach(() => {
     // Restore env
-    for (const key of ["LOG_CLEANUP_RETAIN_DAYS", "LOG_CLEANUP_PM2_DIR", "LOG_CLEANUP_OBS_DIR", "LOG_DIR", "DRY_RUN", "PM2_LOG_DIR"]) {
+    for (const key of ["LOG_CLEANUP_RETAIN_DAYS", "LOG_CLEANUP_PM2_DIR", "LOG_CLEANUP_OBS_DIR", "LOG_CLEANUP_HARNESS_DIR", "LOG_DIR", "DRY_RUN", "PM2_LOG_DIR", "RELAY_USER_DIR", "RELAY_DIR"]) {
       if (originalEnv[key] !== undefined) {
         process.env[key] = originalEnv[key];
       } else {
@@ -130,6 +130,29 @@ describe("parseConfig()", () => {
     process.env.LOG_CLEANUP_OBS_DIR = "/obs/logs";
     const cfg = parseConfig("/project");
     expect(cfg.obsLogDir).toBe("/obs/logs");
+  });
+
+  it("defaults harnessStateDir to ~/.claude-relay/harness/state", () => {
+    delete process.env.LOG_CLEANUP_HARNESS_DIR;
+    delete process.env.RELAY_USER_DIR;
+    delete process.env.RELAY_DIR;
+    const cfg = parseConfig("/project");
+    expect(cfg.harnessStateDir).toContain(".claude-relay");
+    expect(cfg.harnessStateDir).toContain("harness");
+    expect(cfg.harnessStateDir).toContain("state");
+  });
+
+  it("respects RELAY_USER_DIR for harnessStateDir", () => {
+    delete process.env.LOG_CLEANUP_HARNESS_DIR;
+    process.env.RELAY_USER_DIR = "/custom/relay";
+    const cfg = parseConfig("/project");
+    expect(cfg.harnessStateDir).toBe("/custom/relay/harness/state");
+  });
+
+  it("LOG_CLEANUP_HARNESS_DIR overrides derived harnessStateDir", () => {
+    process.env.LOG_CLEANUP_HARNESS_DIR = "/override/harness/state";
+    const cfg = parseConfig("/project");
+    expect(cfg.harnessStateDir).toBe("/override/harness/state");
   });
 
   it("defaults dryRun to false", () => {
@@ -287,8 +310,10 @@ describe("buildReport()", () => {
   const baseResult: CleanupResult = {
     pm2Deleted: 3,
     obsDeleted: 2,
+    harnessDeleted: 4,
     pm2Total: 10,
     obsTotal: 8,
+    harnessTotal: 15,
     dryRun: false,
     retainDays: 7,
     errors: [],
@@ -308,6 +333,12 @@ describe("buildReport()", () => {
   it("includes observability deleted count", () => {
     const report = buildReport(baseResult);
     expect(report).toContain("2");
+  });
+
+  it("includes harness state deleted count", () => {
+    const report = buildReport(baseResult);
+    expect(report).toContain("4");
+    expect(report).toContain("15");
   });
 
   it("includes [DRY RUN] label when dryRun=true", () => {
@@ -340,8 +371,10 @@ describe("buildTelegramMessage()", () => {
     const result: CleanupResult = {
       pm2Deleted: 0,
       obsDeleted: 0,
+      harnessDeleted: 0,
       pm2Total: 5,
       obsTotal: 3,
+      harnessTotal: 10,
       dryRun: false,
       retainDays: 7,
       errors: [],
@@ -355,8 +388,10 @@ describe("buildTelegramMessage()", () => {
     const result: CleanupResult = {
       pm2Deleted: 12,
       obsDeleted: 5,
+      harnessDeleted: 7,
       pm2Total: 20,
       obsTotal: 8,
+      harnessTotal: 30,
       dryRun: false,
       retainDays: 7,
       errors: [],
@@ -364,19 +399,39 @@ describe("buildTelegramMessage()", () => {
     const msg = buildTelegramMessage(result);
     expect(msg).toContain("12");
     expect(msg).toContain("5");
+    expect(msg).toContain("7");
   });
 
   it("includes dry run notice", () => {
     const result: CleanupResult = {
       pm2Deleted: 3,
       obsDeleted: 1,
+      harnessDeleted: 2,
       pm2Total: 5,
       obsTotal: 2,
+      harnessTotal: 8,
       dryRun: true,
       retainDays: 7,
       errors: [],
     };
     const msg = buildTelegramMessage(result);
     expect(msg).toContain("dry run");
+  });
+
+  it("includes harness state line when harness files were deleted", () => {
+    const result: CleanupResult = {
+      pm2Deleted: 0,
+      obsDeleted: 0,
+      harnessDeleted: 9,
+      pm2Total: 2,
+      obsTotal: 1,
+      harnessTotal: 20,
+      dryRun: false,
+      retainDays: 7,
+      errors: [],
+    };
+    const msg = buildTelegramMessage(result);
+    expect(msg).toContain("9");
+    expect(msg).toContain("20");
   });
 });
