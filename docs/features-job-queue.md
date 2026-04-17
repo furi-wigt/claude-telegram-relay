@@ -18,17 +18,18 @@ The job queue supports four executor types. Each executor is registered in `src/
 
 `ClaudeSessionExecutor` -- runs an agentic Claude session.
 
-- Invokes the orchestration layer: `classifyIntent` -> `executeBlackboardDispatch`.
+- Invokes the orchestration layer: `classifyIntent` → NLAH harness → sequential contract dispatch.
 - If `metadata.chatId` is set, posts the result back to the originating Telegram chat (and `metadata.threadId` if present).
-- On retry: re-runs the full dispatch from scratch (no partial resume -- checkpoint resume deferred to v2).
+- On retry: re-runs the full dispatch from scratch (no partial resume — checkpoint resume deferred to v2).
 
 ### compound
 
-`CompoundExecutor` -- multi-step blackboard dispatch.
+`CompoundExecutor` -- multi-step sequential dispatch.
 
-- Runs a sequence of blackboard dispatch steps defined in `payload.steps`.
+- Runs a sequence of agent tasks defined in `payload.plan.tasks` via `dispatchEngine`.
 - Agent-overlap guard: returns `awaiting-intervention` if any target agent is currently busy handling another job.
 - Suitable for workflows that need multiple agents to contribute sequentially.
+- Checkpoint resume is v1 (re-runs from start on retry).
 
 ### api-call
 

@@ -1,8 +1,10 @@
 # Job Queue System — Design Spec
 
 **Date:** 2026-04-12
-**Status:** Approved
+**Status:** Implemented — blackboard/compound executor references are v1 stubs; see `docs/features-job-queue.md` for current behaviour
 **Related spec:** `~/.claude-relay/specs/260411_2356_01_plugin-routines-scheduler-spec.md`
+
+> **Note (2026-04-18):** References to "blackboard dispatch", "roundtrip state machine", and "per-step checkpoints" in this spec were aspirational — the v1 `CompoundExecutor` is a thin sequential runner with a single checkpoint per job and no partial resume. The blackboard system was removed in the NLAH harness replacement.
 
 ---
 

@@ -1,5 +1,19 @@
 # Decision Journal
 
+## 2026-04-18 — Replace constrained mesh blackboard with NLAH thin harness [feat/nlah_harness_replacement]
+
+**Change**: Deleted the entire blackboard/mesh/review-loop orchestration subsystem (~2500 LOC, 13 files) and replaced it with a 120-LOC NLAH thin harness backed by contract Markdown files.
+**Why**: The blackboard pattern produced no measurable improvement in response quality or error reduction. Mesh agent communication was aspirational — in practice only `operations-hub` and `engineering` were used, always through direct Telegram group chats. The review loop, interview pipeline, and task decomposer added latency without visible benefit. Complexity budget was far exceeded for the actual usage pattern.
+**Rejected**: Pruning individual blackboard components — the interdependencies meant partial removal would leave dead code and unclear ownership. Full replacement was cleaner and gave a clean audit trail.
+**Branch**: feat/nlah_harness_replacement
+
+## 2026-04-18 — Contract files live in ~/.claude-relay/contracts/, not in repo [feat/nlah_harness_replacement]
+
+**Change**: NLAH contracts (`default.md`, `code-review.md`, etc.) are stored in `~/.claude-relay/contracts/` (user data directory), not `config/contracts/` in the repo.
+**Why**: Contracts are user-specific routing preferences, not application code. Keeping them outside the repo means users can edit, add, or remove contracts without touching git history. Matches the pattern already used for `agents.json`, `prompts/`, and `models.json`.
+**Rejected**: Bundling default contracts in `config/contracts/` with a user-copy override mechanism — adds indirection with no benefit since the default set is small and stable.
+**Branch**: feat/nlah_harness_replacement
+
 ## 2026-04-12 — Intervention continue-after-resolve: set pending, not running [pending]
 
 **Change**: Known design gap in `InterventionManager` — when an intervention is auto-resolved (auto-approve or confidence-proceed), `clearIntervention(id, "running")` is called, but the executor is not re-invoked. The job sits in `running` until `timeout_ms` elapses, then is retried.

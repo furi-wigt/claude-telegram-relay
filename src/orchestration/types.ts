@@ -1,14 +1,14 @@
 /**
  * Orchestration Layer — Shared Types
  *
- * Interfaces for the Command Center orchestration pipeline:
- * intent classification → dispatch plan → execution → aggregation.
+ * Interfaces for the CC orchestration pipeline:
+ * intent classification → dispatch plan → harness execution.
  */
 
 // ── Intent Classification ───────────────────────────────────────────────────
 
 export interface ClassificationResult {
-  /** Classified intent label (e.g. "security-review", "meeting-prep") */
+  /** Classified intent label (e.g. "security-audit", "code-review") */
   intent: string;
   /** Best-fit agent ID */
   primaryAgent: string;
@@ -43,7 +43,7 @@ export type TaskStatus =
   | "cancelled";
 
 export interface SubTask {
-  /** Execution order — same seq = parallel */
+  /** Execution order */
   seq: number;
   /** Target agent ID */
   agentId: string;
@@ -51,8 +51,6 @@ export interface SubTask {
   topicHint: string | null;
   /** What to tell the agent */
   taskDescription: string;
-  /** Seq numbers this depends on */
-  dependsOn?: number[];
 }
 
 export interface DispatchPlan {
@@ -125,94 +123,4 @@ export interface CountdownState {
   planMessageId: number;
   chatId: number;
   threadId: number | null;
-}
-
-// ── Blackboard Types ───────────────────────────────────────────────────────
-
-export type BbSpace = "input" | "tasks" | "evidence" | "artifacts" | "decisions" | "reviews" | "conflicts" | "final";
-
-export type BbRecordType = "task" | "finding" | "artifact" | "decision" | "review" | "conflict" | "output";
-
-export type BbSessionStatus = "active" | "finalizing" | "done" | "failed" | "cancelled";
-
-export type BbRecordStatus = "pending" | "active" | "done" | "failed" | "superseded" | "archived";
-
-export interface BbSession {
-  id: string;
-  dispatch_id: string | null;
-  status: BbSessionStatus;
-  workflow: string;
-  max_rounds: number;
-  current_round: number;
-  budget_tokens: number | null;
-  created_at: string;
-  completed_at: string | null;
-  metadata: string | null;
-}
-
-export interface BbRecord {
-  id: string;
-  session_id: string;
-  space: BbSpace;
-  record_type: BbRecordType;
-  producer: string | null;
-  owner: string | null;
-  status: BbRecordStatus;
-  confidence: number | null;
-  content: string; // JSON
-  parent_id: string | null;
-  supersedes: string | null;
-  round: number | null;
-  created_at: string;
-  updated_at: string | null;
-}
-
-/** Content shape for task records in the tasks space */
-export interface BbTaskContent {
-  taskDescription: string;
-  agentId: string;
-  seq: number;
-  dependsOn: number[];
-  topicHint: string | null;
-  retryCount?: number;
-}
-
-/** Content shape for artifact records */
-export interface BbArtifactContent {
-  summary: string;
-  fullResponse?: string;
-  artifactPath?: string;
-}
-
-/** Content shape for evidence/finding records */
-export interface BbEvidenceContent {
-  summary: string;
-  source: string;
-  confidence: number;
-  supportsTasks: number[]; // seq numbers this evidence relates to
-}
-
-/** Content shape for review records */
-export interface BbReviewContent {
-  verdict: "approved" | "revision_needed" | "rejected";
-  targetRecordId: string; // bb_records id of the artifact under review
-  feedback: string;
-  iteration: number;
-}
-
-/** Content shape for conflict records */
-export interface BbConflictContent {
-  type: "state_conflict" | "recommendation_conflict";
-  agents: string[];
-  relatedRecords: string[]; // bb_records ids
-  resolutionPolicy: "evidence_then_arbitration" | "human_escalation";
-  resolution?: string;
-}
-
-/** Returned by controlPlane.selectNextAgents() */
-export interface AgentTrigger {
-  rule: "INIT" | "EXECUTE" | "REVIEW" | "CONFLICT" | "FINALIZE" | "ESCALATE";
-  agentId: string;
-  taskRecordId?: string; // bb_records id of the task to execute
-  reason: string;
 }
