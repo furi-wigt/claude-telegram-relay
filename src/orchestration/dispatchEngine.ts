@@ -51,8 +51,8 @@ export async function executeSingleDispatch(
   persistDispatch(plan);
   updateTaskStatus(plan.dispatchId, task.agentId, "dispatched");
 
-  // Send dispatch header to agent group
-  const dispatchText = `📨 Dispatched from Command Center\n\n${plan.userMessage}`;
+  // Send dispatch header to agent group — use taskDescription so prior step outputs are included
+  const dispatchText = `📨 Dispatched from Command Center\n\n${task.taskDescription}`;
   let effectiveTopicId: number | null = (agent.meshTopicId ?? agent.topicId) ?? null;
   try {
     const sent = await bot.api.sendMessage(agent.chatId, dispatchText, {
@@ -93,7 +93,7 @@ export async function executeSingleDispatch(
 
   let response: string | null = null;
   if (_dispatchRunner) {
-    response = await _dispatchRunner(agent.chatId, effectiveTopicId, plan.userMessage);
+    response = await _dispatchRunner(agent.chatId, effectiveTopicId, task.taskDescription);
   } else {
     console.error("[dispatchEngine] No dispatch runner registered");
   }
