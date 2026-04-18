@@ -28,6 +28,7 @@ import { resolveModelPrefix } from "../utils/modelPrefix.ts";
 import { InlineKeyboard } from "grammy";
 import { runHarness } from "./harness.ts";
 import type { ClassificationResult, DispatchPlan } from "./types.ts";
+import { trackAgentReply } from "./pendingAgentReplies.ts";
 
 const COUNTDOWN_SECONDS = 5;
 
@@ -43,6 +44,70 @@ const pendingPickerMessages = new Map<string, string>();
 export function isCommandCenter(chatId: number): boolean {
   const ccAgent = AGENTS["command-center"];
   return ccAgent?.chatId === chatId && chatId !== 0 && chatId != null;
+}
+
+/**
+ * Re-route a user reply directly to the agent that last asked a question,
+ * bypassing intent classification. Called when the user explicitly replies to
+ * a tracked agent response message in the CC thread.
+ */
+export async function rerouteToAgent(
+  bot: Bot,
+  ctx: Context,
+  text: string,
+  ccChatId: number,
+  ccThreadId: number | null,
+  agentId: string,
+): Promise<void> {
+  const agent = AGENTS[agentId];
+  if (!agent) {
+    await ctx.reply(`⚠️ Agent "${agentId}" not found`).catch(() => {});
+    return;
+  }
+
+  const dispatchId = crypto.randomUUID();
+  const plan: DispatchPlan = {
+    dispatchId,
+    userMessage: text,
+    classification: {
+      intent: "follow-up",
+      primaryAgent: agentId,
+      topicHint: null,
+      isCompound: false,
+      confidence: 1.0,
+      reasoning: `Follow-up reply routed to ${agent.name}`,
+    },
+    tasks: [{ seq: 1, agentId, topicHint: null, taskDescription: text }],
+  };
+
+  await ctx.reply(`↩️ Follow-up → <b>${agent.name}</b>`, { parse_mode: "HTML" }).catch(() => {});
+
+  const result = await executeSingleDispatch(bot, plan, ccChatId, ccThreadId);
+
+  const sec = (result.durationMs / 1000).toFixed(1);
+  const icon = result.success ? "✅" : "❌";
+  const header = `${icon} <b>${agent.name}</b> — ${result.success ? "completed" : "failed"} (${sec}s)`;
+  const chunks = splitMarkdown(result.response, 3800);
+
+  for (let i = 0; i < chunks.length; i++) {
+    const html = i === 0 ? `${header}\n\n${markdownToHtml(chunks[i])}` : markdownToHtml(chunks[i]);
+    const sent = await bot.api.sendMessage(ccChatId, html, {
+      parse_mode: "HTML",
+      message_thread_id: ccThreadId ?? undefined,
+    }).catch(async () => {
+      const plain = i === 0
+        ? `${icon} ${agent.name} — ${result.success ? "completed" : "failed"} (${sec}s)\n\n${chunks[i]}`
+        : chunks[i];
+      for (const chunk of chunkMessage(plain)) {
+        await bot.api.sendMessage(ccChatId, chunk, { message_thread_id: ccThreadId ?? undefined }).catch(() => {});
+      }
+      return null;
+    });
+    // Track first chunk so the user can keep replying to this agent
+    if (i === 0 && sent) {
+      trackAgentReply(ccChatId, sent.message_id, agentId, ccThreadId);
+    }
+  }
 }
 
 /**
@@ -257,7 +322,7 @@ export function registerOrchestrationCallbacks(bot: Bot): void {
     const chunks = splitMarkdown(result.response, 3800);
     for (let i = 0; i < chunks.length; i++) {
       const html = i === 0 ? `${header}\n\n${markdownToHtml(chunks[i])}` : markdownToHtml(chunks[i]);
-      await bot.api.sendMessage(chatId, html, {
+      const sent = await bot.api.sendMessage(chatId, html, {
         parse_mode: "HTML",
         message_thread_id: threadId ?? undefined,
       }).catch(async () => {
@@ -265,7 +330,12 @@ export function registerOrchestrationCallbacks(bot: Bot): void {
         for (const chunk of chunkMessage(plain)) {
           await bot.api.sendMessage(chatId, chunk, { message_thread_id: threadId ?? undefined }).catch(() => {});
         }
+        return null;
       });
+      // Track first chunk for follow-up reply routing
+      if (i === 0 && sent) {
+        trackAgentReply(chatId, sent.message_id, agentId, threadId);
+      }
     }
   });
 }
