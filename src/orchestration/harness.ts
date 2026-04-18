@@ -80,7 +80,10 @@ export async function runHarness(
   ccThreadId: number | null,
 ): Promise<void> {
   const contract = await loadContract(plan.classification.intent);
-  const contractSteps = contract?.steps ?? [];
+  // default.md is a generic fallback — when it matches, honour the classified agent
+  // instead of overriding to operations-hub.
+  const isDefaultFallback = contract?.name === "default";
+  const contractSteps = (!isDefaultFallback && contract?.steps) ? contract.steps : [];
 
   // Build initial step list from contract if multi-step, else single step from classification
   const steps: StepState[] = contractSteps.length > 0
