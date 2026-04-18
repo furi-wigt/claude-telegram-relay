@@ -46,7 +46,7 @@ import { callRoutineModel } from "./routines/routineModel.ts";
 import { getAgentForChat, autoDiscoverGroup, loadGroupMappings } from "./routing/groupRouter.ts";
 import { isCommandCenter, orchestrateMessage, rerouteToAgent, lookupAgentReply, getLastActiveAgent, registerOrchestrationCallbacks, setDispatchRunner, setTopicCreator, setDispatchNotifier } from "./orchestration/index.ts";
 // Router removed: always use Sonnet for simplicity and predictable latency
-import { loadSession as loadGroupSession, updateSessionIdGuarded, initSessions, loadAllSessions, saveSession, isResumeReliable, didResumeFail, lockActiveCwd, resetSession, getSessionSince, getSession } from "./session/groupSessions.ts";
+import { loadSession as loadGroupSession, updateSessionIdGuarded, initSessions, loadAllSessions, saveSession, isResumeReliable, didResumeFail, lockActiveCwd, resetSession, renewSession, getSessionSince, getSession } from "./session/groupSessions.ts";
 import { buildAgentPrompt } from "./agents/promptBuilder.ts";
 import { GroupQueueManager } from "./queue/groupQueueManager.ts";
 import { registerCommands, registerContextSwitchCallbackHandler, registerRebootCallbackHandler } from "./commands/botCommands.ts";
@@ -727,6 +727,12 @@ registerOrchestrationCallbacks(bot);
 // Register dispatch runner — dispatch engine calls processTextMessage directly
 // instead of going through Telegram API (outgoing bot messages don't trigger handlers).
 setDispatchRunner(async (chatId: number, topicId: number | null, text: string) => {
+  // Each dispatch starts with a clean slate — no --resume from a previous CC session.
+  // renewSession() clears sessionId (forcing a fresh subprocess) while still allowing
+  // memory/context injection. Silent no-op if the session doesn't exist yet (first dispatch
+  // to this agent+topic combination creates a fresh session naturally).
+  await renewSession(chatId, topicId);
+
   const syntheticCtx = {
     replyWithChatAction: (action: string) =>
       bot.api.sendChatAction(chatId, action as Parameters<typeof bot.api.sendChatAction>[1], {
