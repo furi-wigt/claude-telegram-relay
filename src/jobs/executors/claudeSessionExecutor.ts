@@ -1,14 +1,18 @@
 // src/jobs/executors/claudeSessionExecutor.ts
+import type { Bot, Context } from "grammy";
 import type { JobExecutor, ExecutorResult } from "./types.ts";
 import type { Job, JobCheckpoint } from "../types.ts";
 import type { JobStore } from "../jobStore.ts";
-import { getDispatchRunner } from "../../orchestration/dispatchEngine.ts";
+import { runHarness, loadHarnessState } from "../../orchestration/harness.ts";
 import { classifyIntent } from "../../orchestration/intentClassifier.ts";
 import { AGENTS } from "../../agents/config.ts";
 import { nextJobNumber } from "../jobCounter.ts";
 import { createForumTopic, editMessage } from "../../utils/telegramApi.ts";
 import { sendToGroup } from "../../utils/sendToGroup.ts";
 import { registerJobTopic } from "../jobTopicRegistry.ts";
+import type { DispatchPlan } from "../../orchestration/types.ts";
+
+const CLARIFY_TIMEOUT_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 function truncate(s: string, max: number): string {
   return s.length > max ? s.slice(0, max - 1) + "…" : s;
@@ -27,7 +31,10 @@ export class ClaudeSessionExecutor implements JobExecutor {
   readonly type = "claude-session" as const;
   readonly maxConcurrent = 1;
 
-  constructor(private store: JobStore) {}
+  constructor(
+    private store: JobStore,
+    private bot: Bot<Context>,
+  ) {}
 
   async execute(job: Job, checkpoint?: JobCheckpoint): Promise<ExecutorResult> {
     const prompt = job.payload.prompt as string | undefined;
@@ -35,27 +42,26 @@ export class ClaudeSessionExecutor implements JobExecutor {
       return { status: "failed", error: "payload.prompt required" };
     }
 
-    const runner = getDispatchRunner();
-    if (!runner) {
-      return { status: "failed", error: "dispatch runner not available — is the bot running?" };
+    // ── Resume path: clarification answer available ───────────────────────────
+
+    if (checkpoint?.state.clarificationAnswer) {
+      return this.resumeWithClarification(job, checkpoint);
     }
 
     if (checkpoint) {
-      console.warn(`[claudeSessionExecutor] checkpoint found for job ${job.id.slice(0, 8)} — re-running from scratch (v1)`);
+      console.warn(`[claudeSessionExecutor] stale checkpoint for job ${job.id.slice(0, 8)} — re-running from scratch`);
     }
 
-    // Classify intent and resolve target agent
+    // ── Fresh execution ────────────────────────────────────────────────────────
+
     const classification = await classifyIntent(prompt);
     const agent = AGENTS[classification.primaryAgent] ?? AGENTS["operations-hub"];
-    const agentChatId = agent?.chatId ?? 0;
-    const agentTopicId: number | null = (agent?.meshTopicId ?? agent?.topicId) ?? null;
     const agentName = agent?.name ?? classification.primaryAgent;
 
-    // Sequential job number (persists across restarts)
     const jobNumber = nextJobNumber();
     const jobNumStr = String(jobNumber).padStart(3, "0");
 
-    // Create forum topic in Command Center — best-effort, non-fatal
+    // Create CC forum topic — best-effort, non-fatal
     const ccAgent = AGENTS["command-center"];
     const ccChatId = ccAgent?.chatId;
     let jobTopicId: number | undefined;
@@ -86,31 +92,100 @@ export class ClaudeSessionExecutor implements JobExecutor {
       }
     }
 
+    const plan: DispatchPlan = {
+      dispatchId: job.id,
+      userMessage: prompt,
+      classification,
+      tasks: [{ seq: 1, agentId: classification.primaryAgent, topicHint: classification.topicHint, taskDescription: prompt }],
+    };
+
     try {
-      const response = await runner(agentChatId, agentTopicId, prompt) ?? "Done";
+      const result = await runHarness(
+        this.bot,
+        plan,
+        ccChatId ?? 0,
+        jobTopicId ? Number(jobTopicId) : null,
+      );
 
-      // Route response to job topic; fall back to source chat when no topic available
-      if (jobTopicId && ccChatId) {
-        await sendToGroup(ccChatId, response, { topicId: jobTopicId });
-      } else {
-        const chatId = (job.metadata as Record<string, unknown>)?.chatId as number | undefined;
-        const threadId = (job.metadata as Record<string, unknown>)?.threadId as number | undefined;
-        if (chatId) {
-          await sendToGroup(chatId, response, { topicId: threadId });
+      if (result.outcome === "suspended") {
+        if (ccChatId && jobCardMessageId) {
+          await editMessage(ccChatId, jobCardMessageId, buildJobCard(jobNumStr, prompt, agentName, "⏳ Awaiting clarification"));
         }
+        return {
+          status: "awaiting-intervention",
+          intervention: {
+            type: "clarification",
+            prompt: result.question,
+            dueInMs: CLARIFY_TIMEOUT_MS,
+            autoResolvePolicy: "none",
+          },
+        };
       }
 
-      // Update job card to Done (best-effort)
+      const success = result.outcome === "done";
       if (ccChatId && jobCardMessageId) {
-        await editMessage(ccChatId, jobCardMessageId, buildJobCard(jobNumStr, prompt, agentName, "✅ Done"));
+        await editMessage(ccChatId, jobCardMessageId, buildJobCard(jobNumStr, prompt, agentName, success ? "✅ Done" : "❌ Failed"));
       }
-
       this.store.insertCheckpoint(job.id, 0, { sessionId: job.id });
-
-      return { status: "done", summary: response.slice(0, 500) };
+      return { status: success ? "done" : "failed", summary: result.outcome };
     } catch (err) {
       if (ccChatId && jobCardMessageId) {
         await editMessage(ccChatId, jobCardMessageId, buildJobCard(jobNumStr, prompt, agentName, "❌ Failed"));
+      }
+      return {
+        status: "failed",
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+
+  /** Re-run after user provided clarification answer. */
+  private async resumeWithClarification(job: Job, checkpoint: JobCheckpoint): Promise<ExecutorResult> {
+    const originalPrompt = job.payload.prompt as string;
+    const answer = checkpoint.state.clarificationAnswer as string;
+    const question = (checkpoint.state.clarificationQuestion as string | undefined) ?? "";
+
+    const existingState = await loadHarnessState(job.id);
+
+    const enrichedPrompt = question
+      ? `${originalPrompt}\n\n---\nClarification needed: ${question}\nUser answer: ${answer}`
+      : `${originalPrompt}\n\n---\nUser clarification: ${answer}`;
+
+    const meta = job.metadata as Record<string, unknown> | null;
+    const ccChatId = meta?.ccChatId as number | undefined;
+    const jobTopicId = meta?.jobTopicId as number | undefined;
+    const jobCardMessageId = meta?.jobCardMessageId as number | undefined;
+    const jobNumber = meta?.jobNumber as number | undefined;
+    const jobNumStr = jobNumber !== undefined ? String(jobNumber).padStart(3, "0") : "???";
+
+    const classification = await classifyIntent(originalPrompt);
+    const agent = AGENTS[classification.primaryAgent] ?? AGENTS["operations-hub"];
+    const agentName = agent?.name ?? classification.primaryAgent;
+
+    const plan: DispatchPlan = {
+      dispatchId: job.id,
+      userMessage: enrichedPrompt,
+      classification,
+      tasks: [{ seq: 1, agentId: classification.primaryAgent, topicHint: classification.topicHint, taskDescription: enrichedPrompt }],
+    };
+
+    try {
+      const result = await runHarness(
+        this.bot,
+        plan,
+        ccChatId ?? 0,
+        jobTopicId ? Number(jobTopicId) : null,
+        { resumeFrom: existingState ?? undefined },
+      );
+
+      const success = result.outcome === "done";
+      if (ccChatId && jobCardMessageId) {
+        await editMessage(ccChatId, jobCardMessageId, buildJobCard(jobNumStr, originalPrompt, agentName, success ? "✅ Done" : "❌ Failed"));
+      }
+      return { status: success ? "done" : "failed", summary: result.outcome };
+    } catch (err) {
+      if (ccChatId && jobCardMessageId) {
+        await editMessage(ccChatId, jobCardMessageId, buildJobCard(jobNumStr, originalPrompt, agentName, "❌ Failed"));
       }
       return {
         status: "failed",

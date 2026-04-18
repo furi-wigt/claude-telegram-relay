@@ -19,6 +19,7 @@ import { CompoundExecutor } from "./executors/compoundExecutor.ts";
 import { registerJobCommands, buildInterventionKeyboard } from "./telegramJobCommands.ts";
 import { createWebhookServer } from "./sources/webhookServer.ts";
 import { sendToGroup } from "../utils/sendToGroup.ts";
+import { initJobBridge } from "./jobBridge.ts";
 import type { Bot, Context } from "grammy";
 import type { Job } from "./types.ts";
 
@@ -74,11 +75,14 @@ export function initJobQueue(bot: Bot<Context>): JobQueueSystem {
   const apiCallExecutor = new ApiCallExecutor();
   registry.register("api-call", apiCallExecutor);
 
-  const claudeSessionExecutor = new ClaudeSessionExecutor(store);
+  const claudeSessionExecutor = new ClaudeSessionExecutor(store, bot);
   registry.register("claude-session", claudeSessionExecutor);
 
   const compoundExecutor = new CompoundExecutor(store);
   registry.register("compound", compoundExecutor);
+
+  // Expose store + intervention to the orchestration layer (for clarification resume)
+  initJobBridge(store, intervention);
 
   // Register Telegram commands
   registerJobCommands(bot, store, intervention);
