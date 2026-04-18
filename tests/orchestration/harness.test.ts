@@ -91,7 +91,6 @@ describe("harness", () => {
   });
 
   test("single-step: dispatches once, posts result, state=done", async () => {
-    // Mock executeSingleDispatch to return success
     mock.module("../../src/orchestration/dispatchEngine", () => ({
       executeSingleDispatch: async () => ({
         success: true,
@@ -159,5 +158,143 @@ describe("harness", () => {
     const state = await readState(plan.dispatchId);
     expect(state.status).toBe("failed");
     expect(state.steps[0].status).toBe("failed");
+  });
+
+  // ── Redirect routing tests ──────────────────────────────────────────────────
+
+  test("redirect: ops-hub returns [REDIRECT: engineering], harness dispatches to engineering", async () => {
+    const dispatched: string[] = [];
+    mock.module("../../src/orchestration/dispatchEngine", () => ({
+      executeSingleDispatch: async (_bot: unknown, plan: any) => {
+        const agentId = plan.classification.primaryAgent;
+        dispatched.push(agentId);
+        if (agentId === "operations-hub") {
+          return { success: true, response: "This needs code review. [REDIRECT: engineering]", durationMs: 300 };
+        }
+        return { success: true, response: "Code review done.", durationMs: 500 };
+      },
+    }));
+
+    const { runHarness } = await import("../../src/orchestration/harness");
+    const bot = makeMockBot() as any;
+    const plan = makePlan("general", "operations-hub");
+
+    await runHarness(bot, plan, -100111, null);
+
+    // Both agents called
+    expect(dispatched).toEqual(["operations-hub", "engineering"]);
+    const state = await readState(plan.dispatchId);
+    expect(state.status).toBe("done");
+    expect(state.steps).toHaveLength(2);
+    // Redirect tag stripped from stored output
+    expect(state.steps[0].output).not.toContain("[REDIRECT:");
+    // CC notification posted
+    const redirectMsg = bot._sent.find((m: any) => m.text.includes("redirected"));
+    expect(redirectMsg).not.toBeUndefined();
+  });
+
+  test("redirect: tag is case-insensitive [REDIRECT: ENGINEERING]", async () => {
+    const dispatched: string[] = [];
+    mock.module("../../src/orchestration/dispatchEngine", () => ({
+      executeSingleDispatch: async (_bot: unknown, plan: any) => {
+        const agentId = plan.classification.primaryAgent;
+        dispatched.push(agentId);
+        if (agentId === "operations-hub") {
+          return { success: true, response: "Needs code work. [REDIRECT: ENGINEERING]", durationMs: 200 };
+        }
+        return { success: true, response: "Done.", durationMs: 400 };
+      },
+    }));
+
+    const { runHarness } = await import("../../src/orchestration/harness");
+    const bot = makeMockBot() as any;
+    const plan = makePlan("general", "operations-hub");
+
+    await runHarness(bot, plan, -100222, null);
+
+    expect(dispatched).toContain("engineering");
+    const state = await readState(plan.dispatchId);
+    expect(state.status).toBe("done");
+  });
+
+  test("redirect: unknown agent-id in tag is ignored, step treated as done", async () => {
+    const dispatched: string[] = [];
+    mock.module("../../src/orchestration/dispatchEngine", () => ({
+      executeSingleDispatch: async (_bot: unknown, plan: any) => {
+        dispatched.push(plan.classification.primaryAgent);
+        return { success: true, response: "Done. [REDIRECT: nonexistent-agent]", durationMs: 200 };
+      },
+    }));
+
+    const { runHarness } = await import("../../src/orchestration/harness");
+    const bot = makeMockBot() as any;
+    const plan = makePlan("general", "operations-hub");
+
+    await runHarness(bot, plan, -100333, null);
+
+    // Only one dispatch — unknown agent ignored
+    expect(dispatched).toHaveLength(1);
+    const state = await readState(plan.dispatchId);
+    expect(state.status).toBe("done");
+  });
+
+  test("redirect: circular redirect (A→B→A) is detected, state=failed", async () => {
+    const dispatched: string[] = [];
+    mock.module("../../src/orchestration/dispatchEngine", () => ({
+      executeSingleDispatch: async (_bot: unknown, plan: any) => {
+        const agentId = plan.classification.primaryAgent;
+        dispatched.push(agentId);
+        if (agentId === "operations-hub") {
+          return { success: true, response: "Not my domain. [REDIRECT: engineering]", durationMs: 200 };
+        }
+        // engineering tries to redirect back to ops — circular
+        return { success: true, response: "Actually ops should handle this. [REDIRECT: operations-hub]", durationMs: 200 };
+      },
+    }));
+
+    const { runHarness } = await import("../../src/orchestration/harness");
+    const bot = makeMockBot() as any;
+    const plan = makePlan("general", "operations-hub");
+
+    await runHarness(bot, plan, -100444, null);
+
+    // Exactly 2 dispatches: ops → engineering → circular detected
+    expect(dispatched).toEqual(["operations-hub", "engineering"]);
+    const state = await readState(plan.dispatchId);
+    expect(state.status).toBe("failed");
+    const warnMsg = bot._sent.find((m: any) =>
+      typeof m.text === "string" && m.text.toLowerCase().includes("circular")
+    );
+    expect(warnMsg).not.toBeUndefined();
+  });
+
+  test("redirect: hop limit (3) reached, state=failed", async () => {
+    let hop = 0;
+    // 5 agents: 3 redirects allowed (ops→eng→strategy→cloud), 4th redirect (cloud→security) blocked
+    const agents = ["operations-hub", "engineering", "strategy-comms", "cloud-architect", "security-compliance"];
+    mock.module("../../src/orchestration/dispatchEngine", () => ({
+      executeSingleDispatch: async (_bot: unknown, plan: any) => {
+        const next = agents[hop + 1] ?? null;
+        hop++;
+        const redirectTag = next ? ` [REDIRECT: ${next}]` : "";
+        return { success: true, response: `Hop ${hop}.${redirectTag}`, durationMs: 100 };
+      },
+    }));
+
+    const { runHarness } = await import("../../src/orchestration/harness");
+    const bot = makeMockBot() as any;
+    const plan = makePlan("general", "operations-hub");
+
+    await runHarness(bot, plan, -100555, null);
+
+    // MAX_REDIRECT_HOPS=3 allows 3 redirects → 4 dispatches (ops+eng+strategy+cloud)
+    // cloud tries to redirect to security-compliance → blocked at hop limit
+    expect(hop).toBe(4);
+    const state = await readState(plan.dispatchId);
+    expect(state.status).toBe("failed");
+    const limitMsg = bot._sent.find((m: any) =>
+      typeof m.text === "string" && m.text.toLowerCase().includes("max")
+    );
+    expect(limitMsg).not.toBeUndefined();
   });
 });
