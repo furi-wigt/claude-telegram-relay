@@ -198,9 +198,9 @@ export async function runHarness(
     step.status = result.success ? "done" : "failed";
     await persistState(state);
 
-    const resultMsgId = await postResult(bot, step.agent, { ...result, response: cleanResponse }, ccChatId, ccThreadId);
-    if (resultMsgId) {
-      trackAgentReply(ccChatId, resultMsgId, step.agent, ccThreadId);
+    const resultMsgIds = await postResult(bot, step.agent, { ...result, response: cleanResponse }, ccChatId, ccThreadId);
+    for (const msgId of resultMsgIds) {
+      trackAgentReply(ccChatId, msgId, step.agent, ccThreadId);
     }
     trackLastActiveAgent(ccChatId, ccThreadId, step.agent);
 
@@ -289,14 +289,14 @@ async function postResult(
   result: { success: boolean; response: string; durationMs: number },
   ccChatId: number,
   ccThreadId: number | null,
-): Promise<number | null> {
+): Promise<number[]> {
   const agentName = AGENTS[agentId]?.name ?? agentId;
   const icon = result.success ? "✅" : "❌";
   const sec = (result.durationMs / 1000).toFixed(1);
   const header = `${icon} <b>${agentName}</b> — ${result.success ? "completed" : "failed"} (${sec}s)`;
 
   const chunks = splitMarkdown(result.response, 3800);
-  let firstMsgId: number | null = null;
+  const sentMsgIds: number[] = [];
 
   for (let i = 0; i < chunks.length; i++) {
     const html = i === 0 ? `${header}\n\n${markdownToHtml(chunks[i])}` : markdownToHtml(chunks[i]);
@@ -309,14 +309,14 @@ async function postResult(
         const s = await bot.api.sendMessage(ccChatId, chunk, {
           message_thread_id: ccThreadId ?? undefined,
         }).catch(() => null);
-        if (i === 0 && firstMsgId === null && s) firstMsgId = s.message_id;
+        if (s) sentMsgIds.push(s.message_id);
       }
       return null;
     });
-    if (i === 0 && sent) firstMsgId = sent.message_id;
+    if (sent) sentMsgIds.push(sent.message_id);
   }
 
-  return firstMsgId;
+  return sentMsgIds;
 }
 
 async function postCCNotice(
