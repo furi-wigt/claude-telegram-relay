@@ -15,7 +15,7 @@ import { AGENTS, DEFAULT_AGENT, type AgentConfig } from "../agents/config.ts";
 import { classifyIntent, AUTO_DISPATCH_THRESHOLD } from "./intentClassifier.ts";
 import { chunkMessage } from "../utils/sendToGroup.ts";
 import { executeSingleDispatch } from "./dispatchEngine.ts";
-import { markdownToHtml, splitMarkdown } from "../utils/htmlFormat.ts";
+import { markdownToHtml, splitMarkdown, decodeHtmlEntities } from "../utils/htmlFormat.ts";
 import {
   buildPlanKeyboard,
   buildPausedKeyboard,
@@ -97,9 +97,7 @@ export async function rerouteToAgent(
       parse_mode: "HTML",
       message_thread_id: ccThreadId ?? undefined,
     }).catch(async () => {
-      const plain = i === 0
-        ? `${icon} ${agent.name} — ${result.success ? "completed" : "failed"} (${sec}s)\n\n${chunks[i]}`
-        : chunks[i];
+      const plain = decodeHtmlEntities(html.replace(/<[^>]+>/g, ""));
       for (const chunk of chunkMessage(plain)) {
         await bot.api.sendMessage(ccChatId, chunk, { message_thread_id: ccThreadId ?? undefined }).catch(() => {});
       }
@@ -349,7 +347,7 @@ export function registerOrchestrationCallbacks(bot: Bot): void {
         parse_mode: "HTML",
         message_thread_id: threadId ?? undefined,
       }).catch(async () => {
-        const plain = i === 0 ? `${icon} ${agent.name} — ${result.success ? "completed" : "failed"} (${sec}s)\n\n${chunks[i]}` : chunks[i];
+        const plain = decodeHtmlEntities(html.replace(/<[^>]+>/g, ""));
         for (const chunk of chunkMessage(plain)) {
           await bot.api.sendMessage(chatId, chunk, { message_thread_id: threadId ?? undefined }).catch(() => {});
         }
