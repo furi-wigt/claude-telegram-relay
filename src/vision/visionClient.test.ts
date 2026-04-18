@@ -1,11 +1,22 @@
 /**
  * Unit tests for src/vision/visionClient.ts
  *
- * Mocks the Anthropic SDK — no real API calls or file I/O made.
+ * Vision has two backends:
+ *   1. Local LLM (LM Studio) — tried first via fetch()
+ *   2. Anthropic API        — fallback when local fails
+ *
+ * Strategy:
+ *   - Mock fetch() to fail by default → Anthropic fallback path is exercised
+ *   - Mock fetch() to succeed in local-LLM tests → local path is exercised
+ *   - Mock @anthropic-ai/sdk for the fallback tests
+ *
  * Run: bun test src/vision/visionClient.test.ts
  */
 
 import { describe, test, expect, mock, beforeEach } from "bun:test";
+
+// Set API key so Anthropic fallback doesn't throw "key not set"
+process.env.ANTHROPIC_API_KEY = "test-key";
 
 // ── Mock Anthropic SDK before importing visionClient ──────────────────────────
 
@@ -20,6 +31,12 @@ mock.module("@anthropic-ai/sdk", () => ({
     messages = { create: mockCreate };
   },
 }));
+
+// ── Mock fetch to fail by default (local LLM unavailable) ─────────────────────
+const mockFetch = mock(() =>
+  Promise.reject(new Error("connect ECONNREFUSED 127.0.0.1:1234"))
+);
+global.fetch = mockFetch as unknown as typeof fetch;
 
 const {
   detectMediaType,
@@ -67,16 +84,28 @@ describe("detectMediaType", () => {
   });
 });
 
-// ── analyzeImage ─────────────────────────────────────────────────────────────
+// ── analyzeImage — Anthropic fallback path (local LLM fails) ─────────────────
 
-describe("analyzeImage", () => {
+describe("analyzeImage (Anthropic fallback — local LLM unavailable)", () => {
   beforeEach(() => {
     mockCreate.mockClear();
+    mockFetch.mockClear();
+    mockFetch.mockRejectedValue(new Error("connect ECONNREFUSED 127.0.0.1:1234"));
+    mockCreate.mockResolvedValue({
+      content: [{ type: "text", text: "A screenshot showing a code editor." }],
+    });
   });
 
   test("throws if image exceeds size limit", async () => {
     const oversized = Buffer.alloc(MAX_IMAGE_BYTES + 1);
     await expect(analyzeImage(oversized)).rejects.toThrow("Image too large");
+  });
+
+  test("falls back to Anthropic when local LLM fails", async () => {
+    const buf = Buffer.from([0xff, 0xd8, 0xff, 0x00]);
+    const result = await analyzeImage(buf);
+    expect(result).toBe("A screenshot showing a code editor.");
+    expect(mockCreate).toHaveBeenCalledTimes(1);
   });
 
   test("calls Anthropic messages.create with correct model", async () => {
@@ -88,7 +117,6 @@ describe("analyzeImage", () => {
   });
 
   test("does NOT use dangerouslySkipPermissions (security regression guard)", async () => {
-    // Vision now uses the Anthropic SDK directly — no CLI subprocess, no skip-permissions.
     const buf = Buffer.from([0xff, 0xd8, 0xff, 0x00]);
     await analyzeImage(buf);
 
@@ -97,7 +125,7 @@ describe("analyzeImage", () => {
     expect(JSON.stringify(body)).not.toContain("dangerously-skip-permissions");
   });
 
-  test("sends image as base64 in message content", async () => {
+  test("sends image as base64 in Anthropic message content", async () => {
     const buf = Buffer.from([0xff, 0xd8, 0xff, 0x00]);
     await analyzeImage(buf, "What is this?");
 
@@ -112,7 +140,7 @@ describe("analyzeImage", () => {
     expect(source.data).toBe(buf.toString("base64"));
   });
 
-  test("sends correct media type for JPEG", async () => {
+  test("sends correct media type for JPEG to Anthropic", async () => {
     const buf = Buffer.from([0xff, 0xd8, 0xff, 0x00]);
     await analyzeImage(buf);
 
@@ -124,7 +152,7 @@ describe("analyzeImage", () => {
     expect(source.media_type).toBe("image/jpeg");
   });
 
-  test("includes user prompt as text block", async () => {
+  test("includes user prompt as text block in Anthropic call", async () => {
     const buf = Buffer.from([0xff, 0xd8, 0xff, 0x00]);
     await analyzeImage(buf, "What errors do you see?");
 
@@ -135,7 +163,7 @@ describe("analyzeImage", () => {
     expect(textBlock?.text).toContain("What errors do you see?");
   });
 
-  test("returns text from API response", async () => {
+  test("returns text from Anthropic response", async () => {
     const buf = Buffer.from([0xff, 0xd8, 0xff, 0x00]);
     const result = await analyzeImage(buf);
     expect(result).toBe("A screenshot showing a code editor.");
@@ -152,16 +180,13 @@ describe("analyzeImage", () => {
     expect(textBlock?.text).toContain("Describe this image in detail.");
   });
 
-  test("propagates API errors", async () => {
-    mockCreate.mockImplementationOnce(() =>
-      Promise.reject(new Error("API call failed"))
-    );
+  test("throws when both backends fail", async () => {
+    mockCreate.mockRejectedValueOnce(new Error("Anthropic down"));
     const buf = Buffer.from([0xff, 0xd8, 0xff, 0x00]);
-    await expect(analyzeImage(buf)).rejects.toThrow("API call failed");
+    await expect(analyzeImage(buf)).rejects.toThrow("Anthropic down");
   });
 
   test("strips leading slash commands from caption", async () => {
-    // Regression: /new caption could cause misinterpretation
     const buf = Buffer.from([0xff, 0xd8, 0xff, 0x00]);
     await analyzeImage(buf, "/new what's in this picture?");
 
@@ -174,11 +199,88 @@ describe("analyzeImage", () => {
   });
 });
 
+// ── analyzeImage — local LLM path ────────────────────────────────────────────
+
+describe("analyzeImage (local LLM — LM Studio available)", () => {
+  const localResponse = (text: string) =>
+    Promise.resolve({
+      ok: true,
+      json: () =>
+        Promise.resolve({ choices: [{ message: { content: text } }] }),
+    } as Response);
+
+  beforeEach(() => {
+    mockCreate.mockClear();
+    mockFetch.mockClear();
+  });
+
+  test("returns local LLM response when fetch succeeds", async () => {
+    mockFetch.mockResolvedValueOnce(localResponse("A local LLM description."));
+    const buf = Buffer.from([0xff, 0xd8, 0xff, 0x00]);
+    const result = await analyzeImage(buf, "describe it");
+    expect(result).toBe("A local LLM description.");
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  test("sends POST to /v1/chat/completions", async () => {
+    mockFetch.mockResolvedValueOnce(localResponse("ok"));
+    const buf = Buffer.from([0xff, 0xd8, 0xff, 0x00]);
+    await analyzeImage(buf);
+    const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain("/v1/chat/completions");
+    expect(init.method).toBe("POST");
+  });
+
+  test("sends image as base64 data URI in fetch body", async () => {
+    mockFetch.mockResolvedValueOnce(localResponse("ok"));
+    const buf = Buffer.from([0xff, 0xd8, 0xff, 0x00]);
+    await analyzeImage(buf);
+    const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+    const imageBlock = body.messages[0].content.find(
+      (b: Record<string, unknown>) => b.type === "image_url"
+    );
+    expect(imageBlock).toBeDefined();
+    expect(imageBlock.image_url.url).toStartWith("data:image/jpeg;base64,");
+  });
+
+  test("falls back to Anthropic when local returns HTTP error", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 503,
+      text: () => Promise.resolve("Service Unavailable"),
+    } as Response);
+    mockCreate.mockResolvedValueOnce({
+      content: [{ type: "text", text: "Anthropic fallback." }],
+    });
+    const buf = Buffer.from([0xff, 0xd8, 0xff, 0x00]);
+    const result = await analyzeImage(buf);
+    expect(result).toBe("Anthropic fallback.");
+    expect(mockCreate).toHaveBeenCalledTimes(1);
+  });
+
+  test("falls back to Anthropic when local returns empty content", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve({ choices: [{ message: { content: "" } }] }),
+    } as Response);
+    mockCreate.mockResolvedValueOnce({
+      content: [{ type: "text", text: "Anthropic fallback." }],
+    });
+    const buf = Buffer.from([0xff, 0xd8, 0xff, 0x00]);
+    const result = await analyzeImage(buf);
+    expect(result).toBe("Anthropic fallback.");
+  });
+});
+
 // ── analyzeImages ─────────────────────────────────────────────────────────────
 
 describe("analyzeImages — parallel batch analysis", () => {
   beforeEach(() => {
     mockCreate.mockClear();
+    mockFetch.mockClear();
+    // local LLM unavailable → Anthropic fallback exercises the batch paths
+    mockFetch.mockRejectedValue(new Error("connect ECONNREFUSED 127.0.0.1:1234"));
     mockCreate.mockResolvedValue({
       content: [{ type: "text", text: "A screenshot showing a code editor." }],
     });
@@ -199,7 +301,7 @@ describe("analyzeImages — parallel batch analysis", () => {
     expect(results[0].error).toBeUndefined();
   });
 
-  test("single buffer → API called once", async () => {
+  test("single buffer → Anthropic called once (after local fails)", async () => {
     await analyzeImages([jpegBuf()], "describe it");
     expect(mockCreate).toHaveBeenCalledTimes(1);
   });
@@ -231,7 +333,7 @@ describe("analyzeImages — parallel batch analysis", () => {
     const results = await analyzeImages([jpegBuf(), jpegBuf()], "describe");
     expect(results[0]).toMatchObject({ index: 0, context: "First ok." });
     expect(results[0].error).toBeUndefined();
-    expect(results[1]).toMatchObject({ index: 1, context: "", error: "CLI crash" });
+    expect(results[1]).toMatchObject({ index: 1, context: "", error: expect.stringContaining("CLI crash") });
   });
 
   test("all images fail → all errors captured, no throw", async () => {
