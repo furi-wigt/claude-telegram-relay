@@ -1,22 +1,14 @@
 /**
  * Vision Client
  *
- * Analyzes images sent via Telegram using the Claude CLI (not the Anthropic SDK).
- * Downloads the image to /tmp, then calls:
- *   claude --dangerously-skip-permissions -p "<userPrompt>\n\nImage: <filename>" --cwd /tmp
+ * Analyzes images sent via Telegram using the Anthropic Messages API directly.
+ * Images are sent as base64-encoded content — no temp files, no CLI subprocess,
+ * no --dangerously-skip-permissions.
  *
- * --dangerously-skip-permissions is required in -p (non-interactive) mode to allow
- * Claude CLI to read the image file without hanging on a permission prompt.
- * cwd=/tmp lets the relative filename resolve and prevents loading project CLAUDE.md files.
- * The temp file is deleted after analysis.
- *
- * This routes through the Claude Code CLI subscription — no separate API billing.
+ * Billed as Anthropic API tokens (ANTHROPIC_API_KEY), not Claude Code CLI subscription.
  */
 
-import { rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join, basename } from "node:path";
-import { claudeText } from "../claude-process.ts";
+import Anthropic from "@anthropic-ai/sdk";
 import { trace } from "../utils/tracer.ts";
 
 export type SupportedMediaType =
@@ -31,7 +23,7 @@ export const VISION_MODEL = "claude-sonnet-4-6";
 /** Maximum image size accepted (Anthropic's documented limit is 20MB). */
 export const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 
-/** Timeout for vision analysis — longer than the LTM default since image reads take time. */
+/** Timeout for vision analysis. */
 const VISION_TIMEOUT_MS = 60_000;
 
 /**
@@ -80,9 +72,8 @@ export function detectMediaType(buffer: Buffer): SupportedMediaType {
  * Strip leading bot slash commands from a Telegram photo caption.
  *
  * When a user sends "/new what's in this picture", the caption begins with
- * a slash command. Passing the raw caption to Claude CLI in -p mode causes
- * the leading slash command to be interpreted as a Claude Code slash command
- * (e.g., /new resets the session), corrupting the vision analysis prompt.
+ * a slash command. Passing the raw caption to the API may cause the leading
+ * slash command to be misinterpreted.
  *
  * This function strips the leading command prefix, leaving only the user's
  * actual question for the vision model.
@@ -108,10 +99,9 @@ export interface ImageAnalysisResult {
 }
 
 /**
- * Analyze multiple images in parallel using separate Claude CLI processes.
+ * Analyze multiple images in parallel using the Anthropic API.
  *
- * Each image is analyzed in its own `claudeText` subprocess
- * (--dangerously-skip-permissions, cwd=/tmp). A single image failure does NOT
+ * Each image is analyzed independently. A single image failure does NOT
  * abort the batch — its error is captured in the result and the others proceed.
  *
  * Results are returned in the same order as the input array.
@@ -184,10 +174,10 @@ export function combineImageContexts(results: ImageAnalysisResult[]): string {
 }
 
 /**
- * Analyze an image using the Claude CLI's vision capabilities.
+ * Analyze an image using the Anthropic Messages API (vision).
  *
- * Writes the image to /tmp, sets cwd=/tmp so Claude can read the file by
- * relative filename, then deletes the file when done.
+ * The image is sent as base64-encoded content directly in the API request —
+ * no temp files written, no CLI subprocess, no dangerouslySkipPermissions.
  *
  * Returns a text description suitable for injection into agent prompts
  * via the `imageContext` field in PromptContext.
@@ -197,7 +187,7 @@ export function combineImageContexts(results: ImageAnalysisResult[]): string {
  * @param imageBuffer  Raw image bytes downloaded from Telegram
  * @param userPrompt   Caption or question the user sent with the image
  * @returns            Vision analysis text
- * @throws             If image too large or Claude CLI call fails
+ * @throws             If image too large or API call fails
  */
 export async function analyzeImage(
   imageBuffer: Buffer,
@@ -210,18 +200,11 @@ export async function analyzeImage(
     );
   }
 
-  // Strip leading slash commands (e.g., /new, /help) so Claude CLI doesn't
-  // misinterpret them as Claude Code slash commands during vision analysis.
-  const sanitizedPrompt = sanitizeCaptionForVision(userPrompt) || "Describe this image in detail.";
+  const sanitizedPrompt =
+    sanitizeCaptionForVision(userPrompt) || "Describe this image in detail.";
 
   const mediaType = detectMediaType(imageBuffer);
-  const ext = mediaType.split("/")[1]; // "jpeg", "png", "gif", "webp"
-  const tmpPath = join(
-    tmpdir(),
-    `telegram_img_${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`
-  );
-
-  await Bun.write(tmpPath, imageBuffer);
+  const imageData = imageBuffer.toString("base64");
 
   const start = Date.now();
   trace({
@@ -232,28 +215,42 @@ export async function analyzeImage(
     promptLength: sanitizedPrompt.length,
   });
 
+  const client = new Anthropic();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), VISION_TIMEOUT_MS);
+
   try {
-    // --dangerously-skip-permissions is required in -p (non-interactive) mode:
-    // without it, Claude CLI hangs waiting for an interactive permission prompt.
-    // cwd=/tmp lets the relative filename resolve without embedding /tmp in the prompt.
-    const fileName = basename(tmpPath);
-    const prompt = `${sanitizedPrompt}\n\nImage: ${fileName}`;
-    const result = await claudeText(prompt, {
-      model: VISION_MODEL,
-      timeoutMs: VISION_TIMEOUT_MS,
-      dangerouslySkipPermissions: true,
-      cwd: tmpdir(),
-    });
+    const response = await client.messages.create(
+      {
+        model: VISION_MODEL,
+        max_tokens: 1024,
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "image",
+                source: { type: "base64", media_type: mediaType, data: imageData },
+              },
+              { type: "text", text: sanitizedPrompt },
+            ],
+          },
+        ],
+      },
+      { signal: controller.signal }
+    );
+
+    const text = response.content.find((b) => b.type === "text")?.text ?? "";
 
     trace({
       event: "vision_complete",
       durationMs: Date.now() - start,
-      responseLength: result.length,
+      responseLength: text.length,
       model: VISION_MODEL,
       mediaType,
     });
 
-    return result;
+    return text;
   } catch (err) {
     trace({
       event: "vision_error",
@@ -265,6 +262,6 @@ export async function analyzeImage(
     });
     throw err;
   } finally {
-    await rm(tmpPath, { force: true }).catch(() => {});
+    clearTimeout(timer);
   }
 }

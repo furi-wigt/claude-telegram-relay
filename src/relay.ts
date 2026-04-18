@@ -216,6 +216,8 @@ const RELAY_FORM_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 /** Pending KB save state, keyed by saveId = "{chatId}:{timestamp}". Capped at 200 entries. */
 const pendingKBSaves = new Map<string, { text: string; title: string; chatId: number; threadId: number | null }>();
 const MAX_PENDING_KB_SAVES = 50;
+/** Max extracted chars sent to Claude for bare-file messages — prevents OOM on large docs. */
+const MAX_DOC_EXTRACT_CHARS = parseInt(process.env.MAX_DOC_EXTRACT_CHARS ?? "50000", 10);
 /** Expiry timer IDs for pendingKBSaves — cleared before a key is removed to prevent zombie timers. */
 const pendingKBSaveTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
@@ -1317,9 +1319,16 @@ async function handleBareFileToClaudeInternal(
     const extracted = await extractFileText(filePath, ext);
     if (!extracted.text.trim()) { await ctx.reply("❌ Could not extract text from this file."); return; }
 
+    let extractedText = extracted.text;
+    if (extractedText.length > MAX_DOC_EXTRACT_CHARS) {
+      console.info(`[doc-to-claude] truncating doc from ${extractedText.length} to ${MAX_DOC_EXTRACT_CHARS} chars (${fileName})`);
+      extractedText = extractedText.slice(0, MAX_DOC_EXTRACT_CHARS) +
+        "\n[Document truncated — content exceeds size limit]";
+    }
+
     // Build Claude prompt: caption as question or default to summarise
     const userPrompt = caption || `Summarise this file.`;
-    const contextPrefix = `[Attached: ${fileName}]\n${extracted.text}\n\n`;
+    const contextPrefix = `[Attached: ${fileName}]\n${extractedText}\n\n`;
     const fullPrompt = contextPrefix + userPrompt;
 
     // Route to processTextMessage so session/memory/etc. all work

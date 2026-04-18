@@ -9,15 +9,20 @@
  * Run: bun test src/vision/visionClient.observability.test.ts
  */
 
-import { describe, test, expect, mock, beforeEach, spyOn } from "bun:test";
+import { describe, test, expect, mock, beforeEach } from "bun:test";
 
 // ── Mocks (must precede await import) ────────────────────────────────────────
 
-const mockClaudeText = mock(() =>
-  Promise.resolve("Image shows a Telegram chat interface.")
+const mockCreate = mock(() =>
+  Promise.resolve({
+    content: [{ type: "text", text: "Image shows a Telegram chat interface." }],
+  })
 );
-mock.module("../claude-process.ts", () => ({
-  claudeText: mockClaudeText,
+
+mock.module("@anthropic-ai/sdk", () => ({
+  default: class MockAnthropic {
+    messages = { create: mockCreate };
+  },
 }));
 
 const mockTrace = mock((_event: Record<string, unknown>) => {});
@@ -41,12 +46,13 @@ const pngBuf = () =>
 describe("analyzeImage — trace events", () => {
   beforeEach(() => {
     mockTrace.mockClear();
-    mockClaudeText.mockClear();
-    mockClaudeText.mockResolvedValue("Image shows a Telegram chat interface.");
-    spyOn(Bun, "write").mockResolvedValue(0 as unknown as number);
+    mockCreate.mockClear();
+    mockCreate.mockResolvedValue({
+      content: [{ type: "text", text: "Image shows a Telegram chat interface." }],
+    });
   });
 
-  test("emits vision_start before calling claudeText", async () => {
+  test("emits vision_start before calling API", async () => {
     await analyzeImage(jpegBuf(), "What is this?");
 
     const events = mockTrace.mock.calls.map((c) => (c[0] as any).event);
@@ -95,22 +101,24 @@ describe("analyzeImage — trace events", () => {
   });
 
   test("vision_complete includes responseLength", async () => {
-    const response = "A detailed image description here.";
-    mockClaudeText.mockResolvedValue(response);
+    const responseText = "A detailed image description here.";
+    mockCreate.mockResolvedValue({
+      content: [{ type: "text", text: responseText }],
+    });
 
     await analyzeImage(jpegBuf(), "Describe");
 
     const completeCall = mockTrace.mock.calls.find(
       (c) => (c[0] as any).event === "vision_complete"
     );
-    expect((completeCall![0] as any).responseLength).toBe(response.length);
+    expect((completeCall![0] as any).responseLength).toBe(responseText.length);
   });
 
-  test("emits vision_error when claudeText throws", async () => {
-    mockClaudeText.mockRejectedValueOnce(new Error("CLI spawn failed"));
+  test("emits vision_error when API throws", async () => {
+    mockCreate.mockRejectedValueOnce(new Error("API spawn failed"));
 
     await expect(analyzeImage(jpegBuf(), "What?")).rejects.toThrow(
-      "CLI spawn failed"
+      "API spawn failed"
     );
 
     const events = mockTrace.mock.calls.map((c) => (c[0] as any).event);
@@ -118,7 +126,7 @@ describe("analyzeImage — trace events", () => {
   });
 
   test("vision_error includes error message", async () => {
-    mockClaudeText.mockRejectedValueOnce(new Error("timeout after 60s"));
+    mockCreate.mockRejectedValueOnce(new Error("timeout after 60s"));
 
     await expect(analyzeImage(jpegBuf(), "What?")).rejects.toThrow();
 
@@ -130,7 +138,7 @@ describe("analyzeImage — trace events", () => {
   });
 
   test("vision_error still rethrows so caller receives the error", async () => {
-    mockClaudeText.mockRejectedValueOnce(new Error("service unavailable"));
+    mockCreate.mockRejectedValueOnce(new Error("service unavailable"));
 
     await expect(analyzeImage(jpegBuf(), "What?")).rejects.toThrow(
       "service unavailable"
@@ -159,9 +167,8 @@ describe("analyzeImage — trace events", () => {
 describe("analyzeImages — batch trace events", () => {
   beforeEach(() => {
     mockTrace.mockClear();
-    mockClaudeText.mockClear();
-    mockClaudeText.mockResolvedValue("described");
-    spyOn(Bun, "write").mockResolvedValue(0 as unknown as number);
+    mockCreate.mockClear();
+    mockCreate.mockResolvedValue({ content: [{ type: "text", text: "described" }] });
   });
 
   test("emits vision_batch_start before processing images", async () => {
@@ -188,8 +195,8 @@ describe("analyzeImages — batch trace events", () => {
   });
 
   test("vision_batch_complete tracks successCount and failCount", async () => {
-    mockClaudeText
-      .mockResolvedValueOnce("first ok")
+    mockCreate
+      .mockResolvedValueOnce({ content: [{ type: "text", text: "first ok" }] })
       .mockRejectedValueOnce(new Error("second failed"));
 
     await analyzeImages([jpegBuf(), pngBuf()], "describe");
