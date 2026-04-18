@@ -118,4 +118,53 @@ describe("resolveModelPrefix", () => {
     expect(r.model).toBe(SONNET_MODEL);
     expect(r.text).toBe("Tell me about [O] notation");
   });
+
+  // ── sessionModel (session-scoped override) ────────────────────────────────
+
+  test("sessionModel='opus' with no prefix and no agentDefault → Opus", () => {
+    const r = resolveModelPrefix("hello", undefined, "opus");
+    expect(r.model).toBe(OPUS_MODEL);
+    expect(r.label).toBe("Opus");
+    expect(r.text).toBe("hello");
+  });
+
+  test("sessionModel='haiku' overrides agentDefault='sonnet'", () => {
+    const r = resolveModelPrefix("hello", "sonnet", "haiku");
+    expect(r.model).toBe(HAIKU_MODEL);
+    expect(r.label).toBe("Haiku");
+  });
+
+  test("[O] prefix overrides sessionModel='haiku'", () => {
+    const r = resolveModelPrefix("[O] big task", "sonnet", "haiku");
+    expect(r.model).toBe(OPUS_MODEL);
+    expect(r.label).toBe("Opus");
+    expect(r.text).toBe("big task");
+  });
+
+  test("[H] prefix overrides sessionModel='opus'", () => {
+    const r = resolveModelPrefix("[H] quick q", undefined, "opus");
+    expect(r.model).toBe(HAIKU_MODEL);
+    expect(r.text).toBe("quick q");
+  });
+
+  test("sessionModel undefined falls through to agentDefault", () => {
+    const r = resolveModelPrefix("hello", "haiku", undefined);
+    expect(r.model).toBe(HAIKU_MODEL);
+  });
+
+  test("sessionModel='local' → local token", () => {
+    const r = resolveModelPrefix("offline", undefined, "local");
+    expect(r.model).toBe(LOCAL_MODEL_TOKEN);
+    expect(r.label).toBe("Local");
+  });
+
+  test("sessionModel case insensitive", () => {
+    expect(resolveModelPrefix("hi", undefined, "OPUS").model).toBe(OPUS_MODEL);
+    expect(resolveModelPrefix("hi", undefined, "Haiku").model).toBe(HAIKU_MODEL);
+  });
+
+  test("unknown sessionModel falls through to agentDefault", () => {
+    const r = resolveModelPrefix("hi", "sonnet", "garbage");
+    expect(r.model).toBe(SONNET_MODEL);
+  });
 });

@@ -46,7 +46,7 @@ import { callRoutineModel } from "./routines/routineModel.ts";
 import { getAgentForChat, autoDiscoverGroup, loadGroupMappings } from "./routing/groupRouter.ts";
 import { isCommandCenter, orchestrateMessage, registerOrchestrationCallbacks, setDispatchRunner, setTopicCreator, setDispatchNotifier } from "./orchestration/index.ts";
 // Router removed: always use Sonnet for simplicity and predictable latency
-import { loadSession as loadGroupSession, updateSessionIdGuarded, initSessions, loadAllSessions, saveSession, isResumeReliable, didResumeFail, lockActiveCwd, resetSession, getSessionSince } from "./session/groupSessions.ts";
+import { loadSession as loadGroupSession, updateSessionIdGuarded, initSessions, loadAllSessions, saveSession, isResumeReliable, didResumeFail, lockActiveCwd, resetSession, getSessionSince, getSession } from "./session/groupSessions.ts";
 import { buildAgentPrompt } from "./agents/promptBuilder.ts";
 import { GroupQueueManager } from "./queue/groupQueueManager.ts";
 import { registerCommands, registerContextSwitchCallbackHandler, registerRebootCallbackHandler } from "./commands/botCommands.ts";
@@ -1911,8 +1911,8 @@ async function processTextMessage(
     }
 
     // Resolve model prefix before building prompt so stripped text flows everywhere.
-    // Priority: user prefix [O/H/Q] > agent.defaultModel > Sonnet.
-    const { model: resolvedModel, label: modelLabel, text: cleanText } = resolveModelPrefix(text, agent.defaultModel);
+    // Priority: [O/H/L] prefix > session.sessionModel > agent.defaultModel > Sonnet.
+    const { model: resolvedModel, label: modelLabel, text: cleanText } = resolveModelPrefix(text, agent.defaultModel, session.sessionModel);
     text = cleanText;
 
     // ── Show progress indicator immediately ──────────────────────────
@@ -2658,7 +2658,9 @@ function enqueuePhotoJob(
         // Honour [O]/[H]/[L] prefix in caption for Phase 2 (agent response).
         // Phase 1 (vision description) always uses Sonnet — it requires vision capability.
         // [L] is silently downgraded to Sonnet: local LM Studio has no vision capability.
-        const { model: rawPhotoModel, label: rawPhotoLabel, text: cleanCaption } = resolveModelPrefix(caption, agent.defaultModel);
+        // Use cache-only getSession() for sessionModel — session is fully loaded below.
+        const photoSessionModel = getSession(chatId, threadId)?.sessionModel;
+        const { model: rawPhotoModel, label: rawPhotoLabel, text: cleanCaption } = resolveModelPrefix(caption, agent.defaultModel, photoSessionModel);
         const resolvedModel = rawPhotoModel === LOCAL_MODEL_TOKEN ? SONNET_MODEL : rawPhotoModel;
         const resolvedLabel = rawPhotoModel === LOCAL_MODEL_TOKEN ? "Sonnet" : rawPhotoLabel;
         caption = cleanCaption;

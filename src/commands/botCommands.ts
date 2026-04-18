@@ -24,7 +24,7 @@ import { execFile, spawn } from "child_process";
 import { extractDocTitle } from "../utils/docTitle.ts";
 import type { Bot, Context } from "grammy";
 import { InlineKeyboard } from "grammy";
-import { getSession, loadSession, getSessionSummary, resetSession, renewSession, saveSession, setTopicCwd } from "../session/groupSessions.ts";
+import { getSession, loadSession, getSessionSummary, resetSession, renewSession, saveSession, setTopicCwd, setSessionModel } from "../session/groupSessions.ts";
 import { getMemoryFull, type FullMemory } from "../memory.ts";
 import { detectConflicts } from "../memory/conflictResolver.ts";
 import { savePendingConflicts } from "../memory/pendingConflict.ts";
@@ -362,6 +362,8 @@ export function registerCommands(bot: Bot, options: CommandOptions): void {
       "/cwd - Show working directory for this topic",
       "/cwd /path/to/dir - Set working directory (takes effect after /new)",
       "/cwd reset - Clear working directory (reverts to default after /new)",
+      "/model sonnet|opus|haiku|local - Set session-scoped model (resets on /new)",
+      "/model default - Clear model override, use agent default",
       "/doc list - List all indexed documents",
       "/doc save [title] - Save most recent large paste to knowledge base",
       "/doc query <question> - Search all indexed documents",
@@ -828,6 +830,55 @@ export function registerCommands(bot: Bot, options: CommandOptions): void {
         console.error("[/cwd] setTopicCwd error:", err instanceof Error ? err.message : err);
       }
     }
+  });
+
+  // /model [alias|default] — set or clear session-scoped model override
+  bot.command("model", async (ctx) => {
+    const chatId = ctx.chat?.id;
+    if (!chatId) return;
+    const threadId = ctx.message?.message_thread_id ?? null;
+
+    const alias = ((ctx.match as string) ?? "").trim().toLowerCase();
+
+    const VALID_ALIASES: Record<string, string> = {
+      sonnet: "sonnet",
+      opus: "opus",
+      haiku: "haiku",
+      local: "local",
+    };
+    const ALIAS_LABELS: Record<string, string> = {
+      sonnet: "Sonnet", opus: "Opus", haiku: "Haiku", local: "Local",
+    };
+
+    if (!alias || alias === "default") {
+      // Ensure session is loaded before mutating
+      if (!getSession(chatId, threadId) && options.agentResolver) {
+        const agentId = options.agentResolver(chatId);
+        await loadSession(chatId, agentId, threadId).catch(() => {});
+      }
+      await setSessionModel(chatId, threadId, undefined);
+      await ctx.reply("Session model cleared. Using agent default.");
+      return;
+    }
+
+    if (!VALID_ALIASES[alias]) {
+      await ctx.reply(
+        "Unknown model. Usage:\n" +
+        "  /model sonnet   — Claude Sonnet (default)\n" +
+        "  /model opus     — Claude Opus\n" +
+        "  /model haiku    — Claude Haiku\n" +
+        "  /model local    — Local LM Studio\n" +
+        "  /model default  — Clear override, use agent default",
+      );
+      return;
+    }
+
+    if (!getSession(chatId, threadId) && options.agentResolver) {
+      const agentId = options.agentResolver(chatId);
+      await loadSession(chatId, agentId, threadId).catch(() => {});
+    }
+    await setSessionModel(chatId, threadId, alias);
+    await ctx.reply(`Session model set to ${ALIAS_LABELS[alias]}. Resets on /new.`);
   });
 
   // /agents - list all agents with capabilities

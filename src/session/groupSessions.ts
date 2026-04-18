@@ -81,6 +81,14 @@ export interface SessionState {
    * --resume always uses the same CLAUDE.md context as the original spawn.
    */
   activeCwd?: string;
+  /**
+   * Session-scoped model override set by /model command.
+   * Priority: per-message [O/H/L] prefix → sessionModel → agent.defaultModel → Sonnet.
+   * Stored as a shorthand alias ("opus"|"sonnet"|"haiku"|"local") matching
+   * AGENT_DEFAULT_MODEL_MAP keys in modelPrefix.ts.
+   * Cleared by resetSession() and by /model default.
+   */
+  sessionModel?: string;
 }
 
 /** Build a unique map key from chatId and optional threadId */
@@ -323,6 +331,7 @@ export async function resetSession(chatId: number, threadId?: number | null): Pr
     session.suppressContextInjection = true;
     session.wasExplicitReset = true;
     session.resetGen = (session.resetGen ?? 0) + 1;
+    session.sessionModel = undefined;
     await saveSession(session);
   }
 }
@@ -460,6 +469,25 @@ export async function setTopicCwd(
   if (!session) return;
 
   session.cwd = cwd !== "" ? cwd : undefined;
+  await saveSession(session);
+}
+
+/**
+ * Set or clear the session-scoped model override for a chat.
+ *
+ * @param alias  "opus"|"sonnet"|"haiku"|"local" to set, or undefined to clear.
+ *               The alias is stored as-is and resolved via AGENT_DEFAULT_MODEL_MAP
+ *               in modelPrefix.ts at call time, keeping session files model-agnostic.
+ */
+export async function setSessionModel(
+  chatId: number,
+  threadId: number | null | undefined,
+  alias: string | undefined,
+): Promise<void> {
+  const key = sessionKey(chatId, threadId ?? null);
+  const session = sessions.get(key);
+  if (!session) return;
+  session.sessionModel = alias;
   await saveSession(session);
 }
 

@@ -119,3 +119,17 @@
 **Why**: Avoids startup cost and hardcoded handler list. Supports hot-reload: SIGUSR2 to scheduler → fresh import on next job. Zero changes to executor registration code when adding handlers.
 **Rejected**: Static import list in src/jobs/index.ts — requires code change for every new handler.
 **Branch**: feat/job-queue-executors
+
+## 2026-04-18 — sessionModel stored as alias shorthand, not full model ID [pending]
+
+**Change**: `SessionState.sessionModel` stores `"opus"|"sonnet"|"haiku"|"local"`, not the full Claude model string.
+**Why**: Keeps session files model-agnostic. If Anthropic renames a model (e.g. sonnet-4-6 → sonnet-4-7), only `AGENT_DEFAULT_MODEL_MAP` in modelPrefix.ts needs updating — session files on disk are unaffected.
+**Rejected**: Storing full model ID — would require migrating all session files on model rename.
+**Branch**: feat/model-session-scoped
+
+## 2026-04-18 — Photo handler uses cache-only getSession() for sessionModel [pending]
+
+**Change**: Photo handler calls `getSession(chatId, threadId)?.sessionModel` (cache lookup, no disk) before the full `loadGroupSession()` call, to pass sessionModel to `resolveModelPrefix()` early (needed for the progress indicator label).
+**Why**: The progress indicator is started before session load. Using `getSession()` avoids a second disk read; if the session isn't in cache yet, `sessionModel` is undefined which correctly falls back to agentDefault.
+**Rejected**: Moving the full `loadGroupSession()` call before `resolveModelPrefix()` — would block vision analysis start on a disk read.
+**Branch**: feat/model-session-scoped

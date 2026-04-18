@@ -2,7 +2,7 @@
  * Model prefix resolution for Telegram message routing.
  *
  * Priority chain:
- *   user prefix [O/H/Q]  >  agent defaultModel  >  Sonnet
+ *   per-message [O/H/L] prefix  >  session.sessionModel  >  agent.defaultModel  >  Sonnet
  */
 
 export const SONNET_MODEL = "claude-sonnet-4-6";
@@ -30,12 +30,13 @@ export interface ResolvedModel {
  * Parse an optional model-selection prefix from user text.
  *
  * Prefixes: `[O]` → Opus, `[H]` → Haiku, `[L]` → local LM Studio.
- * No prefix: use `agentDefault` shorthand, else Sonnet.
+ * No prefix: sessionModel → agentDefault → Sonnet.
  *
- * @param text         - Raw user message text.
- * @param agentDefault - Agent's defaultModel: "opus"|"sonnet"|"haiku"|"local".
+ * @param text          - Raw user message text.
+ * @param agentDefault  - Agent's defaultModel shorthand: "opus"|"sonnet"|"haiku"|"local".
+ * @param sessionModel  - Session-scoped override set by /model command (same shorthand).
  */
-export function resolveModelPrefix(text: string, agentDefault?: string): ResolvedModel {
+export function resolveModelPrefix(text: string, agentDefault?: string, sessionModel?: string): ResolvedModel {
   const m = text.match(/^\[([OHL])\]\s*/i);
   if (m) {
     const tag = m[1].toUpperCase();
@@ -44,7 +45,8 @@ export function resolveModelPrefix(text: string, agentDefault?: string): Resolve
     if (tag === "H") return { model: HAIKU_MODEL,       label: "Haiku",  text: stripped };
     if (tag === "L") return { model: LOCAL_MODEL_TOKEN, label: "Local",  text: stripped };
   }
-  const def = agentDefault ? AGENT_DEFAULT_MODEL_MAP[agentDefault.toLowerCase()] : undefined;
+  const effective = sessionModel ?? agentDefault;
+  const def = effective ? AGENT_DEFAULT_MODEL_MAP[effective.toLowerCase()] : undefined;
   return def
     ? { ...def, text }
     : { model: SONNET_MODEL, label: "Sonnet", text };
