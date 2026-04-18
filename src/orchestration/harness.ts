@@ -4,7 +4,9 @@
  * Loads a contract, executes steps sequentially, writes a state file,
  * and posts each step's result to the CC thread.
  *
- * Replaces the blackboard/mesh/review-loop machinery with ~100 lines.
+ * Redirect routing: agents may include [REDIRECT: <agent-id>] in their response
+ * to signal the harness to re-route the original request to a different agent.
+ * Loop guard: max 3 redirect hops; circular redirects are detected and aborted.
  */
 
 import type { Bot } from "grammy";
@@ -41,12 +43,34 @@ export interface DispatchState {
   updatedAt: string;
 }
 
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+const MAX_REDIRECT_HOPS = 3;
+const REDIRECT_TAG_RE = /\[REDIRECT:\s*([a-z][a-z0-9-]*)\]/i;
+
+// ── Redirect helpers ──────────────────────────────────────────────────────────
+
+/** Extract agent-id from [REDIRECT: <agent-id>] tag. Returns null if absent. */
+function parseRedirectSignal(response: string): string | null {
+  const m = response.match(REDIRECT_TAG_RE);
+  return m ? m[1].toLowerCase() : null;
+}
+
+/** Remove [REDIRECT: ...] tag from response before storing or displaying. */
+function stripRedirectTag(response: string): string {
+  return response.replace(REDIRECT_TAG_RE, "").trim();
+}
+
 // ── Public API ─────────────────────────────────────────────────────────────────
 
 /**
  * Run the NLAH harness for a confirmed dispatch.
  * Loads the matching contract, executes steps sequentially, posts results to CC.
  * State is persisted to ~/.claude-relay/harness/state/{dispatchId}.json after each step.
+ *
+ * Redirect routing: if an agent responds with [REDIRECT: <agent-id>], a new step
+ * is appended and the original userMessage is re-dispatched to the target agent.
+ * Loop guard: MAX_REDIRECT_HOPS (3) hard cap; circular redirects abort immediately.
  */
 export async function runHarness(
   bot: Bot,
@@ -57,7 +81,7 @@ export async function runHarness(
   const contract = await loadContract(plan.classification.intent);
   const contractSteps = contract?.steps ?? [];
 
-  // Build step list: from contract if multi-step, else single step from classification
+  // Build initial step list from contract if multi-step, else single step from classification
   const steps: StepState[] = contractSteps.length > 0
     ? contractSteps.map((s) => ({ seq: s.seq, agent: s.agent, status: "pending", output: null, durationMs: null }))
     : [{ seq: 1, agent: plan.classification.primaryAgent, status: "pending", output: null, durationMs: null }];
@@ -74,8 +98,14 @@ export async function runHarness(
 
   await persistState(state);
 
-  // Execute steps sequentially
-  for (const step of state.steps) {
+  // Loop guard state — local to this run, GC'd on return
+  const triedAgents = new Set<string>();
+  let redirectHops = 0;
+  let stepIdx = 0;
+
+  // while-loop (not for-of) so we can dynamically append redirect steps
+  while (stepIdx < state.steps.length) {
+    const step = state.steps[stepIdx];
     step.status = "in_progress";
     state.updatedAt = new Date().toISOString();
     await persistState(state);
@@ -88,27 +118,70 @@ export async function runHarness(
 
     const result = await executeSingleDispatch(bot, stepPlan, ccChatId, ccThreadId);
 
-    step.output = result.response;
+    // Parse redirect before storing — strip tag from persisted/displayed output
+    const redirectTo = result.success ? parseRedirectSignal(result.response) : null;
+    const cleanResponse = stripRedirectTag(result.response);
+
+    step.output = cleanResponse;
     step.durationMs = result.durationMs;
     step.status = result.success ? "done" : "failed";
+    triedAgents.add(step.agent);
     state.updatedAt = new Date().toISOString();
     await persistState(state);
 
-    // Post step result to CC thread
-    await postResult(bot, step.agent, result, ccChatId, ccThreadId);
+    await postResult(bot, step.agent, { ...result, response: cleanResponse }, ccChatId, ccThreadId);
 
     if (!result.success) {
       state.status = "failed";
       await persistState(state);
       return;
     }
+
+    // ── Redirect handling ────────────────────────────────────────────────────
+
+    if (redirectTo) {
+      if (!AGENTS[redirectTo]) {
+        // Unknown agent — ignore silently (warn in logs)
+        console.warn(`[harness] Unknown redirect target "${redirectTo}" from ${step.agent} — ignoring`);
+      } else if (triedAgents.has(redirectTo)) {
+        // Circular redirect guard
+        const toName = AGENTS[redirectTo]?.name ?? redirectTo;
+        await postCCNotice(bot, `⚠️ Circular redirect detected: <b>${toName}</b> already handled this request`, ccChatId, ccThreadId);
+        state.status = "failed";
+        await persistState(state);
+        return;
+      } else if (redirectHops >= MAX_REDIRECT_HOPS) {
+        // Hop limit guard
+        await postCCNotice(bot, `⚠️ Max redirect hops (${MAX_REDIRECT_HOPS}) reached — stopping dispatch`, ccChatId, ccThreadId);
+        state.status = "failed";
+        await persistState(state);
+        return;
+      } else {
+        // Valid redirect — append new step and notify CC
+        redirectHops++;
+        const fromName = AGENTS[step.agent]?.name ?? step.agent;
+        const toName = AGENTS[redirectTo]?.name ?? redirectTo;
+        await postCCNotice(bot, `↩️ <b>${fromName}</b> → <b>${toName}</b> (redirected)`, ccChatId, ccThreadId);
+
+        state.steps.push({
+          seq: state.steps.length + 1,
+          agent: redirectTo,
+          status: "pending",
+          output: null,
+          durationMs: null,
+        });
+        await persistState(state);
+      }
+    }
+
+    stepIdx++;
   }
 
   state.status = "done";
   state.updatedAt = new Date().toISOString();
   await persistState(state);
 
-  // Post synthesis header for multi-step dispatches
+  // Post synthesis header for multi-step dispatches (includes redirected steps)
   if (state.steps.length > 1) {
     const lines = state.steps.map((s) => {
       const icon = s.status === "done" ? "✅" : "❌";
@@ -156,6 +229,19 @@ async function postResult(
       }
     });
   }
+}
+
+/** Post a short notice (redirect notification or guard warning) to the CC thread. */
+async function postCCNotice(
+  bot: Bot,
+  html: string,
+  ccChatId: number,
+  ccThreadId: number | null,
+): Promise<void> {
+  await bot.api.sendMessage(ccChatId, html, {
+    parse_mode: "HTML",
+    message_thread_id: ccThreadId ?? undefined,
+  }).catch(() => {});
 }
 
 async function persistState(state: DispatchState): Promise<void> {
