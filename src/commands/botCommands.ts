@@ -421,7 +421,19 @@ export function registerCommands(bot: Bot, options: CommandOptions): void {
     }
 
     try {
-      if (prompt && onMessage) {
+      if (prompt.startsWith("/")) {
+        // Prompt is a bot command — re-dispatch through Grammy so command handlers fire normally.
+        await ctx.reply("Starting a fresh conversation! Redirecting your command...");
+        const cmdName = prompt.slice(1).split(/[\s@]/)[0];
+        await bot.handleUpdate({
+          update_id: ctx.update.update_id,
+          message: {
+            ...ctx.message,
+            text: prompt,
+            entities: [{ type: "bot_command", offset: 0, length: cmdName.length + 1 }],
+          },
+        });
+      } else if (prompt && onMessage) {
         await ctx.reply("Starting a fresh conversation! Processing your message...");
         await onMessage(chatId, prompt, ctx);
       } else {
@@ -452,7 +464,19 @@ export function registerCommands(bot: Bot, options: CommandOptions): void {
     }
 
     try {
-      if (prompt && onMessage) {
+      if (prompt.startsWith("/")) {
+        // Prompt is a bot command — re-dispatch through Grammy so command handlers fire normally.
+        await ctx.reply("Session renewed! Redirecting your command...");
+        const cmdName = prompt.slice(1).split(/[\s@]/)[0];
+        await bot.handleUpdate({
+          update_id: ctx.update.update_id,
+          message: {
+            ...ctx.message,
+            text: prompt,
+            entities: [{ type: "bot_command", offset: 0, length: cmdName.length + 1 }],
+          },
+        });
+      } else if (prompt && onMessage) {
         await ctx.reply("Session renewed with full context! Processing your message...");
         await onMessage(chatId, prompt, ctx);
       } else {
