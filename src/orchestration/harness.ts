@@ -19,7 +19,7 @@ import { join } from "path";
 import { homedir } from "os";
 import { loadContract } from "./contractLoader.ts";
 import { executeSingleDispatch } from "./dispatchEngine.ts";
-import { markdownToHtml, splitMarkdown } from "../utils/htmlFormat.ts";
+import { markdownToHtml, splitMarkdown, decodeHtmlEntities } from "../utils/htmlFormat.ts";
 import { chunkMessage } from "../utils/sendToGroup.ts";
 import type { DispatchPlan } from "./types.ts";
 import { AGENTS } from "../agents/config.ts";
@@ -304,9 +304,7 @@ async function postResult(
       parse_mode: "HTML",
       message_thread_id: ccThreadId ?? undefined,
     }).catch(async () => {
-      const plain = i === 0
-        ? `${icon} ${agentName} — ${result.success ? "completed" : "failed"} (${sec}s)\n\n${chunks[i]}`
-        : chunks[i];
+      const plain = decodeHtmlEntities(html.replace(/<[^>]+>/g, ""));
       for (const chunk of chunkMessage(plain)) {
         const s = await bot.api.sendMessage(ccChatId, chunk, {
           message_thread_id: ccThreadId ?? undefined,

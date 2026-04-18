@@ -52,7 +52,7 @@ export async function executeSingleDispatch(
   updateTaskStatus(plan.dispatchId, task.agentId, "dispatched");
 
   // Send dispatch header to agent group
-  const dispatchText = `📨 *Dispatched from Command Center*\n\n${plan.userMessage}`;
+  const dispatchText = `📨 Dispatched from Command Center\n\n${plan.userMessage}`;
   let effectiveTopicId: number | null = (agent.meshTopicId ?? agent.topicId) ?? null;
   try {
     const sent = await bot.api.sendMessage(agent.chatId, dispatchText, {
