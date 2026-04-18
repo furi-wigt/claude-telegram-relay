@@ -20,6 +20,7 @@ import { registerJobCommands, buildInterventionKeyboard } from "./telegramJobCom
 import { createWebhookServer } from "./sources/webhookServer.ts";
 import { sendToGroup } from "../utils/sendToGroup.ts";
 import { initJobBridge } from "./jobBridge.ts";
+import { initFromDb as initTopicRegistry } from "./jobTopicRegistry.ts";
 import type { Bot, Context } from "grammy";
 import type { Job } from "./types.ts";
 
@@ -83,6 +84,9 @@ export function initJobQueue(bot: Bot<Context>): JobQueueSystem {
 
   // Expose store + intervention to the orchestration layer (for clarification resume)
   initJobBridge(store, intervention);
+
+  // Rebuild job topic registry from DB (survives PM2 restarts)
+  initTopicRegistry(db);
 
   // Register Telegram commands
   registerJobCommands(bot, store, intervention);

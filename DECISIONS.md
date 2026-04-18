@@ -1,5 +1,19 @@
 # Decision Journal
 
+## 2026-04-18 — /schedule UX: token Jaccard over embedding similarity [feat/schedule_ux_hardening]
+
+**Change**: Similar job detection uses token Jaccard (set intersection / union on word tokens ≥3 chars) instead of embedding similarity.
+**Why**: Active `claude-session` jobs are typically <10 at any time. Token Jaccard is O(n×w), deterministic, zero-latency (no MLX call), and sufficient for detecting near-duplicate prompts. Embedding similarity would require MLX to be running and add 200–500ms to every `/schedule` invocation.
+**Rejected**: Exact dedup_key (hash match) — too strict, would miss paraphrases. LLM-based similarity — overkill and adds failure surface.
+**Branch**: feat/schedule_ux_hardening
+
+## 2026-04-18 — Persistent topic registry: hot map + SQLite fallback [feat/schedule_ux_hardening]
+
+**Change**: `jobTopicRegistry.ts` now has a `initFromDb()` startup loader that rebuilds the hot Map from `jobs.metadata`, plus a SQLite `LIKE` fallback in `getJobTopic()` for individual misses after restart.
+**Why**: The previous in-memory-only design silently broke `[CLARIFY:]` resume routing after a PM2 restart — user replies in CC topics were no longer routed to the suspended job. The SQLite fallback closes this gap with minimal code using data already persisted by `claudeSessionExecutor`.
+**Rejected**: Writing a separate `job_topic_registry` table — redundant, `jobs.metadata` already stores `jobTopicId`.
+**Branch**: feat/schedule_ux_hardening
+
 ## 2026-04-18 — Job topic UX: in-memory registry over DB query [feat/job-topic-ux]
 
 **Change**: Job topic → job metadata mapping stored in a module-level `Map` (jobTopicRegistry.ts) rather than querying the SQLite job store.
