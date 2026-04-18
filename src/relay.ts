@@ -1290,6 +1290,13 @@ async function handleBareFileToClaudeInternal(
   try {
     await ctx.replyWithChatAction("typing");
 
+    // Caption is unrelated to the document — skip extraction and treat as plain text.
+    if (caption && !captionReferencesAttachment(caption)) {
+      clearInterval(typingInterval);
+      await processTextMessage(chatId, threadId, caption, ctx);
+      return;
+    }
+
     const downloaded = await downloadTelegramDoc(ctx, doc, `❌ Unsupported file type. To save to KB: send with /doc ingest`);
     if (!downloaded) return;
     const { filePath: fp, fileName, ext } = downloaded;
@@ -2666,6 +2673,29 @@ interface AlbumAccumulator {
 const MEDIA_GROUP_DEBOUNCE_MS = 800;
 const albumAccumulators = new Map<string, AlbumAccumulator>();
 
+/**
+ * Returns true when the message caption is directed at the attached photo/document.
+ * An empty caption is treated as implicit intent to process the attachment.
+ * Captions that are clearly unrelated tasks (e.g. "book me a meeting") return false.
+ */
+function captionReferencesAttachment(caption: string): boolean {
+  if (!caption.trim()) return true;
+  const lc = caption.toLowerCase();
+  return [
+    // attachment nouns
+    "image", "photo", "picture", "screenshot", "img", "pic",
+    "document", "doc", "file", "pdf", "attachment",
+    // analysis verbs / phrases
+    "analyze", "analyse", "read", "look at", "describe", "explain",
+    "summarize", "summarise", "translate",
+    // deixis pointing at the attachment
+    "what is in", "what's in", "what does this", "what's this",
+    "this image", "this photo", "this doc", "this file",
+    // numbered references e.g. "image #1"
+    "#1", "#2", "#3",
+  ].some(kw => lc.includes(kw));
+}
+
 // ── Shared photo processing ────────────────────────────────────────────────────
 // Called either directly (single photo) or from the debounce timer (album).
 
@@ -2701,6 +2731,13 @@ function enqueuePhotoJob(
         const resolvedModel = rawPhotoModel === LOCAL_MODEL_TOKEN ? SONNET_MODEL : rawPhotoModel;
         const resolvedLabel = rawPhotoModel === LOCAL_MODEL_TOKEN ? "Sonnet" : rawPhotoLabel;
         caption = cleanCaption;
+
+        // Caption is unrelated to the attached image(s) — skip vision analysis entirely.
+        if (!captionReferencesAttachment(caption)) {
+          clearInterval(typingInterval);
+          await processTextMessage(chatId, threadId, caption, ctx);
+          return;
+        }
 
         console.log(`[${agent.name}] Image(s) received x${imageBuffers.length} (caption: ${caption.substring(0, 40)})`);
         await ctx.replyWithChatAction("typing");
