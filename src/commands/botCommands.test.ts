@@ -1,5 +1,5 @@
 import { describe, test, expect, mock, beforeEach } from "bun:test";
-import { buildContextSwitchPrompt, buildContextSwitchKeyboard, handleDocCommand } from "./botCommands.ts";
+import { buildContextSwitchPrompt, buildContextSwitchKeyboard, handleDocCommand, HELP_TREE, buildCategoryKeyboard, buildCommandBackKeyboard } from "./botCommands.ts";
 import type { DocSummary } from "../documents/documentProcessor.ts";
 import type { DocumentSearchResult } from "../rag/documentSearch.ts";
 
@@ -359,5 +359,108 @@ describe("buildContextSwitchKeyboard", () => {
     const continueBtn = buttons.find((b) => b.callback_data === "ctxswitch:continue:12345");
     expect(newBtn).toBeDefined();
     expect(continueBtn).toBeDefined();
+  });
+});
+
+// ─── HELP_TREE structure ───────────────────────────────────────────────────────
+
+describe("HELP_TREE", () => {
+  const EXPECTED_CATEGORIES = ["session", "memory", "docs", "jobs", "agents", "system"];
+
+  test("has all 6 categories", () => {
+    for (const cat of EXPECTED_CATEGORIES) {
+      expect(HELP_TREE[cat]).toBeDefined();
+    }
+  });
+
+  test("every category has icon, name, and at least one command", () => {
+    for (const [cat, category] of Object.entries(HELP_TREE)) {
+      expect(category.icon).toBeTruthy();
+      expect(category.name).toBeTruthy();
+      expect(Object.keys(category.commands).length).toBeGreaterThan(0);
+    }
+  });
+
+  test("every command has a non-empty label and detail", () => {
+    for (const [cat, category] of Object.entries(HELP_TREE)) {
+      for (const [cmdId, cmd] of Object.entries(category.commands)) {
+        expect(cmd.label.length).toBeGreaterThan(0);
+        expect(cmd.detail.length).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  test("every command detail contains a Usage: or Examples: section", () => {
+    for (const [cat, category] of Object.entries(HELP_TREE)) {
+      for (const [cmdId, cmd] of Object.entries(category.commands)) {
+        const hasSection = cmd.detail.includes("Usage:") || cmd.detail.includes("Examples:");
+        expect(hasSection).toBe(true);
+      }
+    }
+  });
+
+  test("all callback data lengths are within Telegram 64-byte limit", () => {
+    for (const [cat, category] of Object.entries(HELP_TREE)) {
+      for (const cmdId of Object.keys(category.commands)) {
+        const data = `help:cmd:${cat}:${cmdId}`;
+        expect(data.length).toBeLessThanOrEqual(64);
+      }
+    }
+  });
+});
+
+// ─── buildCategoryKeyboard ────────────────────────────────────────────────────
+
+describe("buildCategoryKeyboard", () => {
+  test("session keyboard contains a button for each command", () => {
+    const kb = buildCategoryKeyboard("session");
+    const buttons = kb.inline_keyboard.flat();
+    const cmdIds = Object.keys(HELP_TREE.session.commands);
+    for (const cmdId of cmdIds) {
+      const btn = buttons.find((b) => b.callback_data === `help:cmd:session:${cmdId}`);
+      expect(btn).toBeDefined();
+    }
+  });
+
+  test("keyboard always ends with a ← Back button pointing to help:back", () => {
+    for (const cat of Object.keys(HELP_TREE)) {
+      const kb = buildCategoryKeyboard(cat);
+      const buttons = kb.inline_keyboard.flat();
+      const backBtn = buttons.find((b) => b.callback_data === "help:back");
+      expect(backBtn).toBeDefined();
+    }
+  });
+
+  test("unknown category returns a keyboard with only the Back button", () => {
+    const kb = buildCategoryKeyboard("nonexistent");
+    const buttons = kb.inline_keyboard.flat();
+    expect(buttons.length).toBe(1);
+    expect(buttons[0].callback_data).toBe("help:back");
+  });
+});
+
+// ─── buildCommandBackKeyboard ─────────────────────────────────────────────────
+
+describe("buildCommandBackKeyboard", () => {
+  test("contains a button back to the category (help:cat:<cat>)", () => {
+    const kb = buildCommandBackKeyboard("session");
+    const buttons = kb.inline_keyboard.flat();
+    const catBtn = buttons.find((b) => b.callback_data === "help:cat:session");
+    expect(catBtn).toBeDefined();
+  });
+
+  test("contains a Home button (help:back)", () => {
+    const kb = buildCommandBackKeyboard("memory");
+    const buttons = kb.inline_keyboard.flat();
+    const homeBtn = buttons.find((b) => b.callback_data === "help:back");
+    expect(homeBtn).toBeDefined();
+  });
+
+  test("category button label includes the category icon and name", () => {
+    const kb = buildCommandBackKeyboard("docs");
+    const buttons = kb.inline_keyboard.flat();
+    const catBtn = buttons.find((b) => b.callback_data === "help:cat:docs");
+    expect(catBtn?.text).toContain("📄");
+    expect(catBtn?.text).toContain("Documents");
   });
 });

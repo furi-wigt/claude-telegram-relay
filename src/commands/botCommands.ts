@@ -47,100 +47,490 @@ const TELEGRAM_MAX_MESSAGE_LENGTH = 4096;
 
 const HELP_MAIN_TEXT = "Jarvis — select a category:";
 
-const HELP_CATEGORIES = {
-  session: [
-    "💬 Session",
-    "",
-    "/new [prompt] — Fresh conversation (optionally with first message)",
-    "/renew [prompt] — New session, inject full STM + LTM context",
-    "/status — Session info",
-    "/history — Recent messages",
-    "/summary — Compressed conversation history",
-    "/cancel — Abort in-progress Claude response",
-    "/model sonnet|opus|haiku|local — Set model (resets on /new)",
-    "/model default — Clear model override",
-  ].join("\n"),
+// L3 detail text per command. Each entry: label (button text) + detail (full text shown on tap).
+type CommandDetail = { label: string; detail: string };
+type HelpCategory = { icon: string; name: string; commands: Record<string, CommandDetail> };
 
-  memory: [
-    "🧠 Memory",
-    "",
-    "/memory — All memory (goals, facts, dates)",
-    "/memory goals|done|facts|dates|prefs — Filtered view",
-    "/memory dedup — Detect & resolve contradictions",
-    "/remember [text] — Save a fact",
-    "/forget N or [topic] — Delete by index or topic",
-    "/reflect [feedback] — Save a learning",
-    "/goals +text — Add goal",
-    "/goals -N or -text — Remove goal",
-    "/goals *N or *text — Mark goal done (toggle)",
-    "/goals * — View completed goals",
-    "/facts +fact — Add fact (dedup check)",
-    "/prefs +pref — Add preference",
-    "/reminders +reminder — Add reminder",
-  ].join("\n"),
+export const HELP_TREE: Record<string, HelpCategory> = {
+  session: {
+    icon: "💬", name: "Session",
+    commands: {
+      new: {
+        label: "/new",
+        detail: [
+          "💬 /new — Start a fresh conversation",
+          "",
+          "Clears the current Claude session and starts over.",
+          "Optionally pass a prompt or bot command directly.",
+          "",
+          "Usage:",
+          "  /new",
+          "  /new <message>",
+          "  /new <command>",
+          "",
+          "Examples:",
+          "  /new",
+          "  /new What are my goals for today?",
+          "  /new /memory goals",
+        ].join("\n"),
+      },
+      renew: {
+        label: "/renew",
+        detail: [
+          "💬 /renew — New session with context preserved",
+          "",
+          "Starts a fresh Claude session but injects your full",
+          "short-term memory (STM) and long-term memory (LTM)",
+          "so the conversation has historical context.",
+          "",
+          "Usage:",
+          "  /renew",
+          "  /renew <message>",
+          "",
+          "Examples:",
+          "  /renew",
+          "  /renew Continue reviewing my AWS architecture",
+        ].join("\n"),
+      },
+      status: {
+        label: "/status",
+        detail: [
+          "💬 /status — Session info",
+          "",
+          "Shows the current session state: session ID,",
+          "message count, active model, and last activity.",
+          "",
+          "Usage:",
+          "  /status",
+        ].join("\n"),
+      },
+      history: {
+        label: "/history",
+        detail: [
+          "💬 /history — Recent messages",
+          "",
+          "Shows the last few user messages from the current",
+          "session. Useful to review what you asked recently.",
+          "",
+          "Usage:",
+          "  /history",
+        ].join("\n"),
+      },
+      summary: {
+        label: "/summary",
+        detail: [
+          "💬 /summary — Compressed conversation history",
+          "",
+          "Retrieves the LLM-generated summary of past messages",
+          "in the current session. Updated automatically when",
+          "the rolling window reaches its limit.",
+          "",
+          "Usage:",
+          "  /summary",
+        ].join("\n"),
+      },
+      cancel: {
+        label: "/cancel",
+        detail: [
+          "💬 /cancel — Abort in-progress response",
+          "",
+          "Terminates the current Claude stream immediately.",
+          "Use when the response is taking too long or went",
+          "in the wrong direction.",
+          "",
+          "Usage:",
+          "  /cancel",
+        ].join("\n"),
+      },
+      model: {
+        label: "/model",
+        detail: [
+          "💬 /model — Set session model",
+          "",
+          "Overrides the Claude model for this session.",
+          "Resets on /new. Use message prefixes [O] or [H]",
+          "for a one-off Opus or Haiku response.",
+          "",
+          "Usage:",
+          "  /model sonnet|opus|haiku|local|default",
+          "",
+          "Examples:",
+          "  /model opus      — Opus for this session",
+          "  /model default   — Reset to agent default",
+          "  [O] Explain quantum entanglement",
+          "  [H] Quick summary of this file",
+        ].join("\n"),
+      },
+    },
+  },
 
-  docs: [
-    "📄 Documents",
-    "",
-    "/doc list — All indexed documents",
-    "/doc save [title] — Save last paste to knowledge base",
-    "/doc ingest <filepath> [| title] — Ingest local file",
-    "/doc query <question> — Search all documents",
-    "/doc query <q> | <title> — Search specific document(s)",
-    "/doc delete <title> — Remove document",
-    "",
-    "/kb index — Index markdown files from CWD",
-    "/kb status — Show index status",
-    "/kb search <query> — Search indexed files",
-    "",
-    "Upload PDF/XLSX/CSV directly — bot indexes on receipt.",
-  ].join("\n"),
+  memory: {
+    icon: "🧠", name: "Memory",
+    commands: {
+      memory: {
+        label: "/memory",
+        detail: [
+          "🧠 /memory — Browse your memory",
+          "",
+          "Shows all stored memory: goals, facts, dates.",
+          "Use subcommands to filter by type.",
+          "",
+          "Usage:",
+          "  /memory",
+          "  /memory goals|done|facts|dates|dedup",
+          "",
+          "Examples:",
+          "  /memory           — all memory",
+          "  /memory goals     — active goals only",
+          "  /memory done      — completed goals",
+          "  /memory facts     — stored facts",
+          "  /memory dedup     — find & resolve contradictions",
+        ].join("\n"),
+      },
+      remember: {
+        label: "/remember",
+        detail: [
+          "🧠 /remember — Save a fact to memory",
+          "",
+          "Stores any text as a fact in your long-term memory.",
+          "Facts persist across sessions and are injected as",
+          "context when relevant.",
+          "",
+          "Usage:",
+          "  /remember <text>",
+          "",
+          "Examples:",
+          "  /remember I prefer Terraform over CDK",
+          "  /remember My AWS account ID is 123456789012",
+          "  /remember Daily standup is at 9:30am SGT",
+        ].join("\n"),
+      },
+      forget: {
+        label: "/forget",
+        detail: [
+          "🧠 /forget — Delete a memory entry",
+          "",
+          "Removes a fact by index number or keyword match.",
+          "Use /memory to see indices first.",
+          "",
+          "Usage:",
+          "  /forget <N>",
+          "  /forget <topic keyword>",
+          "",
+          "Examples:",
+          "  /forget 3",
+          "  /forget standup",
+          "  /forget AWS account",
+        ].join("\n"),
+      },
+      reflect: {
+        label: "/reflect",
+        detail: [
+          "🧠 /reflect — Save a learning",
+          "",
+          "Captures explicit feedback or lessons learned.",
+          "Stored with high confidence (0.85) and used to",
+          "improve future behaviour.",
+          "",
+          "Usage:",
+          "  /reflect <feedback>",
+          "",
+          "Examples:",
+          "  /reflect Always ask before restarting services",
+          "  /reflect Use CDK L2 constructs, not CfnXxx directly",
+        ].join("\n"),
+      },
+      goals: {
+        label: "/goals",
+        detail: [
+          "🧠 /goals — Manage goals",
+          "",
+          "View, add, remove, or complete goals.",
+          "",
+          "Usage:",
+          "  /goals",
+          "  /goals +<text>",
+          "  /goals -<N or text>",
+          "  /goals *<N or text>",
+          "  /goals *",
+          "",
+          "Examples:",
+          "  /goals               — list active goals",
+          "  /goals +Ship v2.0 by Jun",
+          "  /goals -3            — remove goal #3",
+          "  /goals *Ship v2.0   — mark done (toggle)",
+          "  /goals *             — view completed goals",
+        ].join("\n"),
+      },
+      facts: {
+        label: "/facts",
+        detail: [
+          "🧠 /facts — Add a fact directly",
+          "",
+          "Shorthand to add a fact without going through",
+          "natural language parsing.",
+          "",
+          "Usage:",
+          "  /facts +<fact>",
+          "",
+          "Examples:",
+          "  /facts +My preferred IDE is VS Code",
+          "  /facts +Production cluster: ap-southeast-1",
+        ].join("\n"),
+      },
+      prefs: {
+        label: "/prefs",
+        detail: [
+          "🧠 /prefs — Preferences (retired)",
+          "",
+          "The preferences type has been retired.",
+          "Use /remember or /facts +<text> instead.",
+          "",
+          "Examples:",
+          "  /remember I prefer bullet points over prose",
+          "  /facts +I prefer Bun over Node.js",
+        ].join("\n"),
+      },
+      reminders: {
+        label: "/reminders",
+        detail: [
+          "🧠 /reminders — Add a date/reminder",
+          "",
+          "Stores a date or reminder in memory.",
+          "Useful for deadlines, recurring events, or milestones.",
+          "",
+          "Usage:",
+          "  /reminders +<reminder>",
+          "",
+          "Examples:",
+          "  /reminders +Sprint review: every other Friday 3pm",
+          "  /reminders +Yi Ming returns 14 Mar 2026",
+        ].join("\n"),
+      },
+    },
+  },
 
-  jobs: [
-    "⚙️ Jobs & Routines",
-    "",
-    "/schedule <prompt> — Queue Claude session job",
-    "/jobs — List jobs (last 20, all statuses)",
-    "/jobs pending|running|failed|done — Filter by status",
-    "/jobs detail <id8> — Full job card + action buttons",
-    "/jobs cancel <id8> — Cancel pending/running job",
-    "/jobs retry <id8> — Re-queue failed job",
-    "/jobs clear — Purge done/cancelled (>7 days)",
-    "",
-    "/routines list — Scheduled routines",
-    "/routines delete <name> — Remove routine",
-    "",
-    'Natural language: "Create a daily 9am goal check routine"',
-  ].join("\n"),
+  docs: {
+    icon: "📄", name: "Documents",
+    commands: {
+      doc: {
+        label: "/doc",
+        detail: [
+          "📄 /doc — Document management",
+          "",
+          "Manage your knowledge base: upload PDFs/XLSX/CSV",
+          "directly to Telegram, then query in natural language.",
+          "",
+          "Usage:",
+          "  /doc list",
+          "  /doc save [title]",
+          "  /doc ingest <filepath> [| title]",
+          "  /doc query <question>",
+          "  /doc query <q> | <doc1> | <doc2>",
+          "  /doc delete <title>",
+          "",
+          "Examples:",
+          "  /doc list",
+          "  /doc query What is my insurance deductible?",
+          "  /doc query What is my deductible? | NTUC Income",
+          "  /doc ingest ~/notes/checklist.md | AWS Checklist",
+          "  /doc save My Policy Notes",
+          "  /doc delete NTUC Income",
+        ].join("\n"),
+      },
+      kb: {
+        label: "/kb",
+        detail: [
+          "📄 /kb — Knowledge base (filesystem)",
+          "",
+          "Indexes markdown files from your CWD for search.",
+          "Set CWD first with /cwd <path>.",
+          "",
+          "Usage:",
+          "  /kb index",
+          "  /kb status",
+          "  /kb search <query>",
+          "",
+          "Examples:",
+          "  /kb index        — index .md files from CWD",
+          "  /kb status       — show what's indexed",
+          "  /kb search PDPA  — search indexed files",
+        ].join("\n"),
+      },
+    },
+  },
 
-  agents: [
-    "🤖 Agents & Search",
-    "",
-    "/agents — All agents + capabilities",
-    "/search <query> — Cross-agent semantic search",
-    "",
-    "Groups:",
-    "  Command Center    — Intent routing, CC audit log",
-    "  Cloud & Infra     — AWS, CDK, GCC 2.0",
-    "  Security          — IM8, PDPA, threat modelling",
-    "  Engineering       — Code review, TDD, refactors",
-    "  Strategy & Comms  — Proposals, decks, research",
-    "  Operations Hub    — General Q&A (default)",
-    "",
-    "Model prefixes:",
-    "  [O] Opus · [H] Haiku · (none) Sonnet default",
-  ].join("\n"),
+  jobs: {
+    icon: "⚙️", name: "Jobs & Routines",
+    commands: {
+      schedule: {
+        label: "/schedule",
+        detail: [
+          "⚙️ /schedule — Queue a Claude session job",
+          "",
+          "Enqueues a Claude Code session as a background job.",
+          "Result is posted back to this chat when done.",
+          "",
+          "Usage:",
+          "  /schedule <prompt>",
+          "",
+          "Examples:",
+          "  /schedule Summarise my GitLab activity for today",
+          "  /schedule Review ~/relay/src for security issues",
+          "  /schedule Generate a weekly status report",
+        ].join("\n"),
+      },
+      jobs: {
+        label: "/jobs",
+        detail: [
+          "⚙️ /jobs — List and manage background jobs",
+          "",
+          "View job queue, filter by status, inspect details,",
+          "cancel running jobs, or retry failed ones.",
+          "",
+          "Usage:",
+          "  /jobs",
+          "  /jobs pending|running|done|failed",
+          "  /jobs detail <id8>",
+          "  /jobs cancel <id8>",
+          "  /jobs retry <id8>",
+          "  /jobs clear",
+          "",
+          "Examples:",
+          "  /jobs                  — last 20 jobs",
+          "  /jobs failed           — only failed jobs",
+          "  /jobs detail a1b2c3d4  — full job card",
+          "  /jobs retry a1b2c3d4   — re-queue failed job",
+          "  /jobs clear            — purge done/cancelled >7d",
+        ].join("\n"),
+      },
+      routines: {
+        label: "/routines",
+        detail: [
+          "⚙️ /routines — Manage scheduled routines",
+          "",
+          "View, create, or delete scheduled routines.",
+          "Routines run automatically via routine-scheduler.",
+          "",
+          "Usage:",
+          "  /routines list",
+          "  /routines delete <name>",
+          "",
+          "Natural language scheduling:",
+          '  "Create a daily 9am goal check routine"',
+          '  "Schedule a weekly Friday 5pm summary"',
+          "",
+          "Examples:",
+          "  /routines list",
+          "  /routines delete morning-check",
+        ].join("\n"),
+      },
+    },
+  },
 
-  system: [
-    "🔧 System",
-    "",
-    "/cwd — Show working directory",
-    "/cwd /path/to/dir — Set working directory",
-    "/cwd reset — Clear working directory",
-    "/reboot — Restart Jarvis (confirmation required)",
-    "/monthly_update — TRO monthly update pipeline (ad-hoc)",
-  ].join("\n"),
-} as const;
+  agents: {
+    icon: "🤖", name: "Agents & Search",
+    commands: {
+      agents: {
+        label: "/agents",
+        detail: [
+          "🤖 /agents — List all agents",
+          "",
+          "Shows all 6 specialised agents with their",
+          "capabilities and registration status.",
+          "",
+          "Groups:",
+          "  Command Center   — Intent routing, CC audit log",
+          "  Cloud & Infra    — AWS, CDK, GCC 2.0",
+          "  Security         — IM8, PDPA, threat modelling",
+          "  Engineering      — Code review, TDD, refactors",
+          "  Strategy & Comms — Proposals, decks, research",
+          "  Operations Hub   — General Q&A (default)",
+          "",
+          "Usage:",
+          "  /agents",
+        ].join("\n"),
+      },
+      search: {
+        label: "/search",
+        detail: [
+          "🤖 /search — Cross-agent semantic search",
+          "",
+          "Searches across all agent groups and topics",
+          "using full-text search on past assistant messages.",
+          "",
+          "Usage:",
+          "  /search <query>",
+          "",
+          "Examples:",
+          "  /search PDPA compliance",
+          "  /search terraform module pattern",
+          "  /search sprint review action items",
+        ].join("\n"),
+      },
+    },
+  },
+
+  system: {
+    icon: "🔧", name: "System",
+    commands: {
+      cwd: {
+        label: "/cwd",
+        detail: [
+          "🔧 /cwd — Working directory",
+          "",
+          "Sets or shows the working directory used by Claude",
+          "for this topic. Required for /kb and coding sessions.",
+          "",
+          "Usage:",
+          "  /cwd",
+          "  /cwd <absolute-path>",
+          "  /cwd reset",
+          "",
+          "Examples:",
+          "  /cwd",
+          "  /cwd /Users/furi/projects/relay",
+          "  /cwd ~/projects/relay",
+          "  /cwd reset",
+        ].join("\n"),
+      },
+      reboot: {
+        label: "/reboot",
+        detail: [
+          "🔧 /reboot — Restart Jarvis",
+          "",
+          "Restarts the telegram-relay PM2 service.",
+          "Requires inline confirmation. Bot will be briefly offline.",
+          "",
+          "Usage:",
+          "  /reboot",
+          "",
+          "⚠️  Use only if Jarvis is misbehaving and other",
+          "remedies have failed.",
+        ].join("\n"),
+      },
+      monthly_update: {
+        label: "/monthly_update",
+        detail: [
+          "🔧 /monthly_update — TRO monthly update pipeline",
+          "",
+          "Triggers the TRO monthly update pipeline ad-hoc.",
+          "Pulls GitLab activity, reads past PDFs, asks context",
+          "questions, then generates a slide outline + PPTX.",
+          "",
+          "Phases:",
+          "  1. Pull GitLab activity (last 30 days)",
+          "  2. Read past monthly update PDFs",
+          "  3. Ask context questions via this chat",
+          "  4. Generate slide outline + PPTX draft",
+          "",
+          "Usage:",
+          "  /monthly_update",
+        ].join("\n"),
+      },
+    },
+  },
+};
 
 function buildHelpMainKeyboard(): InlineKeyboard {
   return new InlineKeyboard()
@@ -152,8 +542,28 @@ function buildHelpMainKeyboard(): InlineKeyboard {
     .text("🔧 System", "help:cat:system");
 }
 
-function buildHelpBackKeyboard(): InlineKeyboard {
-  return new InlineKeyboard().text("← Back", "help:back");
+/** L2: command buttons for a category. 2 per row, Back at the bottom. */
+export function buildCategoryKeyboard(cat: string): InlineKeyboard {
+  const category = HELP_TREE[cat];
+  if (!category) return new InlineKeyboard().text("← Back", "help:back");
+  const kb = new InlineKeyboard();
+  const entries = Object.entries(category.commands);
+  entries.forEach(([cmdId, cmd], i) => {
+    kb.text(cmd.label, `help:cmd:${cat}:${cmdId}`);
+    if (i % 2 === 1) kb.row();
+  });
+  if (entries.length % 2 === 1) kb.row();
+  kb.text("← Back", "help:back");
+  return kb;
+}
+
+/** L3: back navigation from a command detail view. */
+export function buildCommandBackKeyboard(cat: string): InlineKeyboard {
+  const category = HELP_TREE[cat];
+  const label = category ? `← ${category.icon} ${category.name}` : "← Back";
+  return new InlineKeyboard()
+    .text(label, `help:cat:${cat}`)
+    .text("⌂ Home", "help:back");
 }
 
 /**
@@ -446,14 +856,29 @@ export function registerCommands(bot: Bot, options: CommandOptions): void {
     await ctx.reply(HELP_MAIN_TEXT, { reply_markup: buildHelpMainKeyboard() });
   });
 
+  // L2: show command buttons for a category
   bot.callbackQuery(/^help:cat:(.+)$/, async (ctx) => {
-    const cat = ctx.match[1] as keyof typeof HELP_CATEGORIES;
+    const cat = ctx.match[1];
     await ctx.answerCallbackQuery();
-    const content = HELP_CATEGORIES[cat];
-    if (!content) return;
-    await ctx.editMessageText(content, { reply_markup: buildHelpBackKeyboard() });
+    const category = HELP_TREE[cat];
+    if (!category) return;
+    await ctx.editMessageText(
+      `${category.icon} ${category.name} — select a command:`,
+      { reply_markup: buildCategoryKeyboard(cat) }
+    );
   });
 
+  // L3: show full command detail
+  bot.callbackQuery(/^help:cmd:([^:]+):(.+)$/, async (ctx) => {
+    const cat = ctx.match[1];
+    const cmdId = ctx.match[2];
+    await ctx.answerCallbackQuery();
+    const cmd = HELP_TREE[cat]?.commands[cmdId];
+    if (!cmd) return;
+    await ctx.editMessageText(cmd.detail, { reply_markup: buildCommandBackKeyboard(cat) });
+  });
+
+  // L1: back to main category menu
   bot.callbackQuery("help:back", async (ctx) => {
     await ctx.answerCallbackQuery();
     await ctx.editMessageText(HELP_MAIN_TEXT, { reply_markup: buildHelpMainKeyboard() });
