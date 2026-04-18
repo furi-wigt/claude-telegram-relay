@@ -41,6 +41,7 @@ function agentIdFromGroup(group: string): string {
     COMMAND_CENTER: "command-center",
     RESEARCH: "research-analyst",
     DOCUMENTATION: "documentation-specialist",
+    PERSONAL: "general-assistant",
   };
   return map[group] ?? "general-assistant";
 }
@@ -52,6 +53,12 @@ function agentIdFromGroup(group: string): string {
 function resolveGroup(
   config: RoutineConfig
 ): { chatId: number; topicId: number | null; groupKey: string } | null {
+  // PERSONAL: send directly to the user's personal chat
+  if (config.group === "PERSONAL") {
+    const userId = parseInt(process.env.TELEGRAM_USER_ID ?? "0");
+    if (userId !== 0) return { chatId: userId, topicId: null, groupKey: "PERSONAL" };
+  }
+
   const entry = GROUPS[config.group];
   if (entry && entry.chatId !== 0) {
     return { chatId: entry.chatId, topicId: entry.topicId, groupKey: config.group };

@@ -100,7 +100,7 @@ describe("extractRoutineConfig", () => {
 
     expect(result).not.toBeNull();
     expect(result?.config.name).toBe("daily-aws-cost");
-    expect(result?.config.cron).toBe("0 9 * * *");
+    expect(result?.config.schedule).toBe("0 9 * * *");
     expect(result?.config.scheduleDescription).toBe("Daily at 9am");
     expect(result?.config.prompt).toBe("Summarize my AWS costs for today");
     expect(typeof result?.createdAt).toBe("number");
