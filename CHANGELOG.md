@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased] / 2026-04-18 — job topic UX: /schedule creates a CC forum topic per job
+
+### Added
+- **Job Topic UX** (`src/jobs/executors/claudeSessionExecutor.ts`): `/schedule <prompt>` now creates a dedicated forum topic in the Command Center group on job start. Topic name: `⚙️ #NNN — <prompt[:60]>`. A job card is posted immediately with status `🔄 Running…`, updated to `✅ Done` or `❌ Failed` on completion. Agent response streams into the topic instead of the source chat.
+- **Job counter** (`src/jobs/jobCounter.ts`): Sequential job number persisted to `~/.claude-relay/data/job-counter.json`. Zero-padded 3 digits (`001`, `002`, …); never resets.
+- **Job topic registry** (`src/jobs/jobTopicRegistry.ts`): In-memory map of CC topic IDs → job metadata. Enables follow-up routing without a DB lookup.
+- **Follow-up routing** (`src/orchestration/commandCenter.ts`): Messages in a known job topic are detected and routed through the CC classifier with the original job prompt injected as context. Supports natural multi-turn follow-ups that can route to different agents per turn.
+- **`JobStore.updateMetadata()`** (`src/jobs/jobStore.ts`): Merges a patch into an existing job's metadata JSON.
+- **Telegram API helpers** (`src/utils/telegramApi.ts`): `createForumTopic(chatId, name)` and `editMessage(chatId, messageId, text)` using raw Bot API fetch (same pattern as `sendToGroup`).
+- **Graceful fallback**: topic creation is best-effort — if CC is not configured or the API fails, result falls back to `metadata.chatId`/`metadata.threadId` as before.
+
 ## [Unreleased] / 2026-04-18 — /model session-scoped model selection
 
 ### Added

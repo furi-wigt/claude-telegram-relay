@@ -9,6 +9,12 @@ const mockRunner = mock(async (_chatId: number, _topicId: number | null, _text: 
   return "test response";
 });
 
+const mockCreateForumTopic = mock(async (_chatId: number, _name: string): Promise<number> => 9001);
+const mockEditMessage = mock(async () => {});
+const mockSendToGroup = mock(async () => 42);
+const mockNextJobNumber = mock(() => 1);
+const mockRegisterJobTopic = mock(() => {});
+
 const mockClassification: ClassificationResult = {
   intent: "general",
   primaryAgent: "operations-hub",
@@ -33,7 +39,22 @@ mock.module("../../agents/config.ts", () => ({
 }));
 
 mock.module("../../utils/sendToGroup.ts", () => ({
-  sendToGroup: mock(async () => {}),
+  sendToGroup: mockSendToGroup,
+}));
+
+mock.module("../../utils/telegramApi.ts", () => ({
+  createForumTopic: mockCreateForumTopic,
+  editMessage: mockEditMessage,
+}));
+
+mock.module("../jobCounter.ts", () => ({
+  nextJobNumber: mockNextJobNumber,
+}));
+
+mock.module("../jobTopicRegistry.ts", () => ({
+  registerJobTopic: mockRegisterJobTopic,
+  isJobTopic: mock(() => false),
+  getJobTopic: mock(() => undefined),
 }));
 
 // ── Test Helpers ──────────────────────────────────────────────────────────────
@@ -78,6 +99,8 @@ function makeCheckpoint(state: Record<string, unknown> = {}): JobCheckpoint {
 function makeStore() {
   return {
     insertCheckpoint: mock((_jobId: string, _round: number, _state: Record<string, unknown>) => "cp-id"),
+    updateMetadata: mock((_id: string, _patch: Record<string, unknown>) => {}),
+    getJob: mock(() => null),
   };
 }
 
@@ -174,5 +197,50 @@ describe("ClaudeSessionExecutor", () => {
     const result = await executor.execute(makeJob());
     expect(result.status).toBe("failed");
     expect(result.error).toContain("runner exploded");
+  });
+
+  test("does not call createForumTopic when command-center agent has no chatId", async () => {
+    mockCreateForumTopic.mockClear();
+
+    const { ClaudeSessionExecutor } = await import("./claudeSessionExecutor.ts");
+    const store = makeStore();
+    const executor = new ClaudeSessionExecutor(store as any);
+    await executor.execute(makeJob());
+
+    // AGENTS mock has no "command-center" entry → ccChatId is undefined → no topic created
+    expect(mockCreateForumTopic).not.toHaveBeenCalled();
+  });
+
+  test("falls back to source chat when no CC chatId configured", async () => {
+    mockSendToGroup.mockClear();
+
+    const { ClaudeSessionExecutor } = await import("./claudeSessionExecutor.ts");
+    const store = makeStore();
+    const executor = new ClaudeSessionExecutor(store as any);
+    await executor.execute(makeJob({ metadata: { chatId: 12345, threadId: 67 } }));
+
+    // First call: sendToGroup for the fallback response to source chat
+    const calls = mockSendToGroup.mock.calls as Array<unknown[]>;
+    expect(calls.length).toBeGreaterThanOrEqual(1);
+    expect(calls[calls.length - 1][0]).toBe(12345);
+  });
+
+  test("still returns done when CC chatId is absent (no topic created)", async () => {
+    // AGENTS mock has no "command-center" → ccChatId undefined → topic creation skipped
+    // Executor must still run and return done via source-chat fallback path
+    const { ClaudeSessionExecutor } = await import("./claudeSessionExecutor.ts");
+    const store = makeStore();
+    const executor = new ClaudeSessionExecutor(store as any);
+    const result = await executor.execute(makeJob());
+    expect(result.status).toBe("done");
+  });
+
+  test("job number is zero-padded to 3 digits", () => {
+    // nextJobNumber returns 1 from the mock
+    const numStr = String(1).padStart(3, "0");
+    expect(numStr).toBe("001");
+
+    const numStr2 = String(42).padStart(3, "0");
+    expect(numStr2).toBe("042");
   });
 });

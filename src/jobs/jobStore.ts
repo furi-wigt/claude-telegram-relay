@@ -218,6 +218,13 @@ export class JobStore {
     this.db.run("UPDATE jobs SET error = ? WHERE id = ?", [error, id]);
   }
 
+  /** Merge patch into the job's existing metadata JSON. */
+  updateMetadata(id: string, patch: Record<string, unknown>): void {
+    const job = this.getJob(id);
+    const merged = { ...(job?.metadata ?? {}), ...patch };
+    this.db.run("UPDATE jobs SET metadata = ? WHERE id = ?", [JSON.stringify(merged), id]);
+  }
+
   insertCheckpoint(jobId: string, round: number, state: Record<string, unknown>): string {
     const id = crypto.randomUUID();
     this.db.run(

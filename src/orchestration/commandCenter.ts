@@ -29,6 +29,7 @@ import { InlineKeyboard } from "grammy";
 import { runHarness } from "./harness.ts";
 import type { ClassificationResult, DispatchPlan } from "./types.ts";
 import { trackAgentReply, trackLastActiveAgent } from "./pendingAgentReplies.ts";
+import { isJobTopic, getJobTopic } from "../jobs/jobTopicRegistry.ts";
 
 const COUNTDOWN_SECONDS = 5;
 
@@ -124,7 +125,14 @@ export async function orchestrateMessage(
   threadId: number | null,
 ): Promise<void> {
   const { label: modelLabel, text: classifyText } = resolveModelPrefix(text);
-  const effectiveText = classifyText.trim() || text;
+  let effectiveText = classifyText.trim() || text;
+
+  // Job topic follow-up: inject original job context into classifier input so
+  // the follow-up routes to the most relevant agent (not necessarily the same one).
+  if (threadId !== null && isJobTopic(threadId)) {
+    const jobEntry = getJobTopic(threadId)!;
+    effectiveText = `Follow-up for job: "${truncate(jobEntry.prompt, 80)}" — ${effectiveText}`;
+  }
 
   const classification = await classifyIntent(effectiveText);
   const agent = AGENTS[classification.primaryAgent];
