@@ -9,10 +9,24 @@
  * Run: bun test src/vision/visionClient.observability.test.ts
  */
 
-import { describe, test, expect, mock, beforeEach } from "bun:test";
+import { describe, test, expect, mock, beforeEach, afterEach } from "bun:test";
 
 // ── Mocks (must precede await import) ────────────────────────────────────────
 
+// Mock global fetch — primary path is LM Studio via fetch
+const lmStudioSuccess = (content: string) => ({
+  ok: true,
+  text: () => Promise.resolve(""),
+  json: () =>
+    Promise.resolve({ choices: [{ message: { content } }] }),
+});
+
+const mockFetch = mock(() =>
+  Promise.resolve(lmStudioSuccess("Image shows a Telegram chat interface."))
+);
+globalThis.fetch = mockFetch as unknown as typeof fetch;
+
+// Anthropic mock — used only when fetch (LM Studio) fails
 const mockCreate = mock(() =>
   Promise.resolve({
     content: [{ type: "text", text: "Image shows a Telegram chat interface." }],
@@ -41,15 +55,30 @@ const jpegBuf = () => Buffer.from([0xff, 0xd8, 0xff, 0x00]);
 const pngBuf = () =>
   Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
+/** Make fetch fail so the Anthropic fallback is exercised. */
+function failLocalAndUseAnthropic() {
+  mockFetch.mockRejectedValueOnce(new Error("ECONNREFUSED"));
+  process.env.ANTHROPIC_API_KEY = "test-key";
+}
+
 // ── analyzeImage — trace events ───────────────────────────────────────────────
 
 describe("analyzeImage — trace events", () => {
   beforeEach(() => {
     mockTrace.mockClear();
     mockCreate.mockClear();
+    mockFetch.mockClear();
+    // Default: LM Studio succeeds
+    mockFetch.mockResolvedValue(
+      lmStudioSuccess("Image shows a Telegram chat interface.")
+    );
     mockCreate.mockResolvedValue({
       content: [{ type: "text", text: "Image shows a Telegram chat interface." }],
     });
+  });
+
+  afterEach(() => {
+    delete process.env.ANTHROPIC_API_KEY;
   });
 
   test("emits vision_start before calling API", async () => {
@@ -102,9 +131,7 @@ describe("analyzeImage — trace events", () => {
 
   test("vision_complete includes responseLength", async () => {
     const responseText = "A detailed image description here.";
-    mockCreate.mockResolvedValue({
-      content: [{ type: "text", text: responseText }],
-    });
+    mockFetch.mockResolvedValueOnce(lmStudioSuccess(responseText));
 
     await analyzeImage(jpegBuf(), "Describe");
 
@@ -115,6 +142,8 @@ describe("analyzeImage — trace events", () => {
   });
 
   test("emits vision_error when API throws", async () => {
+    // LM Studio fails → Anthropic fallback → mockCreate rejects
+    failLocalAndUseAnthropic();
     mockCreate.mockRejectedValueOnce(new Error("API spawn failed"));
 
     await expect(analyzeImage(jpegBuf(), "What?")).rejects.toThrow(
@@ -126,6 +155,7 @@ describe("analyzeImage — trace events", () => {
   });
 
   test("vision_error includes error message", async () => {
+    failLocalAndUseAnthropic();
     mockCreate.mockRejectedValueOnce(new Error("timeout after 60s"));
 
     await expect(analyzeImage(jpegBuf(), "What?")).rejects.toThrow();
@@ -138,6 +168,7 @@ describe("analyzeImage — trace events", () => {
   });
 
   test("vision_error still rethrows so caller receives the error", async () => {
+    failLocalAndUseAnthropic();
     mockCreate.mockRejectedValueOnce(new Error("service unavailable"));
 
     await expect(analyzeImage(jpegBuf(), "What?")).rejects.toThrow(
@@ -168,7 +199,13 @@ describe("analyzeImages — batch trace events", () => {
   beforeEach(() => {
     mockTrace.mockClear();
     mockCreate.mockClear();
+    mockFetch.mockClear();
+    mockFetch.mockResolvedValue(lmStudioSuccess("described"));
     mockCreate.mockResolvedValue({ content: [{ type: "text", text: "described" }] });
+  });
+
+  afterEach(() => {
+    delete process.env.ANTHROPIC_API_KEY;
   });
 
   test("emits vision_batch_start before processing images", async () => {
@@ -195,9 +232,13 @@ describe("analyzeImages — batch trace events", () => {
   });
 
   test("vision_batch_complete tracks successCount and failCount", async () => {
-    mockCreate
-      .mockResolvedValueOnce({ content: [{ type: "text", text: "first ok" }] })
-      .mockRejectedValueOnce(new Error("second failed"));
+    // First image: LM Studio succeeds
+    mockFetch
+      .mockResolvedValueOnce(lmStudioSuccess("first ok"))
+      // Second image: LM Studio fails → Anthropic fallback → mockCreate rejects
+      .mockRejectedValueOnce(new Error("ECONNREFUSED"));
+    process.env.ANTHROPIC_API_KEY = "test-key";
+    mockCreate.mockRejectedValueOnce(new Error("second failed"));
 
     await analyzeImages([jpegBuf(), pngBuf()], "describe");
 
