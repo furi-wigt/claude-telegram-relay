@@ -155,10 +155,21 @@ export async function runHarness(
     state.updatedAt = new Date().toISOString();
     await persistState(state);
 
+    // Accumulate prior step outputs so each agent has full context from predecessors
+    const priorContext = state.steps
+      .slice(0, stepIdx)
+      .filter((s) => s.output)
+      .map((s) => `[${AGENTS[s.agent]?.name ?? s.agent}]:\n${s.output}`)
+      .join("\n\n---\n\n");
+
+    const taskDescription = priorContext
+      ? `${priorContext}\n\n---\n\nUser request: ${plan.userMessage}`
+      : plan.userMessage;
+
     const stepPlan: DispatchPlan = {
       ...plan,
       classification: { ...plan.classification, primaryAgent: step.agent },
-      tasks: [{ seq: step.seq, agentId: step.agent, topicHint: plan.classification.topicHint, taskDescription: plan.userMessage }],
+      tasks: [{ seq: step.seq, agentId: step.agent, topicHint: plan.classification.topicHint, taskDescription }],
     };
 
     const result = await executeSingleDispatch(bot, stepPlan, ccChatId, ccThreadId);
