@@ -1,21 +1,24 @@
 /**
  * Unit tests for src/vision/visionClient.ts
  *
- * Mocks claudeText and Bun.write — no real CLI calls or file I/O made.
+ * Mocks the Anthropic SDK — no real API calls or file I/O made.
  * Run: bun test src/vision/visionClient.test.ts
  */
 
-import { describe, test, expect, mock, beforeEach, spyOn } from "bun:test";
-import { tmpdir } from "node:os";
+import { describe, test, expect, mock, beforeEach } from "bun:test";
 
-// ── Mock claudeText before importing visionClient ─────────────────────────────
+// ── Mock Anthropic SDK before importing visionClient ──────────────────────────
 
-const mockClaudeText = mock(() =>
-  Promise.resolve("A screenshot showing a code editor.")
+const mockCreate = mock(() =>
+  Promise.resolve({
+    content: [{ type: "text", text: "A screenshot showing a code editor." }],
+  })
 );
 
-mock.module("../claude-process.ts", () => ({
-  claudeText: mockClaudeText,
+mock.module("@anthropic-ai/sdk", () => ({
+  default: class MockAnthropic {
+    messages = { create: mockCreate };
+  },
 }));
 
 const {
@@ -68,9 +71,7 @@ describe("detectMediaType", () => {
 
 describe("analyzeImage", () => {
   beforeEach(() => {
-    mockClaudeText.mockClear();
-    // Stub Bun.write so no real file I/O happens during tests.
-    spyOn(Bun, "write").mockResolvedValue(0 as unknown as number);
+    mockCreate.mockClear();
   });
 
   test("throws if image exceeds size limit", async () => {
@@ -78,62 +79,63 @@ describe("analyzeImage", () => {
     await expect(analyzeImage(oversized)).rejects.toThrow("Image too large");
   });
 
-  test("calls claudeText with cwd set to tmpdir()", async () => {
+  test("calls Anthropic messages.create with correct model", async () => {
     const buf = Buffer.from([0xff, 0xd8, 0xff, 0x00]);
     await analyzeImage(buf, "What is this?");
 
-    const [, opts] = mockClaudeText.mock.calls[0] as [string, Record<string, unknown>];
-    expect(opts.cwd).toBe(tmpdir());
+    const [body] = mockCreate.mock.calls[0] as [Record<string, unknown>];
+    expect(body.model).toBe(VISION_MODEL);
   });
 
-  test("calls claudeText with dangerouslySkipPermissions: true", async () => {
-    // --dangerously-skip-permissions is required in -p (non-interactive) mode
-    // to allow Claude CLI to read the image file without hanging on a permission prompt.
+  test("does NOT use dangerouslySkipPermissions (security regression guard)", async () => {
+    // Vision now uses the Anthropic SDK directly — no CLI subprocess, no skip-permissions.
     const buf = Buffer.from([0xff, 0xd8, 0xff, 0x00]);
     await analyzeImage(buf);
 
-    const [, opts] = mockClaudeText.mock.calls[0] as [string, Record<string, unknown>];
-    expect(opts.dangerouslySkipPermissions).toBe(true);
+    const [body] = mockCreate.mock.calls[0] as [Record<string, unknown>];
+    expect(JSON.stringify(body)).not.toContain("dangerouslySkipPermissions");
+    expect(JSON.stringify(body)).not.toContain("dangerously-skip-permissions");
   });
 
-  test("calls claudeText with correct vision model", async () => {
+  test("sends image as base64 in message content", async () => {
+    const buf = Buffer.from([0xff, 0xd8, 0xff, 0x00]);
+    await analyzeImage(buf, "What is this?");
+
+    const [body] = mockCreate.mock.calls[0] as [{ messages: Array<{ content: unknown[] }> }];
+    const content = body.messages[0].content;
+    const imageBlock = content.find(
+      (b: unknown) => (b as Record<string, unknown>).type === "image"
+    ) as Record<string, unknown> | undefined;
+    expect(imageBlock).toBeDefined();
+    const source = imageBlock!.source as Record<string, unknown>;
+    expect(source.type).toBe("base64");
+    expect(source.data).toBe(buf.toString("base64"));
+  });
+
+  test("sends correct media type for JPEG", async () => {
     const buf = Buffer.from([0xff, 0xd8, 0xff, 0x00]);
     await analyzeImage(buf);
 
-    const [, opts] = mockClaudeText.mock.calls[0] as [string, Record<string, unknown>];
-    expect(opts.model).toBe(VISION_MODEL);
+    const [body] = mockCreate.mock.calls[0] as [{ messages: Array<{ content: unknown[] }> }];
+    const imageBlock = body.messages[0].content.find(
+      (b: unknown) => (b as Record<string, unknown>).type === "image"
+    ) as Record<string, unknown> | undefined;
+    const source = imageBlock!.source as Record<string, unknown>;
+    expect(source.media_type).toBe("image/jpeg");
   });
 
-  test("includes user prompt in claudeText call", async () => {
+  test("includes user prompt as text block", async () => {
     const buf = Buffer.from([0xff, 0xd8, 0xff, 0x00]);
     await analyzeImage(buf, "What errors do you see?");
 
-    const [prompt] = mockClaudeText.mock.calls[0] as [string];
-    expect(prompt).toContain("What errors do you see?");
+    const [body] = mockCreate.mock.calls[0] as [{ messages: Array<{ content: unknown[] }> }];
+    const textBlock = body.messages[0].content.find(
+      (b: unknown) => (b as Record<string, unknown>).type === "text"
+    ) as Record<string, unknown> | undefined;
+    expect(textBlock?.text).toContain("What errors do you see?");
   });
 
-  test("prompt uses relative filename (no directory separators)", async () => {
-    const buf = Buffer.from([0xff, 0xd8, 0xff, 0x00]);
-    await analyzeImage(buf);
-
-    const [prompt] = mockClaudeText.mock.calls[0] as [string];
-    // Extract the image reference line
-    const imageRef = prompt.match(/^Image: (.+)$/m)?.[1];
-    expect(imageRef).toBeDefined();
-    expect(imageRef).toMatch(/^telegram_img_.*\.jpeg$/);  // filename only
-    expect(imageRef).not.toContain("/");                  // no directory path
-  });
-
-  test("temp file uses correct extension for PNG", async () => {
-    const pngBuf = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-    await analyzeImage(pngBuf);
-
-    const [prompt] = mockClaudeText.mock.calls[0] as [string];
-    const imageRef = prompt.match(/^Image: (.+)$/m)?.[1];
-    expect(imageRef).toMatch(/\.png$/);
-  });
-
-  test("returns text from claudeText response", async () => {
+  test("returns text from API response", async () => {
     const buf = Buffer.from([0xff, 0xd8, 0xff, 0x00]);
     const result = await analyzeImage(buf);
     expect(result).toBe("A screenshot showing a code editor.");
@@ -143,27 +145,32 @@ describe("analyzeImage", () => {
     const buf = Buffer.from([0xff, 0xd8, 0xff, 0x00]);
     await analyzeImage(buf);
 
-    const [prompt] = mockClaudeText.mock.calls[0] as [string];
-    expect(prompt).toContain("Describe this image in detail.");
+    const [body] = mockCreate.mock.calls[0] as [{ messages: Array<{ content: unknown[] }> }];
+    const textBlock = body.messages[0].content.find(
+      (b: unknown) => (b as Record<string, unknown>).type === "text"
+    ) as Record<string, unknown> | undefined;
+    expect(textBlock?.text).toContain("Describe this image in detail.");
   });
 
-  test("propagates claudeText errors", async () => {
-    mockClaudeText.mockImplementationOnce(() =>
-      Promise.reject(new Error("CLI spawn failed"))
+  test("propagates API errors", async () => {
+    mockCreate.mockImplementationOnce(() =>
+      Promise.reject(new Error("API call failed"))
     );
     const buf = Buffer.from([0xff, 0xd8, 0xff, 0x00]);
-    await expect(analyzeImage(buf)).rejects.toThrow("CLI spawn failed");
+    await expect(analyzeImage(buf)).rejects.toThrow("API call failed");
   });
 
-  test("strips leading slash commands from caption before sending to claudeText", async () => {
-    // Regression: /new caption caused Claude CLI to interpret /new as a slash
-    // command, resetting the session instead of analyzing the image.
+  test("strips leading slash commands from caption", async () => {
+    // Regression: /new caption could cause misinterpretation
     const buf = Buffer.from([0xff, 0xd8, 0xff, 0x00]);
     await analyzeImage(buf, "/new what's in this picture?");
 
-    const [prompt] = mockClaudeText.mock.calls[0] as [string];
-    expect(prompt).not.toContain("/new");
-    expect(prompt).toContain("what's in this picture?");
+    const [body] = mockCreate.mock.calls[0] as [{ messages: Array<{ content: unknown[] }> }];
+    const textBlock = body.messages[0].content.find(
+      (b: unknown) => (b as Record<string, unknown>).type === "text"
+    ) as Record<string, unknown> | undefined;
+    expect(textBlock?.text).not.toContain("/new");
+    expect(textBlock?.text).toContain("what's in this picture?");
   });
 });
 
@@ -171,9 +178,10 @@ describe("analyzeImage", () => {
 
 describe("analyzeImages — parallel batch analysis", () => {
   beforeEach(() => {
-    mockClaudeText.mockClear();
-    mockClaudeText.mockResolvedValue("A screenshot showing a code editor.");
-    spyOn(Bun, "write").mockResolvedValue(0 as unknown as number);
+    mockCreate.mockClear();
+    mockCreate.mockResolvedValue({
+      content: [{ type: "text", text: "A screenshot showing a code editor." }],
+    });
   });
 
   const jpegBuf = () => Buffer.from([0xff, 0xd8, 0xff, 0x00]);
@@ -181,7 +189,7 @@ describe("analyzeImages — parallel batch analysis", () => {
   test("empty array → returns empty array", async () => {
     const results = await analyzeImages([]);
     expect(results).toEqual([]);
-    expect(mockClaudeText).not.toHaveBeenCalled();
+    expect(mockCreate).not.toHaveBeenCalled();
   });
 
   test("single buffer → returns one result with correct index", async () => {
@@ -191,40 +199,34 @@ describe("analyzeImages — parallel batch analysis", () => {
     expect(results[0].error).toBeUndefined();
   });
 
-  test("single buffer → claudeText called once", async () => {
+  test("single buffer → API called once", async () => {
     await analyzeImages([jpegBuf()], "describe it");
-    expect(mockClaudeText).toHaveBeenCalledTimes(1);
+    expect(mockCreate).toHaveBeenCalledTimes(1);
   });
 
-  test("two buffers → both claudeText calls fired, results in order", async () => {
-    mockClaudeText
-      .mockResolvedValueOnce("First image: a cat.")
-      .mockResolvedValueOnce("Second image: a dog.");
+  test("two buffers → both calls fired, results in order", async () => {
+    mockCreate
+      .mockResolvedValueOnce({ content: [{ type: "text", text: "First image: a cat." }] })
+      .mockResolvedValueOnce({ content: [{ type: "text", text: "Second image: a dog." }] });
     const results = await analyzeImages([jpegBuf(), jpegBuf()], "describe each");
     expect(results).toHaveLength(2);
     expect(results[0]).toMatchObject({ index: 0, context: "First image: a cat." });
     expect(results[1]).toMatchObject({ index: 1, context: "Second image: a dog." });
-    expect(mockClaudeText).toHaveBeenCalledTimes(2);
-  });
-
-  test("two buffers → shared prompt used for both claudeText calls", async () => {
-    mockClaudeText.mockResolvedValue("ok");
-    await analyzeImages([jpegBuf(), jpegBuf()], "What colour is the sky?");
-    for (const call of mockClaudeText.mock.calls) {
-      const [prompt] = call as [string];
-      expect(prompt).toContain("What colour is the sky?");
-    }
+    expect(mockCreate).toHaveBeenCalledTimes(2);
   });
 
   test("default prompt used when none provided", async () => {
     await analyzeImages([jpegBuf()]);
-    const [prompt] = mockClaudeText.mock.calls[0] as [string];
-    expect(prompt).toContain("Describe this image in detail.");
+    const [body] = mockCreate.mock.calls[0] as [{ messages: Array<{ content: unknown[] }> }];
+    const textBlock = body.messages[0].content.find(
+      (b: unknown) => (b as Record<string, unknown>).type === "text"
+    ) as Record<string, unknown> | undefined;
+    expect(textBlock?.text).toContain("Describe this image in detail.");
   });
 
   test("one image fails → error captured, other result succeeds, no throw", async () => {
-    mockClaudeText
-      .mockResolvedValueOnce("First ok.")
+    mockCreate
+      .mockResolvedValueOnce({ content: [{ type: "text", text: "First ok." }] })
       .mockRejectedValueOnce(new Error("CLI crash"));
     const results = await analyzeImages([jpegBuf(), jpegBuf()], "describe");
     expect(results[0]).toMatchObject({ index: 0, context: "First ok." });
@@ -233,17 +235,17 @@ describe("analyzeImages — parallel batch analysis", () => {
   });
 
   test("all images fail → all errors captured, no throw", async () => {
-    mockClaudeText.mockRejectedValue(new Error("service down"));
+    mockCreate.mockRejectedValue(new Error("service down"));
     const results = await analyzeImages([jpegBuf(), jpegBuf()], "describe");
     expect(results[0]).toMatchObject({ index: 0, context: "", error: "service down" });
     expect(results[1]).toMatchObject({ index: 1, context: "", error: "service down" });
     expect(results.every((r) => !!r.error)).toBe(true);
   });
 
-  test("three images → claudeText called three times", async () => {
-    mockClaudeText.mockResolvedValue("image described");
+  test("three images → API called three times", async () => {
+    mockCreate.mockResolvedValue({ content: [{ type: "text", text: "ok" }] });
     await analyzeImages([jpegBuf(), jpegBuf(), jpegBuf()], "describe");
-    expect(mockClaudeText).toHaveBeenCalledTimes(3);
+    expect(mockCreate).toHaveBeenCalledTimes(3);
   });
 });
 
