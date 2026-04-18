@@ -1,5 +1,12 @@
 # Decision Journal
 
+## 2026-04-18 — Job topic UX: in-memory registry over DB query [feat/job-topic-ux]
+
+**Change**: Job topic → job metadata mapping stored in a module-level `Map` (jobTopicRegistry.ts) rather than querying the SQLite job store.
+**Why**: commandCenter.ts does not hold a jobStore reference. Adding one would require wiring through relay.ts and risking accidental coupling. The in-memory map is O(1), zero-DB overhead, and sufficient for V1 — the only downside (topics not re-registered after restart) is acceptable since jobs are typically short-lived.
+**Rejected**: Querying jobStore by `metadata.jobTopicId` — would require injecting jobStore into commandCenter or making it a global singleton. Both options add complexity not justified by V1 requirements.
+**Branch**: feat/job-topic-ux
+
 ## 2026-04-18 — Replace constrained mesh blackboard with NLAH thin harness [feat/nlah_harness_replacement]
 
 **Change**: Deleted the entire blackboard/mesh/review-loop orchestration subsystem (~2500 LOC, 13 files) and replaced it with a 120-LOC NLAH thin harness backed by contract Markdown files.

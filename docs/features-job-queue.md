@@ -18,8 +18,11 @@ The job queue supports four executor types. Each executor is registered in `src/
 
 `ClaudeSessionExecutor` -- runs an agentic Claude session.
 
-- Invokes the orchestration layer: `classifyIntent` → NLAH harness → sequential contract dispatch.
-- If `metadata.chatId` is set, posts the result back to the originating Telegram chat (and `metadata.threadId` if present).
+- Invokes the orchestration layer: `classifyIntent` → target agent dispatch.
+- **Job Topic UX**: on execution, creates a dedicated forum topic in the Command Center group (`⚙️ #NNN — <prompt>`), posts a job card with status `🔄 Running…`, streams the response into the topic, and updates the card to `✅ Done` or `❌ Failed` on completion.
+- Topic creation is best-effort — if it fails (CC not configured, API error), the result falls back to `metadata.chatId`/`metadata.threadId` as before.
+- **Follow-up routing**: messages sent in a job topic are detected by `commandCenter.ts` and routed through the CC classifier with the original job prompt injected as context, enabling natural multi-turn follow-ups.
+- **Job numbering**: sequential counter persisted to `~/.claude-relay/data/job-counter.json`; zero-padded 3 digits (`001`, `002`, …); never resets.
 - On retry: re-runs the full dispatch from scratch (no partial resume — checkpoint resume deferred to v2).
 
 ### compound
