@@ -1,13 +1,16 @@
 /**
  * Vision Client
  *
- * Analyzes images sent via Telegram using the Anthropic Messages API directly.
- * Images are sent as base64-encoded content — no temp files, no CLI subprocess,
- * no --dangerously-skip-permissions.
+ * Analyzes images using an OpenAI-compatible local LLM (LM Studio) with
+ * fallback to the Anthropic API. No OAuth, no keychain, no subprocess.
  *
  * Auth priority:
- *   1. ANTHROPIC_API_KEY env var (sk-ant-api03-... key — billed separately)
- *   2. Claude Code OAuth token from macOS Keychain (reuses Claude Code subscription)
+ *   1. Local LLM via LM Studio OpenAI-compat API (always tried first)
+ *   2. Anthropic API key (ANTHROPIC_API_KEY env var) — fallback if local fails
+ *
+ * Config env vars (all optional — defaults work with stock LM Studio):
+ *   LOCAL_VISION_URL    Base URL for OpenAI-compat server  (default: http://localhost:1234)
+ *   LOCAL_VISION_MODEL  Model identifier                   (default: gemma-4-e4b-it)
  */
 
 import Anthropic from "@anthropic-ai/sdk";
@@ -19,7 +22,7 @@ export type SupportedMediaType =
   | "image/gif"
   | "image/webp";
 
-/** Claude model used for vision analysis (must support vision; Haiku does not). */
+/** Model used for Anthropic API fallback (must support vision). */
 export const VISION_MODEL = "claude-sonnet-4-6";
 
 /** Maximum image size accepted (Anthropic's documented limit is 20MB). */
@@ -28,58 +31,103 @@ export const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 /** Timeout for vision analysis. */
 const VISION_TIMEOUT_MS = 60_000;
 
-/** Timeout for macOS keychain read (prevents hanging on permission prompt). */
-const KEYCHAIN_TIMEOUT_MS = 5_000;
+/** LM Studio base URL — override with LOCAL_VISION_URL. */
+const localVisionUrl = (): string =>
+  (process.env.LOCAL_VISION_URL ?? "http://localhost:1234").replace(/\/$/, "");
+
+/** Model identifier for LM Studio — override with LOCAL_VISION_MODEL. */
+const localVisionModel = (): string =>
+  process.env.LOCAL_VISION_MODEL ?? "gemma-4-e4b-it";
 
 /**
- * Resolve an authenticated Anthropic client.
- *
- * Priority:
- *   1. ANTHROPIC_API_KEY env var  → apiKey auth (x-api-key header)
- *   2. macOS Keychain entry "Claude Code-credentials" → OAuth bearer token
- *
- * Re-reads credentials on every call so rotated tokens are picked up automatically.
- * The keychain read adds ~5ms overhead — acceptable for vision (not a hot path).
+ * Call a local OpenAI-compatible LLM (LM Studio) for vision analysis.
+ * Sends the image as a base64 data URI in the image_url content block.
  */
-async function resolveAnthropicClient(): Promise<Anthropic> {
-  if (process.env.ANTHROPIC_API_KEY) {
-    return new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+async function analyzeImageWithLocalLLM(
+  imageBuffer: Buffer,
+  mediaType: SupportedMediaType,
+  prompt: string,
+  signal: AbortSignal
+): Promise<string> {
+  const dataUri = `data:${mediaType};base64,${imageBuffer.toString("base64")}`;
+  const body = JSON.stringify({
+    model: localVisionModel(),
+    max_tokens: 1024,
+    messages: [
+      {
+        role: "user",
+        content: [
+          { type: "image_url", image_url: { url: dataUri } },
+          { type: "text", text: prompt },
+        ],
+      },
+    ],
+  });
+
+  const res = await fetch(`${localVisionUrl()}/v1/chat/completions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body,
+    signal,
+  });
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => "");
+    throw new Error(`Local LLM vision error ${res.status}: ${errText}`);
   }
 
-  // macOS only — Claude Code stores its OAuth token in Keychain
-  const { execFile } = await import("node:child_process");
-  const { promisify } = await import("node:util");
-  const exec = promisify(execFile);
+  const json = (await res.json()) as {
+    choices?: Array<{ message?: { content?: string } }>;
+  };
+  const text = json.choices?.[0]?.message?.content ?? "";
+  if (!text) throw new Error("Local LLM returned empty vision response");
+  return text;
+}
 
-  let raw: string;
-  try {
-    const { stdout } = await exec(
-      "security",
-      ["find-generic-password", "-s", "Claude Code-credentials", "-w"],
-      { timeout: KEYCHAIN_TIMEOUT_MS }
-    );
-    raw = stdout.trim();
-  } catch {
+/**
+ * Call the Anthropic API for vision analysis (fallback when local LLM fails).
+ * Requires ANTHROPIC_API_KEY to be set.
+ */
+async function analyzeImageWithAnthropic(
+  imageBuffer: Buffer,
+  mediaType: SupportedMediaType,
+  prompt: string,
+  signal: AbortSignal
+): Promise<string> {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
     throw new Error(
-      "Vision auth failed: set ANTHROPIC_API_KEY in .env, or run `claude login` to refresh Claude Code credentials"
+      "Vision fallback failed: ANTHROPIC_API_KEY is not set. " +
+        "Set it in ~/.claude-relay/.env or start LM Studio for local vision."
     );
   }
 
-  let token: string | undefined;
-  try {
-    const data = JSON.parse(raw) as { claudeAiOauth?: { accessToken?: string } };
-    token = data?.claudeAiOauth?.accessToken;
-  } catch {
-    throw new Error("Vision auth failed: Claude Code credentials are malformed");
-  }
+  const client = new Anthropic({ apiKey });
+  const response = await client.messages.create(
+    {
+      model: VISION_MODEL,
+      max_tokens: 1024,
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "image",
+              source: {
+                type: "base64",
+                media_type: mediaType,
+                data: imageBuffer.toString("base64"),
+              },
+            },
+            { type: "text", text: prompt },
+          ],
+        },
+      ],
+    },
+    { signal }
+  );
 
-  if (!token) {
-    throw new Error(
-      "Vision auth failed: Claude Code OAuth token missing — run `claude login` to re-authenticate"
-    );
-  }
-
-  return new Anthropic({ authToken: token });
+  return response.content.find((b) => b.type === "text")?.text ?? "";
 }
 
 /**
@@ -127,16 +175,8 @@ export function detectMediaType(buffer: Buffer): SupportedMediaType {
 /**
  * Strip leading bot slash commands from a Telegram photo caption.
  *
- * When a user sends "/new what's in this picture", the caption begins with
- * a slash command. Passing the raw caption to the API may cause the leading
- * slash command to be misinterpreted.
- *
- * This function strips the leading command prefix, leaving only the user's
- * actual question for the vision model.
- *
  * Examples:
  *   "/new what's in this picture" → "what's in this picture"
- *   "/help describe this"         → "describe this"
  *   "/new"                        → "" (caller should use default prompt)
  *   "Describe this image"         → "Describe this image" (unchanged)
  */
@@ -155,16 +195,12 @@ export interface ImageAnalysisResult {
 }
 
 /**
- * Analyze multiple images in parallel using the Anthropic API.
+ * Analyze multiple images in parallel.
  *
  * Each image is analyzed independently. A single image failure does NOT
  * abort the batch — its error is captured in the result and the others proceed.
  *
  * Results are returned in the same order as the input array.
- *
- * @param imageBuffers  Array of raw image bytes (one per image)
- * @param prompt        Caption or question applied to every image
- * @returns             Ordered array of analysis results
  */
 export async function analyzeImages(
   imageBuffers: Buffer[],
@@ -206,13 +242,6 @@ export async function analyzeImages(
 /**
  * Merge multiple image analysis results into a single `imageContext` string
  * ready for injection into the agent prompt.
- *
- * - Single image  → context returned as-is (no numbering prefix)
- * - Multiple images → "Image N:\n<context>" sections separated by blank lines
- * - Failures are described inline so the agent knows an image wasn't available
- *
- * @param results  Output from `analyzeImages()`
- * @returns        Combined string suitable for the `imageContext` prompt field
  */
 export function combineImageContexts(results: ImageAnalysisResult[]): string {
   if (results.length === 0) return "";
@@ -230,20 +259,20 @@ export function combineImageContexts(results: ImageAnalysisResult[]): string {
 }
 
 /**
- * Analyze an image using the Anthropic Messages API (vision).
+ * Analyze an image — tries local LLM first, falls back to Anthropic API.
  *
- * The image is sent as base64-encoded content directly in the API request —
- * no temp files written, no CLI subprocess, no dangerouslySkipPermissions.
+ * Local LLM (LM Studio):
+ *   - No API key required; configured via LOCAL_VISION_URL + LOCAL_VISION_MODEL
+ *   - Uses OpenAI-compatible /v1/chat/completions with base64 data URI
  *
- * Returns a text description suitable for injection into agent prompts
- * via the `imageContext` field in PromptContext.
- *
- * Emits trace events: vision_start, vision_complete (success), vision_error (failure).
+ * Anthropic fallback:
+ *   - Only attempted if local LLM fails
+ *   - Requires ANTHROPIC_API_KEY in env
  *
  * @param imageBuffer  Raw image bytes downloaded from Telegram
  * @param userPrompt   Caption or question the user sent with the image
  * @returns            Vision analysis text
- * @throws             If image too large or API call fails
+ * @throws             If image too large or both backends fail
  */
 export async function analyzeImage(
   imageBuffer: Buffer,
@@ -256,11 +285,9 @@ export async function analyzeImage(
     );
   }
 
-  const sanitizedPrompt =
+  const prompt =
     sanitizeCaptionForVision(userPrompt) || "Describe this image in detail.";
-
   const mediaType = detectMediaType(imageBuffer);
-  const imageData = imageBuffer.toString("base64");
 
   const start = Date.now();
   trace({
@@ -268,51 +295,58 @@ export async function analyzeImage(
     imageSizeBytes: imageBuffer.length,
     model: VISION_MODEL,
     mediaType,
-    promptLength: sanitizedPrompt.length,
+    promptLength: prompt.length,
   });
 
-  const client = await resolveAnthropicClient();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), VISION_TIMEOUT_MS);
 
   try {
-    const response = await client.messages.create(
-      {
-        model: VISION_MODEL,
-        max_tokens: 1024,
-        messages: [
-          {
-            role: "user",
-            content: [
-              {
-                type: "image",
-                source: { type: "base64", media_type: mediaType, data: imageData },
-              },
-              { type: "text", text: sanitizedPrompt },
-            ],
-          },
-        ],
-      },
-      { signal: controller.signal }
+    // ── 1. Try local LLM (LM Studio) ────────────────────────────────────────
+    try {
+      const text = await analyzeImageWithLocalLLM(
+        imageBuffer,
+        mediaType,
+        prompt,
+        controller.signal
+      );
+      trace({
+        event: "vision_complete",
+        backend: "local",
+        model: localVisionModel(),
+        durationMs: Date.now() - start,
+        responseLength: text.length,
+      });
+      return text;
+    } catch (localErr) {
+      trace({
+        event: "vision_local_failed",
+        error: localErr instanceof Error ? localErr.message : String(localErr),
+        durationMs: Date.now() - start,
+      });
+      // Fall through to Anthropic
+    }
+
+    // ── 2. Fallback: Anthropic API ───────────────────────────────────────────
+    const text = await analyzeImageWithAnthropic(
+      imageBuffer,
+      mediaType,
+      prompt,
+      controller.signal
     );
-
-    const text = response.content.find((b) => b.type === "text")?.text ?? "";
-
     trace({
       event: "vision_complete",
+      backend: "anthropic",
+      model: VISION_MODEL,
       durationMs: Date.now() - start,
       responseLength: text.length,
-      model: VISION_MODEL,
-      mediaType,
     });
-
     return text;
   } catch (err) {
     trace({
       event: "vision_error",
       durationMs: Date.now() - start,
       error: err instanceof Error ? err.message : String(err),
-      model: VISION_MODEL,
       mediaType,
       imageSizeBytes: imageBuffer.length,
     });
