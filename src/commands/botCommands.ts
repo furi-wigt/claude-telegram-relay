@@ -43,6 +43,119 @@ import { indexCwdDocuments, getIndexStatus } from "../rag/filesystemIndex";
 
 const TELEGRAM_MAX_MESSAGE_LENGTH = 4096;
 
+// ── /help interactive keyboard menu ──────────────────────────────────────────
+
+const HELP_MAIN_TEXT = "Jarvis — select a category:";
+
+const HELP_CATEGORIES = {
+  session: [
+    "💬 Session",
+    "",
+    "/new [prompt] — Fresh conversation (optionally with first message)",
+    "/renew [prompt] — New session, inject full STM + LTM context",
+    "/status — Session info",
+    "/history — Recent messages",
+    "/summary — Compressed conversation history",
+    "/cancel — Abort in-progress Claude response",
+    "/model sonnet|opus|haiku|local — Set model (resets on /new)",
+    "/model default — Clear model override",
+  ].join("\n"),
+
+  memory: [
+    "🧠 Memory",
+    "",
+    "/memory — All memory (goals, facts, dates)",
+    "/memory goals|done|facts|dates|prefs — Filtered view",
+    "/memory dedup — Detect & resolve contradictions",
+    "/remember [text] — Save a fact",
+    "/forget N or [topic] — Delete by index or topic",
+    "/reflect [feedback] — Save a learning",
+    "/goals +text — Add goal",
+    "/goals -N or -text — Remove goal",
+    "/goals *N or *text — Mark goal done (toggle)",
+    "/goals * — View completed goals",
+    "/facts +fact — Add fact (dedup check)",
+    "/prefs +pref — Add preference",
+    "/reminders +reminder — Add reminder",
+  ].join("\n"),
+
+  docs: [
+    "📄 Documents",
+    "",
+    "/doc list — All indexed documents",
+    "/doc save [title] — Save last paste to knowledge base",
+    "/doc ingest <filepath> [| title] — Ingest local file",
+    "/doc query <question> — Search all documents",
+    "/doc query <q> | <title> — Search specific document(s)",
+    "/doc delete <title> — Remove document",
+    "",
+    "/kb index — Index markdown files from CWD",
+    "/kb status — Show index status",
+    "/kb search <query> — Search indexed files",
+    "",
+    "Upload PDF/XLSX/CSV directly — bot indexes on receipt.",
+  ].join("\n"),
+
+  jobs: [
+    "⚙️ Jobs & Routines",
+    "",
+    "/schedule <prompt> — Queue Claude session job",
+    "/jobs — List jobs (last 20, all statuses)",
+    "/jobs pending|running|failed|done — Filter by status",
+    "/jobs detail <id8> — Full job card + action buttons",
+    "/jobs cancel <id8> — Cancel pending/running job",
+    "/jobs retry <id8> — Re-queue failed job",
+    "/jobs clear — Purge done/cancelled (>7 days)",
+    "",
+    "/routines list — Scheduled routines",
+    "/routines delete <name> — Remove routine",
+    "",
+    'Natural language: "Create a daily 9am goal check routine"',
+  ].join("\n"),
+
+  agents: [
+    "🤖 Agents & Search",
+    "",
+    "/agents — All agents + capabilities",
+    "/search <query> — Cross-agent semantic search",
+    "",
+    "Groups:",
+    "  Command Center    — Intent routing, CC audit log",
+    "  Cloud & Infra     — AWS, CDK, GCC 2.0",
+    "  Security          — IM8, PDPA, threat modelling",
+    "  Engineering       — Code review, TDD, refactors",
+    "  Strategy & Comms  — Proposals, decks, research",
+    "  Operations Hub    — General Q&A (default)",
+    "",
+    "Model prefixes:",
+    "  [O] Opus · [H] Haiku · (none) Sonnet default",
+  ].join("\n"),
+
+  system: [
+    "🔧 System",
+    "",
+    "/cwd — Show working directory",
+    "/cwd /path/to/dir — Set working directory",
+    "/cwd reset — Clear working directory",
+    "/reboot — Restart Jarvis (confirmation required)",
+    "/monthly_update — TRO monthly update pipeline (ad-hoc)",
+  ].join("\n"),
+} as const;
+
+function buildHelpMainKeyboard(): InlineKeyboard {
+  return new InlineKeyboard()
+    .text("💬 Session", "help:cat:session")
+    .text("🧠 Memory", "help:cat:memory").row()
+    .text("📄 Docs", "help:cat:docs")
+    .text("⚙️ Jobs", "help:cat:jobs").row()
+    .text("🤖 Agents", "help:cat:agents")
+    .text("🔧 System", "help:cat:system");
+}
+
+function buildHelpBackKeyboard(): InlineKeyboard {
+  return new InlineKeyboard().text("← Back", "help:back");
+}
+
 /**
  * Send a potentially long message by splitting it into ≤4096-character chunks.
  * Uses QMD-style scored break-point detection for natural reading boundaries.
@@ -327,62 +440,23 @@ export async function handleDocCommand(
 export function registerCommands(bot: Bot, options: CommandOptions): void {
   const { onMessage } = options;
 
-  // /help - show available commands (excluded from short-term memory)
+  // /help - interactive keyboard-driven help menu
   bot.command("help", async (ctx) => {
     if (process.env.E2E_DEBUG) console.log("[e2e:command:help]", JSON.stringify({ message: ctx.message, chat: ctx.chat, from: ctx.from, match: ctx.match }));
-    const help = [
-      "Available commands:",
-      "",
-      "/new [prompt] - Start a fresh conversation (optionally with first message)",
-      "/renew [prompt] - New Claude session, inject full conversation context (STM + LTM)",
-      "/memory - Show all memory (goals, prefs, facts, dates)",
-      "/memory goals - Active goals only",
-      "/memory done - Completed goals",
-      "/memory prefs - Preferences",
-      "/memory facts - Facts",
-      "/memory dates - Dates & reminders",
-      "/memory dedup - Detect and resolve contradictory facts",
-      "/goals +goal - Add a goal (checks for similar existing goals)",
-      "/goals -N or -text - Remove goal by index or fuzzy match",
-      "/goals *N or *text - Mark goal as done (toggle)",
-      "/goals * - View completed/archived goals",
-      "/facts +fact - Add a fact (checks for duplicates)",
-      "/facts -N or -text - Remove fact by index or fuzzy match",
-      "/prefs +pref - Add a preference (checks for duplicates)",
-      "/prefs -N or -text - Remove preference by index or fuzzy match",
-      "/reminders +reminder - Add a reminder (checks for duplicates)",
-      "/reminders -N or -text - Remove reminder by index or fuzzy match",
-      "/remember [fact] - Explicitly store a fact or preference",
-      "/forget N - Delete memory by index (chronological order)",
-      "/forget [topic] - Delete memories matching topic (or all if no topic)",
-      "/summary - Show compressed conversation history",
-      "/history - Show recent conversation messages",
-      "/routines list - List your scheduled routines",
-      "/routines delete <name> - Delete a routine",
-      "/cwd - Show working directory for this topic",
-      "/cwd /path/to/dir - Set working directory (takes effect after /new)",
-      "/cwd reset - Clear working directory (reverts to default after /new)",
-      "/model sonnet|opus|haiku|local - Set session-scoped model (resets on /new)",
-      "/model default - Clear model override, use agent default",
-      "/doc list - List all indexed documents",
-      "/doc save [title] - Save most recent large paste to knowledge base",
-      "/doc query <question> - Search all indexed documents",
-      "/doc query <question> | <title> - Search specific document(s)",
-      "/doc delete <title> - Remove a document from the index",
-      "/doc forget <title> - Remove a document (alias for delete)",
-      "/monthly_update - Trigger TRO monthly update pipeline (ad-hoc)",
-      "/agents - List all agents with capabilities",
-      "/search <query> - Search across all agent groups",
-      "/reboot - Restart Jarvis (with confirmation)",
-      "/schedule <prompt> - Queue a background Claude session job",
-      "/help - Show this help",
-      "",
-      "Create routines by describing them:",
-      '"Create a daily routine at 9am that checks my goals"',
-      "",
-      "During long sessions, I'll show progress updates automatically.",
-    ].join("\n");
-    await ctx.reply(help);
+    await ctx.reply(HELP_MAIN_TEXT, { reply_markup: buildHelpMainKeyboard() });
+  });
+
+  bot.callbackQuery(/^help:cat:(.+)$/, async (ctx) => {
+    const cat = ctx.match[1] as keyof typeof HELP_CATEGORIES;
+    await ctx.answerCallbackQuery();
+    const content = HELP_CATEGORIES[cat];
+    if (!content) return;
+    await ctx.editMessageText(content, { reply_markup: buildHelpBackKeyboard() });
+  });
+
+  bot.callbackQuery("help:back", async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await ctx.editMessageText(HELP_MAIN_TEXT, { reply_markup: buildHelpMainKeyboard() });
   });
 
   // /status - show current session status
