@@ -1,5 +1,22 @@
 # Changelog
 
+## [Unreleased] / 2026-04-18 — /jobs CRUD: cancel, retry, detail, clear subcommands
+
+### Added
+- **`/jobs cancel <id8>`**: Cancel a pending or running job by 8-char ID prefix. Rejects done/cancelled jobs with an error message.
+- **`/jobs retry <id8>`**: Re-queue a failed job to pending and clear its error. Rejects non-failed jobs.
+- **`/jobs detail <id8>`**: Show full job card with contextual inline action buttons (Cancel for pending/running, Retry for failed, Refresh always).
+- **`/jobs clear`**: Purge done/cancelled jobs older than `JOBS_PURGE_DAYS` days (default 7). Reports count purged.
+- **`buildDetailKeyboard(job)`** (`src/jobs/telegramJobCommands.ts`): Generates status-aware inline keyboard. No cancel button on done jobs; no retry button on pending jobs.
+- **Inline callbacks** `job:cancel:`, `job:retry:`, `job:detail:` resolve jobs by 8-char UUID prefix. Ambiguity (>1 match) returns an error prompt to use a longer prefix.
+- **`JobStore.getJobByPrefix(prefix)`** (`src/jobs/jobStore.ts`): `LIKE` lookup returning `{ job, ambiguous }`. O(log n) via existing status index.
+- **`JobStore.purgeTerminal(days)`**: Single DELETE of done/cancelled jobs past the age threshold; returns row count.
+- **`JobStore.clearError(id)`**: Sets `error = NULL` atomically (used on retry).
+
+### Changed
+- **`/jobs` handler**: Subcommand routing extracts first token; bare `/jobs` and status-filter aliases (`/jobs pending`, etc.) unchanged.
+- **Callback handler**: Extended to route `cancel`, `retry`, `detail` actions via prefix lookup; existing `confirm`, `skip`, `abort` intervention callbacks untouched.
+
 ## [Unreleased] / 2026-04-18 — /schedule UX hardening: confirmation, duplicate detection, persistent topics
 
 ### Added

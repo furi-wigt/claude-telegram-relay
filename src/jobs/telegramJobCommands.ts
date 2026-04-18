@@ -86,19 +86,100 @@ export function buildInterventionKeyboard(jobId: string) {
   };
 }
 
+/** Contextual action buttons for a job detail card. Buttons shown depend on job status. */
+export function buildDetailKeyboard(job: Job) {
+  const id8 = job.id.slice(0, 8);
+  const buttons: { text: string; callback_data: string }[] = [
+    { text: "🔄 Refresh", callback_data: `job:detail:${id8}` },
+  ];
+  if (job.status === "pending" || job.status === "running") {
+    buttons.push({ text: "🚫 Cancel", callback_data: `job:cancel:${id8}` });
+  }
+  if (job.status === "failed") {
+    buttons.push({ text: "🔁 Retry", callback_data: `job:retry:${id8}` });
+  }
+  return { inline_keyboard: [buttons] };
+}
+
 export function registerJobCommands(
   bot: Bot<Context>,
   store: JobStore,
   interventionManager: InterventionManager
 ): void {
-  // /jobs [filter]
-  bot.command("jobs", async (ctx) => {
-    const args = (ctx.match ?? "").trim().toLowerCase();
+  const PURGE_DAYS = parseInt(process.env.JOBS_PURGE_DAYS ?? "7", 10);
 
+  // Helper: resolve a job by 8-char prefix, reply with error if not found/ambiguous
+  async function resolveByPrefix(ctx: Context, prefix: string): Promise<Job | null> {
+    const { job, ambiguous } = store.getJobByPrefix(prefix);
+    if (ambiguous) {
+      await ctx.reply("Multiple matches — use a longer ID prefix.");
+      return null;
+    }
+    if (!job) {
+      await ctx.reply("Job not found.");
+      return null;
+    }
+    return job;
+  }
+
+  // /jobs [subcommand] [arg]
+  bot.command("jobs", async (ctx) => {
+    const raw = (ctx.match ?? "").trim();
+    const [sub, arg] = raw.split(/\s+/, 2);
+
+    // /jobs cancel <id>
+    if (sub === "cancel") {
+      if (!arg) { await ctx.reply("Usage: /jobs cancel <id8>"); return; }
+      const job = await resolveByPrefix(ctx, arg);
+      if (!job) return;
+      if (job.status !== "pending" && job.status !== "running") {
+        await ctx.reply(`Cannot cancel a ${job.status} job.`);
+        return;
+      }
+      store.updateStatus(job.id, "cancelled");
+      await ctx.reply(`🚫 Job <code>${job.id.slice(0, 8)}</code> cancelled.`, { parse_mode: "HTML" });
+      return;
+    }
+
+    // /jobs retry <id>
+    if (sub === "retry") {
+      if (!arg) { await ctx.reply("Usage: /jobs retry <id8>"); return; }
+      const job = await resolveByPrefix(ctx, arg);
+      if (!job) return;
+      if (job.status !== "failed") {
+        await ctx.reply(`Cannot retry a ${job.status} job.`);
+        return;
+      }
+      store.updateStatus(job.id, "pending");
+      store.clearError(job.id);
+      await ctx.reply(`🔁 Job <code>${job.id.slice(0, 8)}</code> re-queued.`, { parse_mode: "HTML" });
+      return;
+    }
+
+    // /jobs detail <id>
+    if (sub === "detail") {
+      if (!arg) { await ctx.reply("Usage: /jobs detail <id8>"); return; }
+      const job = await resolveByPrefix(ctx, arg);
+      if (!job) return;
+      await ctx.reply(formatJobDetail(job), { parse_mode: "HTML", reply_markup: buildDetailKeyboard(job) });
+      return;
+    }
+
+    // /jobs clear
+    if (sub === "clear") {
+      const count = store.purgeTerminal(PURGE_DAYS);
+      const msg = count === 0
+        ? `Nothing to purge (no done/cancelled jobs older than ${PURGE_DAYS} days).`
+        : `🗑 Purged ${count} job${count === 1 ? "" : "s"} older than ${PURGE_DAYS} days.`;
+      await ctx.reply(msg);
+      return;
+    }
+
+    // /jobs [status-filter | bare]
     let filter: { status?: JobStatus; type?: JobType; limit?: number } = { limit: 20 };
-    if (args === "pending") filter.status = "pending";
-    else if (args === "failed") filter.status = "failed";
-    else if (args === "running") filter.status = "running";
+    if (sub === "pending") filter.status = "pending";
+    else if (sub === "failed") filter.status = "failed";
+    else if (sub === "running") filter.status = "running";
 
     const jobs = store.listJobs(filter);
     const text = formatJobList(jobs);
@@ -116,7 +197,7 @@ export function registerJobCommands(
     await ctx.reply(text, { reply_markup: keyboard });
   });
 
-  // Callback handler for intervention resolution
+  // Callback handler: list filters, intervention resolution, and CRUD actions
   bot.callbackQuery(/^job:/, async (ctx) => {
     const data = ctx.callbackQuery.data;
     const parts = data.split(":");
@@ -146,7 +227,52 @@ export function registerJobCommands(
       return;
     }
 
-    // Resolution callbacks: confirm, skip, abort
+    // CRUD action callbacks: cancel, retry, detail — resolve by 8-char prefix
+    if (action === "cancel" || action === "retry" || action === "detail") {
+      const { job, ambiguous } = store.getJobByPrefix(jobIdOrFilter);
+      if (ambiguous) {
+        await ctx.answerCallbackQuery({ text: "Ambiguous ID — use longer prefix" });
+        return;
+      }
+      if (!job) {
+        await ctx.answerCallbackQuery({ text: "Job not found" });
+        return;
+      }
+
+      if (action === "cancel") {
+        if (job.status !== "pending" && job.status !== "running") {
+          await ctx.answerCallbackQuery({ text: `Cannot cancel a ${job.status} job` });
+          return;
+        }
+        store.updateStatus(job.id, "cancelled");
+        await ctx.answerCallbackQuery({ text: "🚫 Cancelled" });
+      } else if (action === "retry") {
+        if (job.status !== "failed") {
+          await ctx.answerCallbackQuery({ text: `Cannot retry a ${job.status} job` });
+          return;
+        }
+        store.updateStatus(job.id, "pending");
+        store.clearError(job.id);
+        await ctx.answerCallbackQuery({ text: "🔁 Re-queued" });
+      } else {
+        // detail — just refresh, answer silently
+        await ctx.answerCallbackQuery();
+      }
+
+      // Refresh the detail card with updated state
+      try {
+        const updated = store.getJob(job.id)!;
+        await ctx.editMessageText(formatJobDetail(updated), {
+          parse_mode: "HTML",
+          reply_markup: buildDetailKeyboard(updated),
+        });
+      } catch {
+        // message may have been deleted
+      }
+      return;
+    }
+
+    // Intervention resolution callbacks: confirm, skip, abort — use full job ID
     const job = store.getJob(jobIdOrFilter);
     if (!job) {
       await ctx.answerCallbackQuery({ text: "Job not found" });

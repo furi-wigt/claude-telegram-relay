@@ -134,10 +134,20 @@ bun run relay:jobs cancel <id>        # cancel a pending job
 ```
 
 ### Telegram
-- `/jobs` -- list recent jobs with status indicators
-- `/jobs pending` / `/jobs failed` -- filtered views
-- `/schedule <prompt>` -- enqueue a `claude-session` job; result is posted back to the originating chat/thread
-- Intervention cards appear automatically with inline action buttons
+
+| Command | Description |
+|---|---|
+| `/jobs` | List recent jobs with status indicators and filter buttons |
+| `/jobs pending` \| `failed` \| `running` | Filtered views |
+| `/jobs detail <id8>` | Full job card with contextual action buttons |
+| `/jobs cancel <id8>` | Cancel a pending or running job |
+| `/jobs retry <id8>` | Re-queue a failed job back to pending |
+| `/jobs clear` | Purge done/cancelled jobs older than `JOBS_PURGE_DAYS` days (default 7) |
+| `/schedule <prompt>` | Enqueue a `claude-session` job; result posted back to originating chat |
+
+`<id8>` is the first 8 characters of the job UUID (shown in `/jobs` list and detail cards). Inline action buttons on detail cards provide the same cancel/retry/refresh actions without typing.
+
+Intervention cards (for `awaiting-intervention` jobs) appear automatically with Confirm / Skip / Abort buttons.
 
 ## Job Sources
 
