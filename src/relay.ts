@@ -296,17 +296,31 @@ function flushTextBurst(burstKey: string): void {
 
   // Command Center intercept — route through orchestration layer instead of normal Claude flow
   if (isCommandCenter(chatId)) {
-    // Priority 1: explicit Telegram reply to a tracked agent message → Q&A routing
+    // Priority 1: explicit Telegram reply → always treat as follow-up
     const replyToMsgId = ctx.message?.reply_to_message?.message_id;
     if (replyToMsgId) {
+      // Prepend the replied-to message text so the agent has full context
+      const replyText = ctx.message?.reply_to_message?.text ?? ctx.message?.reply_to_message?.caption;
+      const enrichedText = replyText
+        ? `[In reply to: "${replyText.substring(0, 300)}"]\n\n${assembled}`
+        : assembled;
+
+      // Try tracked agent first (exact match), fall back to last active agent
       const pending = lookupAgentReply(chatId, replyToMsgId);
-      if (pending) {
+      const agentId = pending?.agentId ?? getLastActiveAgent(chatId, threadId);
+      if (agentId) {
         queueManager.getOrCreate(chatId, threadId).enqueue({
-          label: `[chat:${chatId}] CC re-route → ${pending.agentId}: ${assembled.substring(0, 30)}`,
-          run: () => rerouteToAgent(bot, ctx, assembled, chatId, threadId, pending.agentId),
+          label: `[chat:${chatId}] CC re-route → ${agentId}: ${assembled.substring(0, 30)}`,
+          run: () => rerouteToAgent(bot, ctx, enrichedText, chatId, threadId, agentId),
         });
         return;
       }
+      // No agent resolvable — send to orchestration with reply context injected
+      queueManager.getOrCreate(chatId, threadId).enqueue({
+        label: `[chat:${chatId}] CC orchestrate (reply): ${assembled.substring(0, 30)}`,
+        run: () => orchestrateMessage(bot, ctx, enrichedText, chatId, threadId),
+      });
+      return;
     }
 
     // Priority 2: short continuation command → last active agent (e.g. "merge", "ok", "go ahead")
