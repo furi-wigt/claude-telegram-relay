@@ -99,14 +99,12 @@ export async function rerouteToAgent(
     }).catch(async () => {
       const plain = decodeHtmlEntities(html.replace(/<[^>]+>/g, ""));
       for (const chunk of chunkMessage(plain)) {
-        await bot.api.sendMessage(ccChatId, chunk, { message_thread_id: ccThreadId ?? undefined }).catch(() => {});
+        const s = await bot.api.sendMessage(ccChatId, chunk, { message_thread_id: ccThreadId ?? undefined }).catch(() => null);
+        if (s) trackAgentReply(ccChatId, s.message_id, agentId, ccThreadId);
       }
       return null;
     });
-    // Track first chunk so the user can keep replying to this agent
-    if (i === 0 && sent) {
-      trackAgentReply(ccChatId, sent.message_id, agentId, ccThreadId);
-    }
+    if (sent) trackAgentReply(ccChatId, sent.message_id, agentId, ccThreadId);
   }
   // Record as last active agent so bare continuation commands route here
   trackLastActiveAgent(ccChatId, ccThreadId, agentId);
@@ -349,14 +347,12 @@ export function registerOrchestrationCallbacks(bot: Bot): void {
       }).catch(async () => {
         const plain = decodeHtmlEntities(html.replace(/<[^>]+>/g, ""));
         for (const chunk of chunkMessage(plain)) {
-          await bot.api.sendMessage(chatId, chunk, { message_thread_id: threadId ?? undefined }).catch(() => {});
+          const s = await bot.api.sendMessage(chatId, chunk, { message_thread_id: threadId ?? undefined }).catch(() => null);
+          if (s) trackAgentReply(chatId, s.message_id, agentId, threadId);
         }
         return null;
       });
-      // Track first chunk for follow-up reply routing
-      if (i === 0 && sent) {
-        trackAgentReply(chatId, sent.message_id, agentId, threadId);
-      }
+      if (sent) trackAgentReply(chatId, sent.message_id, agentId, threadId);
     }
     // Record as last active agent for continuation commands
     trackLastActiveAgent(chatId, threadId, agentId);
