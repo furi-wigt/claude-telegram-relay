@@ -601,7 +601,11 @@ Summarise what was set up and what is running. Remind the user:
 | `/goals *` | View completed/archived goals |
 | `/history` | Recent messages |
 | `/routines` | Manage scheduled routines |
-| `/jobs` | View and manage background jobs |
+| `/jobs` | List background jobs (optional status filter: `pending\|running\|done\|failed\|cancelled`) |
+| `/jobs detail <id8>` | Show full job card with contextual action buttons (Cancel / Retry / Refresh) |
+| `/jobs cancel <id8>` | Cancel a pending or running job |
+| `/jobs retry <id8>` | Re-queue a failed or cancelled job |
+| `/jobs clear` | Purge done/cancelled jobs older than 7 days |
 | `/schedule <prompt>` | Enqueue a Claude session job |
 | `/doc list` | List uploaded documents |
 | `/doc forget [name]` | Remove a document from memory |

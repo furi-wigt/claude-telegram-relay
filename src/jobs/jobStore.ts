@@ -262,6 +262,28 @@ export class JobStore {
     return agentIds;
   }
 
+  /** Look up a job by the first N characters of its UUID. Returns null if not found, ambiguous=true if >1 match. */
+  getJobByPrefix(prefix: string): { job: Job | null; ambiguous: boolean } {
+    const rows = this.db.query("SELECT * FROM jobs WHERE id LIKE ?").all(`${prefix}%`) as Record<string, unknown>[];
+    if (rows.length === 0) return { job: null, ambiguous: false };
+    if (rows.length > 1) return { job: null, ambiguous: true };
+    return { job: rowToJob(rows[0]), ambiguous: false };
+  }
+
+  /** Delete done/cancelled jobs older than N days. Returns the number of rows deleted. */
+  purgeTerminal(olderThanDays: number): number {
+    const result = this.db.run(
+      `DELETE FROM jobs WHERE status IN ('done', 'cancelled') AND completed_at < datetime('now', ? || ' days')`,
+      [`-${olderThanDays}`]
+    );
+    return result.changes;
+  }
+
+  /** Set the error field to NULL (used when re-queuing a failed job). */
+  clearError(id: string): void {
+    this.db.run("UPDATE jobs SET error = NULL WHERE id = ?", [id]);
+  }
+
   /** For auto-resolve: find awaiting-intervention jobs past their timeout */
   getExpiredInterventions(): Job[] {
     const rows = this.db

@@ -3,7 +3,7 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { Database } from "bun:sqlite";
 import { initJobSchema } from "./jobSchema.ts";
 import { JobStore } from "./jobStore.ts";
-import { formatJobList, formatJobDetail, buildInterventionKeyboard } from "./telegramJobCommands.ts";
+import { formatJobList, formatJobDetail, buildInterventionKeyboard, buildDetailKeyboard } from "./telegramJobCommands.ts";
 
 describe("telegramJobCommands", () => {
   let db: Database;
@@ -53,5 +53,54 @@ describe("telegramJobCommands", () => {
     expect(callbackData).toContain("job:confirm:abc-123");
     expect(callbackData).toContain("job:skip:abc-123");
     expect(callbackData).toContain("job:abort:abc-123");
+  });
+
+  describe("buildDetailKeyboard", () => {
+    test("pending job: shows Refresh + Cancel, no Retry", () => {
+      const job = store.insertJob({ source: "cli", type: "routine", executor: "a", title: "A" });
+      const keyboard = buildDetailKeyboard(job);
+      const labels = keyboard.inline_keyboard.flat().map((b) => b.text);
+      expect(labels).toContain("🔄 Refresh");
+      expect(labels).toContain("🚫 Cancel");
+      expect(labels).not.toContain("🔁 Retry");
+    });
+
+    test("running job: shows Refresh + Cancel, no Retry", () => {
+      const job = store.insertJob({ source: "cli", type: "routine", executor: "a", title: "A" });
+      store.updateStatus(job.id, "running");
+      const updated = store.getJob(job.id)!;
+      const keyboard = buildDetailKeyboard(updated);
+      const labels = keyboard.inline_keyboard.flat().map((b) => b.text);
+      expect(labels).toContain("🚫 Cancel");
+      expect(labels).not.toContain("🔁 Retry");
+    });
+
+    test("failed job: shows Refresh + Retry, no Cancel", () => {
+      const job = store.insertJob({ source: "cli", type: "routine", executor: "a", title: "A" });
+      store.updateStatus(job.id, "running");
+      store.updateStatus(job.id, "failed");
+      const updated = store.getJob(job.id)!;
+      const keyboard = buildDetailKeyboard(updated);
+      const labels = keyboard.inline_keyboard.flat().map((b) => b.text);
+      expect(labels).toContain("🔁 Retry");
+      expect(labels).not.toContain("🚫 Cancel");
+    });
+
+    test("done job: shows only Refresh", () => {
+      const job = store.insertJob({ source: "cli", type: "routine", executor: "a", title: "A" });
+      store.updateStatus(job.id, "done");
+      const updated = store.getJob(job.id)!;
+      const keyboard = buildDetailKeyboard(updated);
+      const labels = keyboard.inline_keyboard.flat().map((b) => b.text);
+      expect(labels).toEqual(["🔄 Refresh"]);
+    });
+
+    test("callback data uses 8-char job ID prefix", () => {
+      const job = store.insertJob({ source: "cli", type: "routine", executor: "a", title: "A" });
+      const keyboard = buildDetailKeyboard(job);
+      const callbacks = keyboard.inline_keyboard.flat().map((b) => b.callback_data);
+      const id8 = job.id.slice(0, 8);
+      expect(callbacks.every((c) => c.includes(id8))).toBe(true);
+    });
   });
 });

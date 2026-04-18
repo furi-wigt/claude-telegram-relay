@@ -203,4 +203,66 @@ describe("JobStore", () => {
     const timedOut = store.getTimedOutJobs();
     expect(timedOut.length).toBeGreaterThanOrEqual(1);
   });
+
+  describe("getJobByPrefix", () => {
+    test("returns job for exact 8-char prefix", () => {
+      const job = store.insertJob({ source: "cli", type: "routine", executor: "a", title: "A" });
+      const prefix = job.id.slice(0, 8);
+      const { job: found, ambiguous } = store.getJobByPrefix(prefix);
+      expect(ambiguous).toBe(false);
+      expect(found?.id).toBe(job.id);
+    });
+
+    test("returns null when no match", () => {
+      const { job, ambiguous } = store.getJobByPrefix("00000000");
+      expect(ambiguous).toBe(false);
+      expect(job).toBeNull();
+    });
+
+    test("returns ambiguous when prefix matches multiple jobs", () => {
+      store.insertJob({ source: "cli", type: "routine", executor: "a", title: "A" });
+      store.insertJob({ source: "cli", type: "routine", executor: "b", title: "B" });
+      // Empty string prefix matches all rows
+      const { job, ambiguous } = store.getJobByPrefix("");
+      expect(ambiguous).toBe(true);
+      expect(job).toBeNull();
+    });
+  });
+
+  describe("purgeTerminal", () => {
+    test("returns 0 when no terminal jobs exist", () => {
+      store.insertJob({ source: "cli", type: "routine", executor: "a", title: "A" });
+      const count = store.purgeTerminal(0);
+      expect(count).toBe(0); // pending job, not terminal
+    });
+
+    test("purges done/cancelled jobs older than N days and returns count", () => {
+      const job = store.insertJob({ source: "cli", type: "routine", executor: "a", title: "A" });
+      store.updateStatus(job.id, "done");
+      // Backdate completed_at to 8 days ago
+      db.run("UPDATE jobs SET completed_at = datetime('now', '-8 days') WHERE id = ?", [job.id]);
+      const count = store.purgeTerminal(7);
+      expect(count).toBe(1);
+      expect(store.getJob(job.id)).toBeNull();
+    });
+
+    test("keeps recent terminal jobs within the threshold", () => {
+      const job = store.insertJob({ source: "cli", type: "routine", executor: "a", title: "A" });
+      store.updateStatus(job.id, "done");
+      // completed_at = now (within 7 days)
+      const count = store.purgeTerminal(7);
+      expect(count).toBe(0);
+      expect(store.getJob(job.id)).not.toBeNull();
+    });
+  });
+
+  describe("clearError", () => {
+    test("clears error field to NULL", () => {
+      const job = store.insertJob({ source: "cli", type: "routine", executor: "a", title: "A" });
+      store.setError(job.id, "Oops");
+      store.clearError(job.id);
+      const updated = store.getJob(job.id)!;
+      expect(updated.error).toBeNull();
+    });
+  });
 });
