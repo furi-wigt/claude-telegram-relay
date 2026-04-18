@@ -1,0 +1,4 @@
+[
+  { "name": "morning-summary", "type": "handler", "schedule": "0 7 * * *",    "group": "OPERATIONS", "enabled": true },
+  { "name": "smart-checkin",   "type": "handler", "schedule": "0 * * * *",    "group": "OPERATIONS", "enabled": true }
+]

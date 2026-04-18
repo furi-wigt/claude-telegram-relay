@@ -1,6 +1,6 @@
 // src/jobs/executors/routineExecutor.test.ts
 import { describe, test, expect } from "bun:test";
-import { RoutineExecutor } from "./routineExecutor.ts";
+import { RoutineExecutor, resolveHandlerPath } from "./routineExecutor.ts";
 import type { Job } from "../types.ts";
 
 function makeJob(executor: string, payload: Record<string, unknown> = {}): Job {
@@ -38,8 +38,6 @@ describe("RoutineExecutor", () => {
 
   test("executes inline handler function", async () => {
     const executor = new RoutineExecutor();
-
-    // Register an inline handler for testing
     executor.registerHandler("test-handler", async () => {
       return "handler ran";
     });
@@ -64,5 +62,23 @@ describe("RoutineExecutor", () => {
     const result = await executor.execute(makeJob("nonexistent"));
     expect(result.status).toBe("failed");
     expect(result.error).toContain("no handler registered");
+  });
+});
+
+describe("resolveHandlerPath", () => {
+  test("resolves core handler from routines/handlers/", () => {
+    const result = resolveHandlerPath("watchdog");
+    expect(result).not.toBeNull();
+    expect(result!.source).toBe("core");
+  });
+
+  test("rejects names with path traversal", () => {
+    expect(resolveHandlerPath("../../../etc/passwd")).toBeNull();
+    expect(resolveHandlerPath("foo/bar")).toBeNull();
+    expect(resolveHandlerPath("foo\\bar")).toBeNull();
+  });
+
+  test("returns null for nonexistent handler", () => {
+    expect(resolveHandlerPath("does-not-exist-xyz")).toBeNull();
   });
 });
