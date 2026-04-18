@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach } from "bun:test";
-import { trackAgentReply, lookupAgentReply, _clearAll, _size } from "../../src/orchestration/pendingAgentReplies.ts";
+import { trackAgentReply, lookupAgentReply, trackLastActiveAgent, getLastActiveAgent, _clearAll, _size } from "../../src/orchestration/pendingAgentReplies.ts";
 
 describe("pendingAgentReplies", () => {
   beforeEach(() => _clearAll());
@@ -53,5 +53,43 @@ describe("pendingAgentReplies", () => {
     const result = lookupAgentReply(100, 5);
     expect(result?.agentId).toBe("security-compliance");
     expect(result?.ccThreadId).toBe(3);
+  });
+});
+
+describe("lastActiveAgent", () => {
+  beforeEach(() => _clearAll());
+
+  test("records and retrieves last active agent", () => {
+    trackLastActiveAgent(100, 5, "engineering");
+    expect(getLastActiveAgent(100, 5)).toBe("engineering");
+  });
+
+  test("returns null when nothing recorded", () => {
+    expect(getLastActiveAgent(100, 5)).toBeNull();
+  });
+
+  test("null threadId is treated as root", () => {
+    trackLastActiveAgent(100, null, "cloud-architect");
+    expect(getLastActiveAgent(100, null)).toBe("cloud-architect");
+  });
+
+  test("different chats are independent", () => {
+    trackLastActiveAgent(100, null, "engineering");
+    trackLastActiveAgent(200, null, "security-compliance");
+    expect(getLastActiveAgent(100, null)).toBe("engineering");
+    expect(getLastActiveAgent(200, null)).toBe("security-compliance");
+  });
+
+  test("overwrite updates agent", () => {
+    trackLastActiveAgent(100, 5, "engineering");
+    trackLastActiveAgent(100, 5, "cloud-architect");
+    expect(getLastActiveAgent(100, 5)).toBe("cloud-architect");
+  });
+
+  test("different threads are independent", () => {
+    trackLastActiveAgent(100, 1, "engineering");
+    trackLastActiveAgent(100, 2, "security-compliance");
+    expect(getLastActiveAgent(100, 1)).toBe("engineering");
+    expect(getLastActiveAgent(100, 2)).toBe("security-compliance");
   });
 });

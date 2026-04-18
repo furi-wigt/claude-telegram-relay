@@ -28,7 +28,7 @@ import { resolveModelPrefix } from "../utils/modelPrefix.ts";
 import { InlineKeyboard } from "grammy";
 import { runHarness } from "./harness.ts";
 import type { ClassificationResult, DispatchPlan } from "./types.ts";
-import { trackAgentReply } from "./pendingAgentReplies.ts";
+import { trackAgentReply, trackLastActiveAgent } from "./pendingAgentReplies.ts";
 
 const COUNTDOWN_SECONDS = 5;
 
@@ -108,6 +108,8 @@ export async function rerouteToAgent(
       trackAgentReply(ccChatId, sent.message_id, agentId, ccThreadId);
     }
   }
+  // Record as last active agent so bare continuation commands route here
+  trackLastActiveAgent(ccChatId, ccThreadId, agentId);
 }
 
 /**
@@ -337,6 +339,8 @@ export function registerOrchestrationCallbacks(bot: Bot): void {
         trackAgentReply(chatId, sent.message_id, agentId, threadId);
       }
     }
+    // Record as last active agent for continuation commands
+    trackLastActiveAgent(chatId, threadId, agentId);
   });
 }
 

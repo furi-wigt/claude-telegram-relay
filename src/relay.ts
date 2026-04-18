@@ -44,7 +44,7 @@ import { learnTopicName, learnChatName, getTopicName } from "./utils/chatNames.t
 import { getRegistry } from "./models/index.ts";
 import { callRoutineModel } from "./routines/routineModel.ts";
 import { getAgentForChat, autoDiscoverGroup, loadGroupMappings } from "./routing/groupRouter.ts";
-import { isCommandCenter, orchestrateMessage, rerouteToAgent, lookupAgentReply, registerOrchestrationCallbacks, setDispatchRunner, setTopicCreator, setDispatchNotifier } from "./orchestration/index.ts";
+import { isCommandCenter, orchestrateMessage, rerouteToAgent, lookupAgentReply, getLastActiveAgent, registerOrchestrationCallbacks, setDispatchRunner, setTopicCreator, setDispatchNotifier } from "./orchestration/index.ts";
 // Router removed: always use Sonnet for simplicity and predictable latency
 import { loadSession as loadGroupSession, updateSessionIdGuarded, initSessions, loadAllSessions, saveSession, isResumeReliable, didResumeFail, lockActiveCwd, resetSession, getSessionSince, getSession } from "./session/groupSessions.ts";
 import { buildAgentPrompt } from "./agents/promptBuilder.ts";
@@ -287,7 +287,7 @@ function flushTextBurst(burstKey: string): void {
 
   // Command Center intercept — route through orchestration layer instead of normal Claude flow
   if (isCommandCenter(chatId)) {
-    // If the user is explicitly replying to a tracked agent response, route back to that agent
+    // Priority 1: explicit Telegram reply to a tracked agent message → Q&A routing
     const replyToMsgId = ctx.message?.reply_to_message?.message_id;
     if (replyToMsgId) {
       const pending = lookupAgentReply(chatId, replyToMsgId);
@@ -299,6 +299,25 @@ function flushTextBurst(burstKey: string): void {
         return;
       }
     }
+
+    // Priority 2: short continuation command → last active agent (e.g. "merge", "ok", "go ahead")
+    const trimmed = assembled.trim();
+    const isContinuation =
+      trimmed.length <= 40 &&
+      !trimmed.startsWith("/") &&
+      !/^\[(O|H|S)\]/i.test(trimmed);
+    if (isContinuation) {
+      const lastAgent = getLastActiveAgent(chatId, threadId);
+      if (lastAgent) {
+        queueManager.getOrCreate(chatId, threadId).enqueue({
+          label: `[chat:${chatId}] CC continuation → ${lastAgent}: ${trimmed}`,
+          run: () => rerouteToAgent(bot, ctx, assembled, chatId, threadId, lastAgent),
+        });
+        return;
+      }
+    }
+
+    // Priority 3: full intent classification
     queueManager.getOrCreate(chatId, threadId).enqueue({
       label: `[chat:${chatId}] CC orchestrate: ${assembled.substring(0, 30)}`,
       run: () => orchestrateMessage(bot, ctx, assembled, chatId, threadId),

@@ -19,7 +19,7 @@ import { markdownToHtml, splitMarkdown } from "../utils/htmlFormat.ts";
 import { chunkMessage } from "../utils/sendToGroup.ts";
 import type { DispatchPlan } from "./types.ts";
 import { AGENTS } from "../agents/config.ts";
-import { trackAgentReply } from "./pendingAgentReplies.ts";
+import { trackAgentReply, trackLastActiveAgent } from "./pendingAgentReplies.ts";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -134,6 +134,8 @@ export async function runHarness(
     if (resultMsgId) {
       trackAgentReply(ccChatId, resultMsgId, step.agent, ccThreadId);
     }
+    // Track as last active so bare follow-ups ("merge", "ok") route to this agent
+    trackLastActiveAgent(ccChatId, ccThreadId, step.agent);
 
     if (!result.success) {
       state.status = "failed";
