@@ -1090,11 +1090,23 @@ async function downloadTelegramDoc(
   }
 
   const file = await ctx.getFile();
+  if (!file.file_path) {
+    console.error(`[downloadTelegramDoc] file_path missing for ${fileName}`);
+    await ctx.reply(`Failed to download ${fileName}: Telegram did not return a file path.`);
+    return null;
+  }
+
   const timestamp = Date.now();
   const filePath = join(UPLOADS_DIR, `${timestamp}_${fileName}`);
   await ctx.reply(`📄 Reading ${fileName}…`);
 
   const response = await fetch(`https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`);
+  if (!response.ok) {
+    console.error(`[downloadTelegramDoc] fetch failed for ${fileName}: ${response.status} ${response.statusText}`);
+    await ctx.reply(`Failed to download ${fileName}: Telegram returned ${response.status}.`);
+    return null;
+  }
+
   const buffer = await response.arrayBuffer();
   await writeFile(filePath, Buffer.from(buffer));
 
