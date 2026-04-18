@@ -57,6 +57,13 @@ import { registerDedupReviewCallbackHandler } from "./memory/dedupReviewCallback
 import { registerConflictCallbackHandler } from "./memory/conflictCallbackHandler.ts";
 import { initJobQueue } from "./jobs/index.ts";
 import { handleScheduleCommand } from "./jobs/scheduleCommand.ts";
+import {
+  findSimilarJobs,
+  buildConfirmationMessage,
+  buildScheduleKeyboard,
+  createPendingSchedule,
+  registerScheduleCallbacks,
+} from "./jobs/scheduleConfirmation.ts";
 import { registerTaskSuggestionHandler } from "./callbacks/taskSuggestionHandler.ts";
 import { registerLearningRetroHandler } from "./callbacks/learningRetroCallbackHandler.ts";
 import { registerReflectCommand } from "./callbacks/reflectCommandHandler.ts";
@@ -857,6 +864,11 @@ try {
   };
 }
 
+// Schedule confirmation callbacks (confirm/cancel inline keyboard for /schedule)
+if (jobSystem.submitJob) {
+  registerScheduleCallbacks(bot, jobSystem.submitJob);
+}
+
 // Kept for backward compat: handles "New topic / Continue" button clicks from any
 // context-switch prompts that were sent before topic detection was removed. Safe to
 // keep indefinitely — it no-ops when there are no pending context-switch messages.
@@ -1396,21 +1408,21 @@ bot.command("plan", (ctx) => interactive.handlePlanCommand(ctx));
 
 // /schedule — submit a background Claude session job via the job queue
 bot.command("schedule", async (ctx) => {
-  const result = handleScheduleCommand(
-    { submitJob: jobSystem.submitJob },
-    {
-      chatId: ctx.chat?.id,
-      threadId: ctx.message?.message_thread_id,
-      prompt: ctx.match ?? "",
-    }
-  );
-  if (result.ok) {
-    await ctx.reply(`Queued: ${result.jobId.slice(0, 8)} — will post results here when done.`);
-  } else if (result.reason === "no-prompt") {
+  const prompt = (ctx.match ?? "").trim();
+  if (!prompt) {
     await ctx.reply("Usage: /schedule <prompt>");
-  } else {
-    await ctx.reply("Failed to queue job. Try again.");
+    return;
   }
+
+  // Find similar active jobs before asking for confirmation
+  const activeJobs = jobSystem.store?.listJobs({ type: "claude-session" }) ?? [];
+  const similar = findSimilarJobs(prompt, activeJobs);
+
+  const uuid = createPendingSchedule(prompt, ctx.chat?.id, ctx.message?.message_thread_id);
+  const text = buildConfirmationMessage(prompt, similar);
+  const keyboard = buildScheduleKeyboard(uuid);
+
+  await ctx.reply(text, { parse_mode: "HTML", reply_markup: keyboard });
 });
 
 // Report Generator integration (/report command + QA sessions)

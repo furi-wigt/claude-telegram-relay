@@ -1,5 +1,17 @@
 # Changelog
 
+## [Unreleased] / 2026-04-18 — /schedule UX hardening: confirmation, duplicate detection, persistent topics
+
+### Added
+- **Schedule confirmation** (`src/jobs/scheduleConfirmation.ts`): `/schedule <prompt>` now shows an inline `[✅ Queue] [❌ Cancel]` keyboard before submitting. Pending confirmations are stored in a TTL map (5 min expiry, 50-entry cap) and auto-expired.
+- **Similar job detection**: Before showing the confirmation keyboard, active `claude-session` jobs are checked for prompt similarity using token Jaccard (threshold 0.6). If similar jobs exist, a verbose warning card is shown for each match — job number, title, status emoji, priority, elapsed time.
+- **Persistent job topic registry** (`src/jobs/jobTopicRegistry.ts`): `initFromDb()` reconstructs the topic→job mapping from `jobs.metadata` on startup. A SQLite cold-path fallback also covers individual misses after restart. Ensures `[CLARIFY:]` resume routing survives PM2 restarts.
+
+### Changed
+- **`/schedule` handler** (`src/relay.ts`): Replaced immediate `submitJob()` call with the confirmation keyboard flow. `handleScheduleCommand()` is no longer called directly from the handler.
+- **`jobTopicRegistry.ts`**: `getJobTopic()` now falls back to SQLite on cache miss; warms the hot cache on first DB hit (O(1) thereafter). `isJobTopic()` delegates to `getJobTopic()`.
+- **`jobs/index.ts`**: Calls `initTopicRegistry(db)` at startup after `initJobBridge`.
+
 ## [Unreleased] / 2026-04-18 — job topic UX: /schedule creates a CC forum topic per job
 
 ### Added
