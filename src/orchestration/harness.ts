@@ -19,6 +19,7 @@ import { markdownToHtml, splitMarkdown } from "../utils/htmlFormat.ts";
 import { chunkMessage } from "../utils/sendToGroup.ts";
 import type { DispatchPlan } from "./types.ts";
 import { AGENTS } from "../agents/config.ts";
+import { trackAgentReply, trackLastActiveAgent } from "./pendingAgentReplies.ts";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -129,7 +130,12 @@ export async function runHarness(
     state.updatedAt = new Date().toISOString();
     await persistState(state);
 
-    await postResult(bot, step.agent, { ...result, response: cleanResponse }, ccChatId, ccThreadId);
+    const resultMsgId = await postResult(bot, step.agent, { ...result, response: cleanResponse }, ccChatId, ccThreadId);
+    if (resultMsgId) {
+      trackAgentReply(ccChatId, resultMsgId, step.agent, ccThreadId);
+    }
+    // Track as last active so bare follow-ups ("merge", "ok") route to this agent
+    trackLastActiveAgent(ccChatId, ccThreadId, step.agent);
 
     if (!result.success) {
       state.status = "failed";
@@ -199,22 +205,25 @@ export async function runHarness(
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+/** Post agent result chunks to CC thread. Returns first chunk's message_id (for reply tracking). */
 async function postResult(
   bot: Bot,
   agentId: string,
   result: { success: boolean; response: string; durationMs: number },
   ccChatId: number,
   ccThreadId: number | null,
-): Promise<void> {
+): Promise<number | null> {
   const agentName = AGENTS[agentId]?.name ?? agentId;
   const icon = result.success ? "✅" : "❌";
   const sec = (result.durationMs / 1000).toFixed(1);
   const header = `${icon} <b>${agentName}</b> — ${result.success ? "completed" : "failed"} (${sec}s)`;
 
   const chunks = splitMarkdown(result.response, 3800);
+  let firstMsgId: number | null = null;
+
   for (let i = 0; i < chunks.length; i++) {
     const html = i === 0 ? `${header}\n\n${markdownToHtml(chunks[i])}` : markdownToHtml(chunks[i]);
-    await bot.api.sendMessage(ccChatId, html, {
+    const sent = await bot.api.sendMessage(ccChatId, html, {
       parse_mode: "HTML",
       message_thread_id: ccThreadId ?? undefined,
     }).catch(async () => {
@@ -223,12 +232,17 @@ async function postResult(
         ? `${icon} ${agentName} — ${result.success ? "completed" : "failed"} (${sec}s)\n\n${chunks[i]}`
         : chunks[i];
       for (const chunk of chunkMessage(plain)) {
-        await bot.api.sendMessage(ccChatId, chunk, {
+        const s = await bot.api.sendMessage(ccChatId, chunk, {
           message_thread_id: ccThreadId ?? undefined,
-        }).catch(() => {});
+        }).catch(() => null);
+        if (i === 0 && firstMsgId === null && s) firstMsgId = s.message_id;
       }
+      return null;
     });
+    if (i === 0 && sent) firstMsgId = sent.message_id;
   }
+
+  return firstMsgId;
 }
 
 /** Post a short notice (redirect notification or guard warning) to the CC thread. */
