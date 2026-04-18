@@ -5,7 +5,9 @@
  * Images are sent as base64-encoded content — no temp files, no CLI subprocess,
  * no --dangerously-skip-permissions.
  *
- * Billed as Anthropic API tokens (ANTHROPIC_API_KEY), not Claude Code CLI subscription.
+ * Auth priority:
+ *   1. ANTHROPIC_API_KEY env var (sk-ant-api03-... key — billed separately)
+ *   2. Claude Code OAuth token from macOS Keychain (reuses Claude Code subscription)
  */
 
 import Anthropic from "@anthropic-ai/sdk";
@@ -25,6 +27,60 @@ export const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 
 /** Timeout for vision analysis. */
 const VISION_TIMEOUT_MS = 60_000;
+
+/** Timeout for macOS keychain read (prevents hanging on permission prompt). */
+const KEYCHAIN_TIMEOUT_MS = 5_000;
+
+/**
+ * Resolve an authenticated Anthropic client.
+ *
+ * Priority:
+ *   1. ANTHROPIC_API_KEY env var  → apiKey auth (x-api-key header)
+ *   2. macOS Keychain entry "Claude Code-credentials" → OAuth bearer token
+ *
+ * Re-reads credentials on every call so rotated tokens are picked up automatically.
+ * The keychain read adds ~5ms overhead — acceptable for vision (not a hot path).
+ */
+async function resolveAnthropicClient(): Promise<Anthropic> {
+  if (process.env.ANTHROPIC_API_KEY) {
+    return new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  }
+
+  // macOS only — Claude Code stores its OAuth token in Keychain
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  const exec = promisify(execFile);
+
+  let raw: string;
+  try {
+    const { stdout } = await exec(
+      "security",
+      ["find-generic-password", "-s", "Claude Code-credentials", "-w"],
+      { timeout: KEYCHAIN_TIMEOUT_MS }
+    );
+    raw = stdout.trim();
+  } catch {
+    throw new Error(
+      "Vision auth failed: set ANTHROPIC_API_KEY in .env, or run `claude login` to refresh Claude Code credentials"
+    );
+  }
+
+  let token: string | undefined;
+  try {
+    const data = JSON.parse(raw) as { claudeAiOauth?: { accessToken?: string } };
+    token = data?.claudeAiOauth?.accessToken;
+  } catch {
+    throw new Error("Vision auth failed: Claude Code credentials are malformed");
+  }
+
+  if (!token) {
+    throw new Error(
+      "Vision auth failed: Claude Code OAuth token missing — run `claude login` to re-authenticate"
+    );
+  }
+
+  return new Anthropic({ authToken: token });
+}
 
 /**
  * Detect image MIME type from magic bytes.
@@ -215,7 +271,7 @@ export async function analyzeImage(
     promptLength: sanitizedPrompt.length,
   });
 
-  const client = new Anthropic();
+  const client = await resolveAnthropicClient();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), VISION_TIMEOUT_MS);
 
