@@ -5,8 +5,17 @@ import { createRoutineContext } from "./routineContext.ts";
 import { getRoutineConfig } from "../../routines/routineConfig.ts";
 import type { RoutineContext } from "./routineContext.ts";
 import type { RoutineConfig } from "../../routines/routineConfig.ts";
+import { join } from "path";
+import { homedir } from "os";
+import { existsSync } from "fs";
 
 type RoutineHandler = (ctx: RoutineContext) => Promise<void>;
+
+/** Allowed directories for handler resolution — prevents path traversal */
+const USER_ROUTINES_DIR = join(
+  process.env.RELAY_USER_DIR ?? join(homedir(), ".claude-relay"),
+  "routines",
+);
 
 function minimalConfig(job: Job): RoutineConfig {
   return {
@@ -19,11 +28,39 @@ function minimalConfig(job: Job): RoutineConfig {
 }
 
 /**
- * Executes routine handlers (routines/handlers/*.ts).
- * Handlers are registered at startup or dynamically imported.
+ * Resolve handler path using dual-directory lookup:
+ *   1. User directory: ~/.claude-relay/routines/<name>.ts
+ *   2. Repo directory: routines/handlers/<name>.ts (relative import)
+ *
+ * Returns { path, source } or null if not found.
+ */
+function resolveHandlerPath(name: string): { path: string; source: "user" | "core" } | null {
+  // Reject names with path traversal characters
+  if (name.includes("..") || name.includes("/") || name.includes("\\")) return null;
+
+  // 1. User directory (absolute path)
+  const userPath = join(USER_ROUTINES_DIR, `${name}.ts`);
+  if (existsSync(userPath)) {
+    return { path: userPath, source: "user" };
+  }
+
+  // 2. Repo directory (relative import from src/jobs/executors/)
+  const repoRelative = `../../../routines/handlers/${name}.ts`;
+  // Resolve to absolute to check existence, but return relative for import
+  const repoAbsolute = join(import.meta.dir, "..", "..", "..", "routines", "handlers", `${name}.ts`);
+  if (existsSync(repoAbsolute)) {
+    return { path: repoRelative, source: "core" };
+  }
+
+  return null;
+}
+
+/**
+ * Executes routine handlers from two directories:
+ *   - Core handlers: routines/handlers/*.ts (shipped with repo)
+ *   - User handlers: ~/.claude-relay/routines/*.ts (user-specific)
  *
  * Handler signature: (ctx: RoutineContext) => Promise<void>
- * Legacy `(job: Job) => Promise<string | void>` handlers should be updated to new signature.
  */
 export class RoutineExecutor implements JobExecutor {
   readonly type = "routine" as const;
@@ -37,7 +74,7 @@ export class RoutineExecutor implements JobExecutor {
   }
 
   /**
-   * Dynamically import and register a handler from routines/handlers/<name>.ts.
+   * Dynamically import and register a handler from a given path.
    * The module must export a `run` function.
    */
   async loadHandler(name: string, path: string): Promise<void> {
@@ -58,20 +95,26 @@ export class RoutineExecutor implements JobExecutor {
     let handler = this.handlers.get(job.executor);
 
     if (!handler) {
-      // Lazy dynamic import from routines/handlers/<name>.ts
-      try {
-        const handlerPath = `../../../routines/handlers/${job.executor}.ts`;
-        const mod = await import(handlerPath);
-        if (typeof mod.run !== "function") {
+      const resolved = resolveHandlerPath(job.executor);
+      if (resolved) {
+        try {
+          const mod = await import(resolved.path);
+          if (typeof mod.run !== "function") {
+            return {
+              status: "failed",
+              error: `handler ${job.executor} does not export run()`,
+            };
+          }
+          handler = mod.run as RoutineHandler;
+          this.handlers.set(job.executor, handler);
+          console.log(`[routineExecutor] lazy-loaded ${resolved.source} handler: ${job.executor}`);
+        } catch (importErr) {
           return {
             status: "failed",
-            error: `handler ${job.executor} does not export run()`,
+            error: `failed to import handler "${job.executor}" from ${resolved.source}: ${importErr instanceof Error ? importErr.message : String(importErr)}`,
           };
         }
-        handler = mod.run as RoutineHandler;
-        this.handlers.set(job.executor, handler);
-        console.log(`[routineExecutor] lazy-loaded handler: ${job.executor}`);
-      } catch (_importErr) {
+      } else {
         // No handler file found — check for inline prompt payload
         const prompt = job.payload?.prompt as string | undefined;
         if (prompt) {
@@ -90,7 +133,7 @@ export class RoutineExecutor implements JobExecutor {
         }
         return {
           status: "failed",
-          error: `no handler registered for "${job.executor}" and no inline prompt provided: ${_importErr instanceof Error ? _importErr.message : String(_importErr)}`,
+          error: `no handler registered for "${job.executor}" and no inline prompt provided`,
         };
       }
     }
@@ -109,3 +152,6 @@ export class RoutineExecutor implements JobExecutor {
     }
   }
 }
+
+// Export for testing
+export { resolveHandlerPath, USER_ROUTINES_DIR };

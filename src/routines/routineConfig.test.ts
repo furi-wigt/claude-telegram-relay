@@ -17,16 +17,17 @@ const REPO_CONFIG = join(WORKTREE, "config/routines.config.json");
 
 describe("routineConfig", () => {
   describe("loadRoutineConfigs() — repo config only", () => {
-    test("loads the known routines from config/routines.config.json", async () => {
+    test("loads core routines from config/routines.config.json", async () => {
       // The real repo config file exists — import should find it
       const { loadRoutineConfigs } = await import("./routineConfig.ts");
       const configs = loadRoutineConfigs();
 
       expect(configs.length).toBeGreaterThan(0);
       const names = configs.map((c) => c.name);
-      expect(names).toContain("morning-summary");
-      expect(names).toContain("night-summary");
+      // Core routines (shipped with repo)
       expect(names).toContain("watchdog");
+      expect(names).toContain("log-cleanup");
+      expect(names).toContain("memory-cleanup");
     });
 
     test("every entry has required fields", async () => {

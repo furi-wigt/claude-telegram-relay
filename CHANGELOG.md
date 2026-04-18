@@ -1,5 +1,24 @@
 # Changelog
 
+## [Unreleased] / 2026-04-18 — Routine Separation (Core vs User)
+
+### Changed
+- **routines**: Split routines into core (repo) and user (external). Core maintenance routines (`watchdog`, `log-cleanup`, `memory-cleanup`, `memory-dedup-review`, `orphan-gc`, `weekly-retro`) stay in `routines/handlers/`. User routines (`morning-summary`, `night-summary`, `smart-checkin`, `weekly-etf`, `etf-52week-screener`) move to `~/.claude-relay/routines/`.
+- **src/jobs/executors/routineExecutor.ts**: Dual-path handler resolution — checks `~/.claude-relay/routines/` first, falls back to `routines/handlers/`. Path traversal validation on handler names.
+- **config/routines.config.json**: Now contains only 6 core routine entries (was 11). User routines configured in `~/.claude-relay/routines.config.json`.
+- **setup/install.ts**: New `seedDefaultRoutines()` — copies example handlers to `~/.claude-relay/routines/` and seeds user config from `config/routines.user.example.json` on first run (no-clobber).
+- **routines/CLAUDE.md**: Updated developer guide with core vs user distinction, dual-path resolution, separate checklists.
+- **CLAUDE.md**: Updated data directory layout and job queue instructions for dual-path routines.
+
+### Added
+- **routines/handlers/examples/morning-summary.example.ts**: Annotated example — one-shot daily pattern with LLM call, date formatting, `ctx.send()`.
+- **routines/handlers/examples/smart-checkin.example.ts**: Annotated example — interval pattern with `ctx.skipIfRanWithin()`, LLM decision gate, conditional send.
+- **config/routines.user.example.json**: Template for user routine config (seeded to `~/.claude-relay/routines.config.json` on setup).
+
+### Removed
+- **routines/handlers/**: Removed 5 user-specific handlers (moved to `~/.claude-relay/routines/`): `morning-summary.ts`, `night-summary.ts`, `smart-checkin.ts`, `weekly-etf.ts`, `etf-52week-screener.ts`.
+- **routines/*.test.ts**: Removed 6 user-routine test files (moved with handlers): `morning-summary.calendar.test.ts`, `morning-summary.calendar.e2e.test.ts`, `night-summary.test.ts`, `smart-checkin.test.ts`, `weekly-etf.test.ts`, `etf-52week-screener.test.ts`, `tests/routines/night-summary-learning.test.ts`.
+
 ## [Unreleased] / 2026-04-18 — NLAH Harness Replacement
 
 ### Added

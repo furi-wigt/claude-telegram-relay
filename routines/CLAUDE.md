@@ -5,39 +5,67 @@ Read it before creating or modifying any file in `routines/`.
 
 ---
 
+## Core vs User Routines
+
+Routines are split into two categories stored in separate directories:
+
+| Category | Location | Config file | Purpose |
+|----------|----------|-------------|---------|
+| **Core** | `routines/handlers/` (in repo) | `config/routines.config.json` | System maintenance: log cleanup, memory cleanup, watchdog, GC, dedup review, weekly retro |
+| **User** | `~/.claude-relay/routines/` (external) | `~/.claude-relay/routines.config.json` | Personal routines: morning summary, check-ins, ETF reports, etc. |
+
+The executor resolves handlers in this order:
+1. `~/.claude-relay/routines/<name>.ts` (user directory — checked first)
+2. `routines/handlers/<name>.ts` (repo directory — fallback)
+
+This means users can override core routines by placing a same-named file in the user directory.
+
+**Examples:** `routines/handlers/examples/` contains annotated example handlers
+(morning-summary, smart-checkin) that demonstrate common patterns. Copy and
+customise them — see instructions inside each file.
+
+---
+
 ## When to write a code-based routine
 
-Use a TypeScript handler (in `routines/handlers/`) when the task needs real data:
+Use a TypeScript handler when the task needs real data:
 API calls, database queries, conditional logic, or external integrations.
 
 For simple scheduled prompts with no custom logic, add a `"type": "prompt"` entry
-to `config/routines.config.json` — no handler file needed.
+to the appropriate config file — no handler file needed.
 
 ---
 
 ## Handler contract
 
-All handlers live in `routines/handlers/<name>.ts` and export a single `run` function.
-The scheduler owns all lifecycle boilerplate — no `_isEntry`, `loadEnv`, or `process.exit` needed.
+Handlers export a single `run` function. The scheduler owns all lifecycle
+boilerplate — no `_isEntry`, `loadEnv`, or `process.exit` needed.
 
+**Core handler** (lives in `routines/handlers/<name>.ts`):
 ```typescript
-// routines/handlers/my-routine.ts
 import type { RoutineContext } from "../../src/jobs/executors/routineContext.ts";
 
 export async function run(ctx: RoutineContext): Promise<void> {
-  // Optional: skip if already ran recently
-  await ctx.skipIfRanWithin(6); // skip if ran within last 6 hours
-
-  // Call the LLM via the ModelRegistry routine slot
-  const result = await ctx.llm("Summarise today's activity and flag any blockers.");
-
-  // Send to the routine's configured Telegram group (records to DB automatically)
+  await ctx.skipIfRanWithin(6);
+  const result = await ctx.llm("Summarise today's activity.");
   await ctx.send(result);
-
-  // Structured log line tagged with routine name
   ctx.log("my-routine complete");
 }
 ```
+
+**User handler** (lives in `~/.claude-relay/routines/<name>.ts`):
+```typescript
+// Import paths are relative to the repo root (the executor resolves from there)
+import type { RoutineContext } from "../../src/jobs/executors/routineContext.ts";
+
+export async function run(ctx: RoutineContext): Promise<void> {
+  const result = await ctx.llm("Give me a morning briefing.");
+  await ctx.send(result);
+}
+```
+
+> **Note:** User handlers use the same import paths as core handlers because Bun
+> resolves relative imports from the project root at runtime.
 
 ### RoutineContext API
 
@@ -52,18 +80,17 @@ Import path: `../../src/jobs/executors/routineContext.ts`
 
 ### Registering the routine
 
-Add an entry to `config/routines.config.json`:
-
+**Core routine** — add to `config/routines.config.json`:
 ```json
-{
-  "name": "my-routine",
-  "schedule": "0 9 * * *",
-  "group": "GENERAL",
-  "type": "routine"
-}
+{ "name": "my-routine", "schedule": "0 9 * * *", "group": "OPERATIONS", "type": "handler", "enabled": true }
 ```
 
-User overrides: `~/.claude-relay/routines.config.json` is merged on top of repo defaults.
+**User routine** — add to `~/.claude-relay/routines.config.json`:
+```json
+{ "name": "my-routine", "schedule": "0 9 * * *", "group": "OPERATIONS", "type": "handler", "enabled": true }
+```
+
+The scheduler merges both configs. User entries override repo entries with the same name.
 
 Do NOT add an entry to `ecosystem.config.cjs` — the `routine-scheduler` service reads the config and registers cron jobs automatically.
 
@@ -311,7 +338,7 @@ Changing the interpreter or exec pattern in `ecosystem.config.cjs` affects every
 service. Never work around a broken routine by patching the ecosystem config —
 fix the handler instead.
 
-### Adding a new routine
+### Adding a new core routine
 
 1. Create `routines/handlers/<name>.ts` exporting `run(ctx: RoutineContext)`.
 2. Add an entry to `config/routines.config.json` with name, schedule, group, and type.
@@ -323,6 +350,14 @@ npx pm2 save
 ```
 
 No `ecosystem.config.cjs` edit needed.
+
+### Adding a new user routine
+
+1. Copy an example from `routines/handlers/examples/` to `~/.claude-relay/routines/<name>.ts`.
+2. Customise the handler logic.
+3. Add an entry to `~/.claude-relay/routines.config.json`.
+4. The scheduler hot-reloads config changes — no restart needed for config-only changes.
+   If you added a new handler file, restart `routine-scheduler`: `npx pm2 restart routine-scheduler`.
 
 ---
 
@@ -351,7 +386,7 @@ Claude tools/agentic capabilities, use `claudeText`/`claudeStream` directly.
 
 ## Quick checklist
 
-Before committing a new routine handler:
+### Core routine (committed to repo)
 
 - [ ] File lives at `routines/handlers/<name>.ts`
 - [ ] Exports `export async function run(ctx: RoutineContext): Promise<void>`
@@ -363,3 +398,10 @@ Before committing a new routine handler:
 - [ ] Test file exists: `routines/<name>.test.ts`
 - [ ] Entry added to `config/routines.config.json` with correct `name`, `schedule`, `group`, `type`
 - [ ] After deploy: `npx pm2 restart routine-scheduler` only (never ecosystem-wide restart)
+
+### User routine (external, per-user)
+
+- [ ] File lives at `~/.claude-relay/routines/<name>.ts`
+- [ ] Exports `export async function run(ctx: RoutineContext): Promise<void>`
+- [ ] Entry added to `~/.claude-relay/routines.config.json`
+- [ ] Uses `ctx.send()`, `ctx.llm()`, `ctx.log()`, `ctx.skipIfRanWithin()` as needed

@@ -7,7 +7,7 @@
  * Usage: bun run setup/install.ts
  */
 
-import { existsSync, mkdirSync, copyFileSync, readdirSync } from "fs";
+import { existsSync, mkdirSync, copyFileSync, readdirSync, readFileSync } from "fs";
 import { join, dirname } from "path";
 import { homedir } from "os";
 
@@ -205,6 +205,57 @@ function seedDefaultPrompts(): void {
   }
 }
 
+/**
+ * Copy example routine handlers from routines/handlers/examples/ to ~/.claude-relay/routines/
+ * and seed ~/.claude-relay/routines.config.json from config/routines.user.example.json.
+ * No-clobber — existing user files are never overwritten.
+ */
+function seedDefaultRoutines(): void {
+  const examplesDir = join(PROJECT_ROOT, "routines", "handlers", "examples");
+  const userRoutinesDir = join(RELAY_USER_DIR, "routines");
+
+  mkdirSync(userRoutinesDir, { recursive: true });
+
+  // Copy example handler files (strip .example from filename)
+  if (existsSync(examplesDir)) {
+    for (const file of readdirSync(examplesDir)) {
+      if (!file.endsWith(".example.ts")) continue;
+      const targetName = file.replace(".example.ts", ".ts");
+      const dest = join(userRoutinesDir, targetName);
+      if (existsSync(dest)) {
+        console.log(`  ${PASS} routines/${targetName} ${dim("(user copy exists, skipped)")}`);
+      } else {
+        copyFileSync(join(examplesDir, file), dest);
+        console.log(`  ${PASS} Copied routines/${targetName}`);
+      }
+    }
+  }
+
+  // Seed user routines config
+  const configSrc = join(PROJECT_ROOT, "config", "routines.user.example.json");
+  const configDest = join(RELAY_USER_DIR, "routines.config.json");
+  if (existsSync(configSrc)) {
+    if (existsSync(configDest)) {
+      // Only seed if the file is empty (still the default [])
+      try {
+        const content = readFileSync(configDest, "utf-8").trim();
+        if (content === "[]" || content === "") {
+          copyFileSync(configSrc, configDest);
+          console.log(`  ${PASS} Seeded ~/.claude-relay/routines.config.json with example entries`);
+        } else {
+          console.log(`  ${PASS} ~/.claude-relay/routines.config.json ${dim("(user config exists, skipped)")}`);
+        }
+      } catch {
+        copyFileSync(configSrc, configDest);
+        console.log(`  ${PASS} Seeded ~/.claude-relay/routines.config.json`);
+      }
+    } else {
+      copyFileSync(configSrc, configDest);
+      console.log(`  ${PASS} Copied routines.config.json → ~/.claude-relay/routines.config.json`);
+    }
+  }
+}
+
 function setupEnv(): boolean {
   const envPath = join(PROJECT_ROOT, ".env");
   const examplePath = join(PROJECT_ROOT, ".env.example");
@@ -252,11 +303,12 @@ async function main() {
   console.log(`\n${cyan("  [3/5] Directories")}`);
   createDirs();
 
-  // 4. Default config files (agents + models + prompts)
+  // 4. Default config files (agents + models + prompts + routines)
   console.log(`\n${cyan("  [4/5] Default Config")}`);
   seedDefaultAgents();
   seedDefaultModels();
   seedDefaultPrompts();
+  seedDefaultRoutines();
 
   // 5. Environment
   console.log(`\n${cyan("  [5/5] Environment")}`);
