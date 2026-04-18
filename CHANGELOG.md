@@ -1,5 +1,19 @@
 # Changelog
 
+## [Unreleased] / 2026-04-18 — /model session-scoped model selection
+
+### Added
+- **`/model` command**: Set session-scoped model override per chat. Usage: `/model sonnet|opus|haiku|local` to set, `/model default` to clear. Resets on `/new`. Example: `/model opus` → all subsequent messages in this session use Opus.
+- **`SessionState.sessionModel`** (`src/session/groupSessions.ts`): New optional field storing the session-scoped alias. Cleared by `resetSession()`. Persisted across bot restarts in session JSON files.
+- **`setSessionModel()`** (`src/session/groupSessions.ts`): Helper to set/clear `sessionModel` atomically via existing `saveSession()`.
+- **Priority chain extended** (`src/utils/modelPrefix.ts`): `[O/H/L]` prefix → `session.sessionModel` → `agent.defaultModel` → Sonnet. Signature: `resolveModelPrefix(text, agentDefault?, sessionModel?)`.
+
+### Changed
+- **`resolveModelPrefix()`** (`src/utils/modelPrefix.ts`): Added `sessionModel?` param; slots between prefix and agentDefault using `sessionModel ?? agentDefault` coalesce.
+- **`processTextMessage()`** (`src/relay.ts`): Passes `session.sessionModel` to `resolveModelPrefix`.
+- **Photo handler** (`src/relay.ts`): Passes `getSession()?.sessionModel` to `resolveModelPrefix` (cache-only, non-blocking).
+- **`/help` text** (`src/commands/botCommands.ts`): Added `/model` usage lines.
+
 ## [Unreleased] / 2026-04-18 — Routine Separation (Core vs User)
 
 ### Changed
