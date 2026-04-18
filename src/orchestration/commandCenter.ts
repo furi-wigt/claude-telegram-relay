@@ -30,6 +30,7 @@ import { runHarness } from "./harness.ts";
 import type { ClassificationResult, DispatchPlan } from "./types.ts";
 import { trackAgentReply, trackLastActiveAgent } from "./pendingAgentReplies.ts";
 import { isJobTopic, getJobTopic } from "../jobs/jobTopicRegistry.ts";
+import { getBridgeJob, resumeJobWithAnswer } from "../jobs/jobBridge.ts";
 
 const COUNTDOWN_SECONDS = 5;
 
@@ -127,10 +128,22 @@ export async function orchestrateMessage(
   const { label: modelLabel, text: classifyText } = resolveModelPrefix(text);
   let effectiveText = classifyText.trim() || text;
 
-  // Job topic follow-up: inject original job context into classifier input so
-  // the follow-up routes to the most relevant agent (not necessarily the same one).
+  // Job topic follow-up — check if the job is suspended awaiting clarification.
+  // If so, treat this message as the user's clarification answer and resume.
   if (threadId !== null && isJobTopic(threadId)) {
     const jobEntry = getJobTopic(threadId)!;
+    const job = getBridgeJob(jobEntry.jobId);
+
+    if (job?.status === "awaiting-intervention" && job.intervention_type === "clarification") {
+      const question = job.intervention_prompt ?? "";
+      const resumed = resumeJobWithAnswer(jobEntry.jobId, text, question);
+      if (resumed) {
+        await ctx.reply(`▶️ Clarification received — resuming job…`).catch(() => {});
+        return;
+      }
+    }
+
+    // Normal follow-up: inject original job context into classifier input
     effectiveText = `Follow-up for job: "${truncate(jobEntry.prompt, 80)}" — ${effectiveText}`;
   }
 

@@ -297,4 +297,140 @@ describe("harness", () => {
     );
     expect(limitMsg).not.toBeUndefined();
   });
+
+  // ── HarnessResult return type tests ──────────────────────────────────────────
+
+  test("return type: single-step success returns { outcome: 'done' }", async () => {
+    mock.module("../../src/orchestration/dispatchEngine", () => ({
+      executeSingleDispatch: async () => ({ success: true, response: "Done!", durationMs: 100 }),
+    }));
+
+    const { runHarness } = await import("../../src/orchestration/harness");
+    const bot = makeMockBot() as any;
+    const plan = makePlan("general", "engineering");
+
+    const result = await runHarness(bot, plan, -200001, null);
+    expect(result.outcome).toBe("done");
+  });
+
+  test("return type: step failure returns { outcome: 'failed' }", async () => {
+    mock.module("../../src/orchestration/dispatchEngine", () => ({
+      executeSingleDispatch: async () => ({ success: false, response: "Timed out", durationMs: 300000 }),
+    }));
+
+    const { runHarness } = await import("../../src/orchestration/harness");
+    const bot = makeMockBot() as any;
+    const plan = makePlan("general", "engineering");
+
+    const result = await runHarness(bot, plan, -200002, null);
+    expect(result.outcome).toBe("failed");
+  });
+
+  // ── [CLARIFY:] tag tests ──────────────────────────────────────────────────────
+
+  test("clarify: [CLARIFY: question] → outcome suspended, question extracted, state suspended", async () => {
+    mock.module("../../src/orchestration/dispatchEngine", () => ({
+      executeSingleDispatch: async () => ({
+        success: true,
+        response: "I need more info. [CLARIFY: Which auth method — JWT or session?]",
+        durationMs: 400,
+      }),
+    }));
+
+    const { runHarness } = await import("../../src/orchestration/harness");
+    const bot = makeMockBot() as any;
+    const plan = makePlan("general", "engineering");
+
+    const result = await runHarness(bot, plan, -200010, null);
+
+    expect(result.outcome).toBe("suspended");
+    if (result.outcome === "suspended") {
+      expect(result.question).toBe("Which auth method — JWT or session?");
+      expect(result.agentId).toBe("engineering");
+    }
+
+    const state = await readState(plan.dispatchId);
+    expect(state.status).toBe("suspended");
+    expect(state.pendingQuestion).toBe("Which auth method — JWT or session?");
+    expect(state.pendingAgent).toBe("engineering");
+    // Tag stripped from stored output
+    expect(state.steps[0].output).not.toContain("[CLARIFY:");
+    // Step status is "suspended"
+    expect(state.steps[0].status).toBe("suspended");
+
+    // Question posted to CC
+    const clarifyMsg = bot._sent.find((m: any) => m.text?.includes("needs clarification"));
+    expect(clarifyMsg).not.toBeUndefined();
+  });
+
+  test("clarify: [CLARIFY:] wins over [REDIRECT:] when both present", async () => {
+    const dispatched: string[] = [];
+    mock.module("../../src/orchestration/dispatchEngine", () => ({
+      executeSingleDispatch: async (_bot: unknown, plan: any) => {
+        dispatched.push(plan.classification.primaryAgent);
+        return {
+          success: true,
+          response: "Need input. [CLARIFY: What exactly?] [REDIRECT: engineering]",
+          durationMs: 300,
+        };
+      },
+    }));
+
+    const { runHarness } = await import("../../src/orchestration/harness");
+    const bot = makeMockBot() as any;
+    const plan = makePlan("general", "operations-hub");
+
+    const result = await runHarness(bot, plan, -200011, null);
+
+    // Should suspend, NOT redirect
+    expect(result.outcome).toBe("suspended");
+    // Only one dispatch — redirect not followed
+    expect(dispatched).toHaveLength(1);
+  });
+
+  // ── resumeFrom tests ──────────────────────────────────────────────────────────
+
+  test("resumeFrom: skips done steps, runs suspended/pending step", async () => {
+    const dispatched: string[] = [];
+    mock.module("../../src/orchestration/dispatchEngine", () => ({
+      executeSingleDispatch: async (_bot: unknown, plan: any) => {
+        dispatched.push(plan.classification.primaryAgent);
+        return { success: true, response: "Done on resume.", durationMs: 200 };
+      },
+    }));
+
+    const { runHarness } = await import("../../src/orchestration/harness");
+    const bot = makeMockBot() as any;
+
+    // Build an existing state: step 1 done, step 2 suspended
+    const existingState = {
+      dispatchId: crypto.randomUUID(),
+      userMessage: "original",
+      contractFile: null,
+      steps: [
+        { seq: 1, agent: "operations-hub", status: "done", output: "first done", durationMs: 100 },
+        { seq: 2, agent: "engineering", status: "suspended", output: "need info", durationMs: 200 },
+      ],
+      status: "suspended",
+      pendingQuestion: "Which method?",
+      pendingAgent: "engineering",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    } as any;
+
+    const plan = {
+      ...makePlan("general", "engineering"),
+      dispatchId: existingState.dispatchId,
+      userMessage: "original + clarification: JWT",
+    };
+
+    const result = await runHarness(bot, plan, -200020, null, { resumeFrom: existingState });
+
+    // Only engineering dispatched (ops-hub was already done)
+    expect(dispatched).toEqual(["engineering"]);
+    expect(result.outcome).toBe("done");
+
+    const state = await readState(existingState.dispatchId);
+    expect(state.status).toBe("done");
+  });
 });
