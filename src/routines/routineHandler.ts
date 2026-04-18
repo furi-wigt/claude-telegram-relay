@@ -1,78 +1,82 @@
 /**
  * Routine Handler
  *
- * Orchestrates the conversational routine creation flow:
- *   1. Detect intent in message
- *   2. Extract config via Claude (intentExtractor)
- *   3. Show preview + ask for output target (inline keyboard)
- *   4. On confirmation, create the routine (routineManager)
+ * /routines command and conversational routine-creation flow.
  *
- * Integration: Call detectAndHandle() before normal Claude processing in relay.ts
+ * Subcommands:
+ *   /routines [list]          — core + user routines
+ *   /routines run <name>      — trigger via job queue
+ *   /routines enable <name>   — set enabled: true
+ *   /routines disable <name>  — set enabled: false
+ *   /routines edit <name>     — inline keyboard → prompt or schedule
+ *   /routines delete <name>   — remove from user config
+ *   /routines new-handler     — bun-script routine guide
+ *
+ * NL creation: detectAndHandle() intercepts messages before Claude.
  */
 
 import type { Context, Bot } from "grammy";
 import { InlineKeyboard } from "grammy";
-import { detectRoutineIntent, detectRunRoutineIntent, extractRoutineConfig } from "./intentExtractor.ts";
-import { setPending, getPending, clearPending, hasPending } from "./pendingState.ts";
 import {
-  createRoutine,
-  listUserRoutines,
-  deleteRoutine,
-  listCodeRoutines,
-  registerCodeRoutine,
-  updateCodeRoutineCron,
-  toggleCodeRoutine,
-  triggerCodeRoutine,
+  detectRoutineIntent,
+  detectRunRoutineIntent,
+  extractRoutineConfig,
+} from "./intentExtractor.ts";
+import {
+  setPending,
+  getPending,
+  clearPending,
+  hasPending,
+  setPendingEdit,
+  getPendingEdit,
+  clearPendingEdit,
+} from "./pendingState.ts";
+import {
+  listAllRoutines,
+  isCoreRoutine,
+  addUserRoutine,
+  updateUserRoutine,
+  deleteUserRoutine,
+  setRoutineEnabled,
+  triggerRoutine,
 } from "./routineManager.ts";
 import { GROUPS } from "../config/groups.ts";
-import type { UserRoutineConfig } from "./types.ts";
+import type { RoutineConfig } from "./routineConfig.ts";
 import { saveCommandInteraction } from "../utils/saveMessage.ts";
 
-// Tracks pending registration flow: chatId → routine name awaiting cron input
-const pendingRegistrations = new Map<number, string>();
+const EDIT_TTL_MS = 5 * 60 * 1000;
 
 function isValidCron(expr: string): boolean {
   return /^(\S+\s+){4}\S+$/.test(expr.trim());
 }
 
 // ============================================================
-// OUTPUT TARGET OPTIONS
+// TARGET OPTIONS (for creation flow)
 // ============================================================
 
 interface TargetOption {
   label: string;
-  chatId: number;
-  topicId: number | null;
+  groupKey: string;
   callbackData: string;
 }
 
-function buildTargetOptions(userChatId: number): TargetOption[] {
+function buildTargetOptions(): TargetOption[] {
   const options: TargetOption[] = [
-    {
-      label: "Personal chat",
-      chatId: userChatId,
-      topicId: null,
-      callbackData: `routine_target:personal:${userChatId}:0`,
-    },
+    { label: "Personal chat", groupKey: "PERSONAL", callbackData: "routine_target:PERSONAL" },
   ];
 
-  const groupEntries = [
-    { name: "General group", key: "GENERAL" },
-    { name: "AWS Architect", key: "AWS_ARCHITECT" },
-    { name: "Security", key: "SECURITY" },
-    { name: "Code Quality", key: "CODE_QUALITY" },
-    { name: "Documentation", key: "DOCUMENTATION" },
+  const groupLabels: { label: string; key: string }[] = [
+    { label: "Operations Hub", key: "OPERATIONS" },
+    { label: "Engineering", key: "ENGINEERING" },
+    { label: "Cloud", key: "CLOUD" },
+    { label: "Security", key: "SECURITY" },
+    { label: "Strategy", key: "STRATEGY" },
+    { label: "Command Center", key: "COMMAND_CENTER" },
   ];
 
-  for (const g of groupEntries) {
-    const group = GROUPS[g.key];
-    if (group && group.chatId !== 0) {
-      options.push({
-        label: g.name,
-        chatId: group.chatId,
-        topicId: group.topicId,
-        callbackData: `routine_target:${g.key.toLowerCase()}:${group.chatId}:${group.topicId ?? 0}`,
-      });
+  for (const { label, key } of groupLabels) {
+    if (GROUPS[key]?.chatId && GROUPS[key].chatId !== 0) {
+      options.push({ label, groupKey: key, callbackData: `routine_target:${key}` });
     }
   }
 
@@ -84,307 +88,99 @@ function buildTargetKeyboard(options: TargetOption[]): InlineKeyboard {
   for (const opt of options) {
     kb.text(opt.label, opt.callbackData).row();
   }
-  kb.text("Cancel", "routine_target:cancel:0");
+  kb.text("Cancel", "routine_target:CANCEL");
   return kb;
 }
 
 // ============================================================
-// MAIN HANDLER
-// ============================================================
-
-/**
- * Check if the message is a routine creation request.
- * If so, extract config and show the confirmation keyboard.
- * Returns true if the message was handled (caller should not forward to Claude).
- */
-export async function detectAndHandle(
-  ctx: Context,
-  text: string
-): Promise<boolean> {
-  const chatId = ctx.chat?.id;
-  if (!chatId) return false;
-
-  // Check for run/trigger intent BEFORE pending registration flow
-  const runHint = detectRunRoutineIntent(text);
-  if (runHint) {
-    try {
-      const codeRoutines = await listCodeRoutines();
-      const hintLower = runHint.toLowerCase();
-      const matches = codeRoutines.filter((r) =>
-        r.name.toLowerCase().includes(hintLower) ||
-        hintLower.includes(r.name.toLowerCase().replace(/-/g, " ")) ||
-        r.name.toLowerCase().replace(/-/g, " ").includes(hintLower)
-      );
-
-      if (matches.length === 1) {
-        try {
-          await triggerCodeRoutine(matches[0].name);
-          await ctx.reply(`Triggering routine \`${matches[0].name}\`... Done.`);
-        } catch (error) {
-          const msg = error instanceof Error ? error.message : String(error);
-          await ctx.reply(`Failed to trigger routine: ${msg}`);
-        }
-      } else if (matches.length === 0) {
-        await ctx.reply(`No routine found matching '${runHint}'. Use /routines list to see available routines.`);
-      } else {
-        const names = matches.map((r) => `  - ${r.name}`).join("\n");
-        await ctx.reply(`Multiple routines match '${runHint}':\n${names}\n\nBe more specific or use /routines run <name>.`);
-      }
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      await ctx.reply(`Error looking up routines: ${msg}`);
-    }
-    return true;
-  }
-
-  // Intercept plain-text input for pending registration flow
-  if (pendingRegistrations.has(chatId)) {
-    const name = pendingRegistrations.get(chatId)!;
-    const trimmed = text.trim();
-
-    // Allow explicit cancellation
-    if (/^(cancel|no|n)$/i.test(trimmed)) {
-      pendingRegistrations.delete(chatId);
-      await ctx.reply(`Registration of "${name}" cancelled.`);
-      return true;
-    }
-
-    // Validate as cron expression
-    if (!isValidCron(trimmed)) {
-      await ctx.reply(
-        `Still waiting for a cron expression to schedule "${name}".\n\n` +
-        `Send 5 space-separated fields, e.g. \`0 9 * * *\` for 9am daily.\n` +
-        `Type "cancel" to abort.`
-      );
-      return true;
-    }
-
-    pendingRegistrations.delete(chatId);
-    try {
-      await registerCodeRoutine(name, trimmed);
-      await ctx.reply(`✅ Routine "${name}" registered with schedule: \`${trimmed}\`\n\nRun /routines list to see its status.`);
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      await ctx.reply(`Failed to register routine: ${msg}`);
-    }
-    return true;
-  }
-
-  // Check for pending confirmation cancellation ("cancel", "no", "n")
-  if (hasPending(chatId) && /^(cancel|no|n)$/i.test(text.trim())) {
-    clearPending(chatId);
-    await ctx.reply("Routine creation cancelled.");
-    return true;
-  }
-
-  if (!detectRoutineIntent(text)) return false;
-
-  await ctx.reply("Extracting routine details...");
-
-  const pending = await extractRoutineConfig(text);
-  if (!pending) {
-    await ctx.reply(
-      "I couldn't extract a clear routine from that. Try:\n" +
-        '"Create a daily routine at 9am that summarizes my goals"'
-    );
-    return true;
-  }
-
-  setPending(chatId, pending);
-
-  const { config } = pending;
-  const userChatId = parseInt(process.env.TELEGRAM_USER_ID || "0");
-  const targets = buildTargetOptions(userChatId);
-  const keyboard = buildTargetKeyboard(targets);
-
-  const preview =
-    `New routine preview:\n\n` +
-    `Name: ${config.name}\n` +
-    `Schedule: ${config.scheduleDescription}\n` +
-    `Cron: \`${config.cron}\`\n\n` +
-    `Claude will:\n${config.prompt}\n\n` +
-    `Where should I send the output?`;
-
-  await ctx.reply(preview, {
-    parse_mode: "Markdown",
-    reply_markup: keyboard,
-  });
-
-  return true;
-}
-
-/**
- * Handle inline keyboard callback for output target selection.
- * Registers bot.on("callback_query:data") — call once at startup.
- */
-export function registerCallbackHandler(bot: Bot): void {
-  bot.on("callback_query:data", async (ctx, next) => {
-    const data = ctx.callbackQuery.data;
-
-    // Handle routine registration callbacks
-    if (data.startsWith("routine_register:")) {
-      await ctx.answerCallbackQuery();
-      const chatId = ctx.chat?.id;
-      if (!chatId) return;
-
-      if (data === "routine_register:skip") {
-        await ctx.editMessageText("Registration skipped.");
-        return;
-      }
-
-      const name = data.replace("routine_register:", "");
-      pendingRegistrations.set(chatId, name);
-      await ctx.editMessageText(
-        `What schedule for "${name}"? Send me a cron expression (e.g. \`0 9 * * *\` for 9am daily).`
-      );
-      return;
-    }
-
-    if (!data.startsWith("routine_target:")) return next();
-
-    await ctx.answerCallbackQuery();
-
-    const chatId = ctx.chat?.id;
-    if (!chatId) return;
-
-    if (data === "routine_target:cancel:0") {
-      clearPending(chatId);
-      await ctx.editMessageText("Routine creation cancelled.");
-      return;
-    }
-
-    const pending = getPending(chatId);
-    if (!pending) {
-      await ctx.editMessageText("Session expired. Please describe the routine again.");
-      return;
-    }
-
-    // Parse: routine_target:<key>:<targetChatId>:<topicId>
-    const parts = data.split(":");
-    const targetLabel = parts[1];
-    const targetChatId = parseInt(parts[2] || "0");
-    const topicIdRaw = parseInt(parts[3] || "0");
-    const topicId: number | null = topicIdRaw !== 0 ? topicIdRaw : null;
-
-    if (!targetChatId || targetChatId === 0) {
-      await ctx.editMessageText("Invalid target selected. Please try again.");
-      return;
-    }
-
-    clearPending(chatId);
-
-    const config: UserRoutineConfig = {
-      ...pending.config,
-      chatId: targetChatId,
-      topicId,
-      targetLabel: targetLabel === "personal" ? "Personal chat" : targetLabel,
-      createdAt: new Date().toISOString(),
-    };
-
-    await ctx.editMessageText(
-      `Creating routine "${config.name}"...\nThis may take a moment.`
-    );
-
-    try {
-      await createRoutine(config);
-
-      await ctx.reply(
-        `Routine created!\n\n` +
-          `Name: ${config.name}\n` +
-          `Schedule: ${config.scheduleDescription}\n` +
-          `Output: ${config.targetLabel}\n\n` +
-          `Manage routines:\n` +
-          `/routines list — see all\n` +
-          `/routines delete ${config.name} — remove it`
-      );
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      await ctx.reply(`Failed to create routine: ${msg}`);
-    }
-  });
-}
-
-// ============================================================
-// /routines COMMAND HANDLER
+// /routines list
 // ============================================================
 
 async function handleRoutinesList(ctx: Context): Promise<void> {
-  const [codeRoutines, userRoutines] = await Promise.all([
-    listCodeRoutines(),
-    listUserRoutines(),
-  ]);
+  const { core, user } = listAllRoutines();
 
   const lines: string[] = [];
 
-  // System (code-based) section
-  lines.push("System Routines (code-based):");
-  if (codeRoutines.length === 0) {
+  lines.push("🔒 Core Routines (read-only — enable/disable only):");
+  if (core.length === 0) {
     lines.push("  (none)");
   } else {
-    for (const r of codeRoutines) {
-      if (r.registered && r.pm2Status) {
-        const statusIcon = r.pm2Status === "online" ? "✅" : "⏹";
-        lines.push(`  ${r.name.padEnd(30)} ${(r.cron ?? "").padEnd(16)} ${statusIcon} ${r.pm2Status}`);
-      } else {
-        lines.push(`  ${r.name.padEnd(30)} (not registered)     ⚠️`);
-      }
+    for (const r of core) {
+      const icon = r.enabled !== false ? "✅" : "⏹";
+      lines.push(`  ${icon} ${r.name.padEnd(26)} ${r.schedule}`);
     }
   }
 
   lines.push("");
-
-  // User (prompt-based) section
-  lines.push("User Routines (prompt-based):");
-  if (userRoutines.length === 0) {
-    lines.push("  (none yet — describe one to create it)");
+  lines.push("👤 User Routines:");
+  if (user.length === 0) {
+    lines.push("  (none — describe a routine to create one)");
   } else {
-    for (const r of userRoutines) {
-      lines.push(`  ${r.name.padEnd(30)} ${r.scheduleDescription}`);
+    for (const r of user) {
+      const icon = r.enabled !== false ? "✅" : "⏹";
+      const tag = r.type === "prompt" ? "prompt" : "handler";
+      lines.push(`  ${icon} ${r.name.padEnd(26)} ${r.schedule}  [${tag}]`);
     }
   }
 
-  await ctx.reply(lines.join("\n"));
+  const kb = new InlineKeyboard()
+    .text("+ Create routine", "routine_action:create").row()
+    .text("? Bun-script guide", "routine_action:new_handler");
 
-  // Check for unregistered code routines and offer inline keyboard
-  const unregistered = codeRoutines.filter((r) => !r.registered);
-  if (unregistered.length > 0) {
-    const names = unregistered.map((r) => `  • ${r.name}`).join("\n");
-    const kb = new InlineKeyboard();
-    for (const r of unregistered) {
-      kb.text(`Register ${r.name}`, `routine_register:${r.name}`);
-    }
-    kb.row().text("Skip", "routine_register:skip");
-
-    await ctx.reply(
-      `⚠️ ${unregistered.length} unregistered routine${unregistered.length > 1 ? "s" : ""} found:\n${names}\n\nRegister them to add to PM2 schedule?`,
-      { reply_markup: kb }
-    );
-  }
+  await ctx.reply(lines.join("\n"), { reply_markup: kb });
 }
 
-export async function handleRoutinesCommand(
-  ctx: Context,
-  args: string
-): Promise<void> {
+// ============================================================
+// /routines new-handler
+// ============================================================
+
+async function handleNewHandler(ctx: Context): Promise<void> {
+  const guide =
+    `📦 *Creating a bun-script routine*\n\n` +
+    `Bun-script routines are TypeScript files that export a \`run(ctx)\` function. ` +
+    `They live in \`~/.claude-relay/routines/<name>.ts\` and get an entry in \`~/.claude-relay/routines.config.json\`.\n\n` +
+    `*Handler skeleton:*\n` +
+    "```typescript\n" +
+    `import type { RoutineContext } from "../../src/jobs/executors/routineContext.ts";\n\n` +
+    `export async function run(ctx: RoutineContext): Promise<void> {\n` +
+    `  // ctx.llm(prompt) — call the routine model\n` +
+    `  // ctx.send(text)  — post to Telegram + record in memory\n` +
+    `  // ctx.log(msg)    — structured log\n` +
+    `  // ctx.skipIfRanWithin(hours) — skip if ran recently\n\n` +
+    `  const result = await ctx.llm("Your prompt here");\n` +
+    `  await ctx.send(result);\n` +
+    `}\n` +
+    "```\n\n" +
+    `*Ask Jarvis (Engineering group) to create one:*\n` +
+    `Copy and customise the prompt below, then tap the button.`;
+
+  const kb = new InlineKeyboard().text(
+    "Open in Engineering →",
+    "routine_action:open_handler_guide"
+  );
+
+  await ctx.reply(guide, { parse_mode: "Markdown", reply_markup: kb });
+}
+
+// ============================================================
+// MAIN /routines COMMAND
+// ============================================================
+
+export async function handleRoutinesCommand(ctx: Context, args: string): Promise<void> {
   const chatId = ctx.chat?.id;
   if (!chatId) return;
 
-  // Check if user is in the middle of a registration cron-entry flow
-  if (pendingRegistrations.has(chatId)) {
-    const name = pendingRegistrations.get(chatId)!;
-    const cronInput = args.trim();
-    if (!isValidCron(cronInput)) {
-      await ctx.reply("Invalid cron expression. Use 5 space-separated fields (e.g. `0 9 * * *`)");
+  // Check if we're waiting for a cron expression (edit schedule flow)
+  const pendingEdit = getPendingEdit(chatId);
+  if (pendingEdit) {
+    const trimmed = args.trim();
+    if (/^(cancel|no|n)$/i.test(trimmed)) {
+      clearPendingEdit(chatId);
+      await ctx.reply("Edit cancelled.");
       return;
     }
-    pendingRegistrations.delete(chatId);
-    try {
-      await registerCodeRoutine(name, cronInput);
-      await ctx.reply(`Routine "${name}" registered and started in PM2 with schedule: \`${cronInput}\``);
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      await ctx.reply(`Failed to register routine: ${msg}`);
-    }
+    // Treat the /routines args as the input (user may have sent /routines 0 9 * * *)
+    await handleEditInput(ctx, chatId, trimmed);
     return;
   }
 
@@ -395,156 +191,355 @@ export async function handleRoutinesCommand(
     return;
   }
 
-  if (subcommand === "status") {
-    const name = rest[0];
-    const codeRoutines = await listCodeRoutines();
-    if (name) {
-      const r = codeRoutines.find((r) => r.name === name);
-      if (!r) {
-        await ctx.reply(`Routine "${name}" not found.`);
-        return;
-      }
-      const status = r.pm2Status ?? "not registered";
-      await ctx.reply(`${name}: ${status}${r.cron ? ` (${r.cron})` : ""}`);
-    } else {
-      const lines = codeRoutines.map((r) => {
-        const status = r.pm2Status ?? "⚠️ not registered";
-        return `${r.name}: ${status}`;
-      });
-      await ctx.reply(`PM2 Status:\n\n${lines.join("\n")}`);
-    }
+  if (subcommand === "new-handler") {
+    await handleNewHandler(ctx);
     return;
   }
 
   if (subcommand === "run") {
     const name = rest[0];
-    if (!name) {
-      await ctx.reply("Usage: /routines run <name>");
-      return;
-    }
+    if (!name) { await ctx.reply("Usage: /routines run <name>"); return; }
     try {
-      await triggerCodeRoutine(name);
-      await ctx.reply(`Triggered routine "${name}".`);
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      await ctx.reply(`Failed to run routine: ${msg}`);
+      await triggerRoutine(name);
+      await ctx.reply(`Triggered \`${name}\` via job queue.`);
+    } catch (e) {
+      await ctx.reply(`Failed: ${(e as Error).message}`);
     }
     return;
   }
 
   if (subcommand === "enable") {
     const name = rest[0];
-    if (!name) {
-      await ctx.reply("Usage: /routines enable <name>");
-      return;
-    }
+    if (!name) { await ctx.reply("Usage: /routines enable <name>"); return; }
     try {
-      await toggleCodeRoutine(name, true);
-      await ctx.reply(`Routine "${name}" enabled.`);
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      await ctx.reply(`Failed to enable routine: ${msg}`);
+      await setRoutineEnabled(name, true);
+      await ctx.reply(`✅ \`${name}\` enabled.`);
+    } catch (e) {
+      await ctx.reply(`Failed: ${(e as Error).message}`);
     }
     return;
   }
 
   if (subcommand === "disable") {
     const name = rest[0];
-    if (!name) {
-      await ctx.reply("Usage: /routines disable <name>");
-      return;
-    }
+    if (!name) { await ctx.reply("Usage: /routines disable <name>"); return; }
     try {
-      await toggleCodeRoutine(name, false);
-      await ctx.reply(`Routine "${name}" disabled (stopped in PM2).`);
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      await ctx.reply(`Failed to disable routine: ${msg}`);
+      await setRoutineEnabled(name, false);
+      await ctx.reply(`⏹ \`${name}\` disabled.`);
+    } catch (e) {
+      await ctx.reply(`Failed: ${(e as Error).message}`);
     }
     return;
   }
 
-  if (subcommand === "schedule") {
+  if (subcommand === "edit") {
     const name = rest[0];
-    const cron = rest.slice(1).join(" ");
-    if (!name || !cron) {
-      await ctx.reply("Usage: /routines schedule <name> <cron>\nExample: /routines schedule aws-daily-cost 0 9 * * *");
-      return;
-    }
-    if (!isValidCron(cron)) {
-      await ctx.reply("Invalid cron expression. Use 5 space-separated fields (e.g. `0 9 * * *`)");
-      return;
-    }
-    try {
-      await updateCodeRoutineCron(name, cron);
-      await ctx.reply(`Updated schedule for "${name}" to: \`${cron}\``);
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      await ctx.reply(`Failed to update schedule: ${msg}`);
-    }
-    return;
-  }
+    if (!name) { await ctx.reply("Usage: /routines edit <name>"); return; }
 
-  if (subcommand === "register") {
-    const name = rest[0];
-    const cron = rest.slice(1).join(" ");
-    if (!name) {
-      await ctx.reply("Usage: /routines register <name> <cron>");
+    // Block core routine edits (only enable/disable allowed)
+    if (isCoreRoutine(name)) {
+      await ctx.reply(
+        `\`${name}\` is a core routine — only enable/disable is allowed via bot.\n` +
+        `To change its schedule, add an override in \`~/.claude-relay/routines.config.json\`.`
+      );
       return;
     }
-    if (cron && !isValidCron(cron)) {
-      await ctx.reply("Invalid cron expression. Use 5 space-separated fields (e.g. `0 9 * * *`)");
-      return;
-    }
-    if (cron) {
-      try {
-        await registerCodeRoutine(name, cron);
-        await ctx.reply(`Routine "${name}" registered with schedule: \`${cron}\``);
-      } catch (error) {
-        const msg = error instanceof Error ? error.message : String(error);
-        await ctx.reply(`Failed to register routine: ${msg}`);
-      }
-    } else {
-      // No cron provided — ask for it
-      pendingRegistrations.set(chatId, name);
-      await ctx.reply(`What schedule for "${name}"? Enter a cron expression (e.g. \`0 9 * * *\` for 9am daily):`);
-    }
+
+    const kb = new InlineKeyboard()
+      .text("Edit Prompt", `routine_edit:${name}:prompt`)
+      .text("Edit Schedule", `routine_edit:${name}:schedule`)
+      .row()
+      .text("Cancel", `routine_edit:${name}:cancel`);
+
+    await ctx.reply(`What would you like to edit for \`${name}\`?`, { reply_markup: kb });
     return;
   }
 
   if (subcommand === "delete") {
     const name = rest[0];
-    if (!name) {
-      await ctx.reply("Usage: /routines delete <name>");
+    if (!name) { await ctx.reply("Usage: /routines delete <name>"); return; }
+
+    if (isCoreRoutine(name)) {
+      await ctx.reply(
+        `\`${name}\` is a core routine and cannot be deleted via bot.\n` +
+        `Use \`/routines disable ${name}\` to stop it from running.`
+      );
       return;
     }
-    // Block deletion of code routines
-    const codeRoutines = await listCodeRoutines();
-    if (codeRoutines.some((r) => r.name === name)) {
-      await ctx.reply("Use a coding session to delete code-based routines. Only user routines can be deleted via Telegram.");
-      return;
-    }
+
     try {
-      await deleteRoutine(name);
-      const replyText = `Routine "${name}" deleted and removed from PM2.`;
-      await ctx.reply(replyText);
-      await saveCommandInteraction(chatId, `/routines delete ${name}`, replyText);
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      await ctx.reply(`Failed to delete routine: ${msg}`);
+      await deleteUserRoutine(name);
+      const msg = `Routine \`${name}\` deleted.`;
+      await ctx.reply(msg);
+      await saveCommandInteraction(chatId, `/routines delete ${name}`, msg);
+    } catch (e) {
+      await ctx.reply(`Failed: ${(e as Error).message}`);
     }
     return;
   }
 
   await ctx.reply(
     "Routines commands:\n\n" +
-      "/routines list — list all routines\n" +
-      "/routines status [name] — PM2 status\n" +
-      "/routines run <name> — trigger immediately\n" +
-      "/routines enable <name> — resume routine\n" +
-      "/routines disable <name> — pause routine\n" +
-      "/routines schedule <name> <cron> — update schedule\n" +
-      "/routines register <name> [cron] — register code routine\n" +
-      "/routines delete <name> — delete user routine"
+    "/routines list — all routines\n" +
+    "/routines run <name> — trigger immediately\n" +
+    "/routines enable <name> — resume routine\n" +
+    "/routines disable <name> — pause routine\n" +
+    "/routines edit <name> — edit prompt or schedule\n" +
+    "/routines delete <name> — remove user routine\n" +
+    "/routines new-handler — guide for bun-script routines\n\n" +
+    "Or just describe a routine in plain language to create one."
   );
+}
+
+// ============================================================
+// EDIT INPUT HANDLER (multi-turn)
+// ============================================================
+
+async function handleEditInput(ctx: Context, chatId: number, text: string): Promise<void> {
+  const edit = getPendingEdit(chatId);
+  if (!edit) return;
+
+  if (/^(cancel|no|n)$/i.test(text)) {
+    clearPendingEdit(chatId);
+    await ctx.reply("Edit cancelled.");
+    return;
+  }
+
+  if (edit.field === "schedule") {
+    if (!isValidCron(text)) {
+      await ctx.reply(
+        `Invalid cron expression. Expected 5 fields, e.g. \`0 9 * * *\`\nType "cancel" to abort.`
+      );
+      return;
+    }
+    try {
+      await updateUserRoutine(edit.name, { schedule: text });
+      clearPendingEdit(chatId);
+      await ctx.reply(`Schedule for \`${edit.name}\` updated to: \`${text}\`\nScheduler will reload automatically.`);
+    } catch (e) {
+      clearPendingEdit(chatId);
+      await ctx.reply(`Failed to update: ${(e as Error).message}`);
+    }
+    return;
+  }
+
+  // field === "prompt"
+  try {
+    await updateUserRoutine(edit.name, { prompt: text });
+    clearPendingEdit(chatId);
+    await ctx.reply(`Prompt for \`${edit.name}\` updated.`);
+  } catch (e) {
+    clearPendingEdit(chatId);
+    await ctx.reply(`Failed to update: ${(e as Error).message}`);
+  }
+}
+
+// ============================================================
+// NL DETECTION + CREATION FLOW
+// ============================================================
+
+/**
+ * Intercept messages before Claude for routine-related intents.
+ * Returns true if the message was handled (caller must not forward to Claude).
+ */
+export async function detectAndHandle(ctx: Context, text: string): Promise<boolean> {
+  const chatId = ctx.chat?.id;
+  if (!chatId) return false;
+
+  // Check pending edit input (plain-text reply to edit prompt)
+  const pendingEdit = getPendingEdit(chatId);
+  if (pendingEdit) {
+    await handleEditInput(ctx, chatId, text);
+    return true;
+  }
+
+  // Cancel creation flow
+  if (hasPending(chatId) && /^(cancel|no|n)$/i.test(text.trim())) {
+    clearPending(chatId);
+    await ctx.reply("Routine creation cancelled.");
+    return true;
+  }
+
+  // Run-intent detection
+  const runHint = detectRunRoutineIntent(text);
+  if (runHint) {
+    const { user, core } = listAllRoutines();
+    const all = [...core, ...user];
+    const hint = runHint.toLowerCase();
+    const matches = all.filter(
+      (r) =>
+        r.name.toLowerCase().includes(hint) ||
+        hint.includes(r.name.toLowerCase().replace(/-/g, " ")) ||
+        r.name.toLowerCase().replace(/-/g, " ").includes(hint)
+    );
+
+    if (matches.length === 1) {
+      try {
+        await triggerRoutine(matches[0].name);
+        await ctx.reply(`Triggering \`${matches[0].name}\` via job queue...`);
+      } catch (e) {
+        await ctx.reply(`Failed: ${(e as Error).message}`);
+      }
+    } else if (matches.length === 0) {
+      await ctx.reply(`No routine found matching '${runHint}'. Use /routines list.`);
+    } else {
+      const names = matches.map((r) => `  • ${r.name}`).join("\n");
+      await ctx.reply(`Multiple matches for '${runHint}':\n${names}\n\nUse /routines run <name>.`);
+    }
+    return true;
+  }
+
+  if (!detectRoutineIntent(text)) return false;
+
+  await ctx.reply("Extracting routine details...");
+
+  const pending = await extractRoutineConfig(text);
+  if (!pending) {
+    await ctx.reply(
+      "Couldn't extract a clear routine. Try:\n" +
+      '"Create a daily routine at 9am that summarizes my goals"'
+    );
+    return true;
+  }
+
+  setPending(chatId, pending);
+
+  const targets = buildTargetOptions();
+  const keyboard = buildTargetKeyboard(targets);
+
+  const preview =
+    `New routine preview:\n\n` +
+    `Name: ${pending.config.name}\n` +
+    `Schedule: ${pending.config.scheduleDescription}\n` +
+    `Cron: \`${pending.config.schedule}\`\n\n` +
+    `Claude will:\n${pending.config.prompt}\n\n` +
+    `Where should I send the output?`;
+
+  await ctx.reply(preview, { parse_mode: "Markdown", reply_markup: keyboard });
+  return true;
+}
+
+// ============================================================
+// CALLBACK HANDLER
+// ============================================================
+
+export function registerCallbackHandler(bot: Bot): void {
+  bot.on("callback_query:data", async (ctx, next) => {
+    const data = ctx.callbackQuery.data;
+    const chatId = ctx.chat?.id;
+    if (!chatId) return next();
+
+    // ── routine_edit: field selection ──────────────────────
+    if (data.startsWith("routine_edit:")) {
+      await ctx.answerCallbackQuery();
+      const [, name, field] = data.split(":");
+
+      if (field === "cancel") {
+        await ctx.editMessageText("Edit cancelled.");
+        return;
+      }
+
+      if (field !== "prompt" && field !== "schedule") return next();
+
+      setPendingEdit(chatId, { name, field, createdAt: Date.now() });
+
+      if (field === "prompt") {
+        await ctx.editMessageText(
+          `Send me the new prompt for \`${name}\`:\n(or type "cancel" to abort)`
+        );
+      } else {
+        await ctx.editMessageText(
+          `Send me a cron expression for \`${name}\` (e.g. \`0 9 * * *\` = 9am daily):\n(or type "cancel" to abort)`
+        );
+      }
+      return;
+    }
+
+    // ── routine_target: creation target selection ──────────
+    if (data.startsWith("routine_target:")) {
+      await ctx.answerCallbackQuery();
+
+      if (data === "routine_target:CANCEL") {
+        clearPending(chatId);
+        await ctx.editMessageText("Routine creation cancelled.");
+        return;
+      }
+
+      const pending = getPending(chatId);
+      if (!pending) {
+        await ctx.editMessageText("Session expired. Please describe the routine again.");
+        return;
+      }
+
+      const groupKey = data.replace("routine_target:", "");
+      clearPending(chatId);
+
+      await ctx.editMessageText(`Creating routine \`${pending.config.name}\`...`);
+
+      const config: RoutineConfig = {
+        name: pending.config.name,
+        type: "prompt",
+        schedule: pending.config.schedule,
+        group: groupKey,
+        enabled: true,
+        prompt: pending.config.prompt,
+      };
+
+      try {
+        await addUserRoutine(config);
+        await ctx.reply(
+          `Routine created!\n\n` +
+          `Name: ${config.name}\n` +
+          `Schedule: ${pending.config.scheduleDescription}\n` +
+          `Target: ${groupKey}\n\n` +
+          `Manage: /routines edit ${config.name} | /routines delete ${config.name}`
+        );
+      } catch (e) {
+        await ctx.reply(`Failed to create routine: ${(e as Error).message}`);
+      }
+      return;
+    }
+
+    // ── routine_action: list keyboard actions ──────────────
+    if (data.startsWith("routine_action:")) {
+      await ctx.answerCallbackQuery();
+      const action = data.replace("routine_action:", "");
+
+      if (action === "create") {
+        await ctx.reply(
+          "Describe the routine you want to create, e.g.:\n\n" +
+          '"Create a daily routine at 9am that summarizes my pending goals"\n' +
+          '"Schedule a weekly AWS cost check every Monday at 8am"'
+        );
+        return;
+      }
+
+      if (action === "new_handler" || action === "open_handler_guide") {
+        const prompt =
+          `Please create a bun-script routine for me.\n\n` +
+          `Handler file: \`~/.claude-relay/routines/<name>.ts\`\n` +
+          `Config entry: \`~/.claude-relay/routines.config.json\`\n\n` +
+          `The handler should export \`run(ctx: RoutineContext)\` and use:\n` +
+          `- \`ctx.llm(prompt)\` to call the model\n` +
+          `- \`ctx.send(text)\` to post output to Telegram\n` +
+          `- \`ctx.skipIfRanWithin(hours)\` to guard against re-runs\n\n` +
+          `[Describe what you want the routine to do]`;
+
+        // Post prefilled prompt to Engineering group if configured
+        const engGroup = GROUPS["ENGINEERING"];
+        if (engGroup?.chatId && engGroup.chatId !== 0) {
+          const { sendToGroup } = await import("../utils/sendToGroup.ts");
+          await sendToGroup(engGroup.chatId, prompt, { topicId: engGroup.topicId });
+          await ctx.editMessageText("Prompt sent to Engineering group. Describe your routine there.");
+        } else {
+          await ctx.editMessageText(prompt);
+        }
+        return;
+      }
+
+      return next();
+    }
+
+    return next();
+  });
 }

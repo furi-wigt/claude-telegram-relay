@@ -128,7 +128,7 @@ export async function extractRoutineConfig(
     return {
       config: {
         name: parsed.name.toLowerCase().replace(/[^a-z0-9-]/g, "-").slice(0, 30),
-        cron: parsed.cron,
+        schedule: parsed.cron,
         scheduleDescription: parsed.scheduleDescription || parsed.cron,
         prompt: parsed.prompt,
       },

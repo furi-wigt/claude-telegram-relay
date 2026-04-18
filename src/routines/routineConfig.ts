@@ -1,6 +1,9 @@
 import { join } from "path";
 import { homedir } from "os";
 import { readFileSync, existsSync } from "fs";
+import { writeFile, mkdir } from "fs/promises";
+
+export const USER_ROUTINE_CONFIG_PATH = join(homedir(), ".claude-relay/routines.config.json");
 
 export interface RoutineConfig {
   name: string;
@@ -38,6 +41,12 @@ export function loadRoutineConfigs(): RoutineConfig[] {
   }
 
   return Array.from(merged.values());
+}
+
+/** Write (replace) user routines config. Scheduler hot-reloads via fs.watch automatically. */
+export async function saveUserRoutineConfigs(configs: RoutineConfig[]): Promise<void> {
+  await mkdir(join(homedir(), ".claude-relay"), { recursive: true });
+  await writeFile(USER_ROUTINE_CONFIG_PATH, JSON.stringify(configs, null, 2) + "\n", "utf-8");
 }
 
 let _cache: RoutineConfig[] | null = null;
