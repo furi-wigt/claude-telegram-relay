@@ -406,3 +406,29 @@ function extractUserMessageFromPlan(planText: string): string {
 function truncate(text: string, maxLen: number): string {
   return text.length > maxLen ? text.slice(0, maxLen - 3) + "..." : text;
 }
+
+/**
+ * Infer agent ID from the text of a bot-posted message.
+ *
+ * Matches two patterns produced by postResult / formatPlanMessage:
+ *   ✅ <AgentName> — completed (Xs)   ← success header
+ *   ❌ <AgentName> — failed (Xs)      ← failure header
+ *   Target: <AgentName> (N%           ← dispatch plan card
+ *
+ * Used as a last-resort fallback when in-memory tracking is gone (e.g. after restart).
+ * Returns null if no agent name matches.
+ */
+export function inferAgentFromText(text: string): string | null {
+  for (const [id, agent] of Object.entries(AGENTS)) {
+    if (id === "command-center") continue;
+    const name = agent.name;
+    if (
+      text.includes(`${name} — completed`) ||
+      text.includes(`${name} — failed`) ||
+      text.includes(`Target: ${name}`)
+    ) {
+      return id;
+    }
+  }
+  return null;
+}
