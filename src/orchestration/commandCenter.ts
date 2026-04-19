@@ -43,6 +43,12 @@ const PICKER_CONFIDENCE_THRESHOLD = 0.8;
  */
 const pendingPickerMessages = new Map<string, string>();
 
+/**
+ * Stores plan + planText for dispatches that were paused mid-countdown.
+ * Cleared when the user taps Resume or Cancel on the paused keyboard.
+ */
+const pendingPausedPlans = new Map<string, { plan: DispatchPlan; planText: string; planMessageId: number }>();
+
 export function isCommandCenter(chatId: number): boolean {
   const ccAgent = AGENTS["command-center"];
   return ccAgent?.chatId === chatId && chatId !== 0 && chatId != null;
@@ -203,6 +209,7 @@ export async function orchestrateMessage(
       break;
 
     case "paused":
+      pendingPausedPlans.set(dispatchId, { plan, planText, planMessageId: planMsg.message_id });
       await bot.api.editMessageText(
         chatId,
         planMsg.message_id,
@@ -278,11 +285,24 @@ export function registerOrchestrationCallbacks(bot: Bot): void {
 
     switch (result) {
       case "paused":    await ctx.answerCallbackQuery({ text: "⏸️ Paused" }); break;
-      case "resumed":   await ctx.answerCallbackQuery({ text: "▶️ Resumed" }); break;
+      case "resumed": {
+        await ctx.answerCallbackQuery({ text: "▶️ Resumed" });
+        const paused = pendingPausedPlans.get(dispatchId);
+        if (paused) {
+          pendingPausedPlans.delete(dispatchId);
+          const resumeChatId = ctx.callbackQuery.message?.chat.id;
+          const resumeThreadId = ctx.callbackQuery.message?.message_thread_id ?? null;
+          if (resumeChatId) {
+            await executeAndReport(bot, paused.plan, resumeChatId, resumeThreadId, paused.planMessageId, paused.planText);
+          }
+        }
+        break;
+      }
       case "edit":      await ctx.answerCallbackQuery({ text: "✏️ Send your updated instruction" }); break;
       case "cancelled":
         await ctx.answerCallbackQuery({ text: "❌ Cancelled" });
         pendingPickerMessages.delete(dispatchId);
+        pendingPausedPlans.delete(dispatchId);
         break;
     }
   });
