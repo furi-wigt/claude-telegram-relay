@@ -19,8 +19,8 @@ loadEnv();
 // DATE KEY
 // ============================================================
 
-function toDateKey(): string {
-  return new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+function toScheduleKey(): string {
+  return new Date().toISOString().slice(0, 16); // YYYY-MM-DDTHH:mm
 }
 
 // ============================================================
@@ -38,7 +38,7 @@ async function fireJob(
     title: config.name,
     priority: config.priority ?? "normal",
     source: "cron",
-    dedup_key: `routine:${config.name}:${toDateKey()}`,
+    dedup_key: `routine:${config.name}:${toScheduleKey()}`,
     payload:
       config.type === "prompt"
         ? { prompt: interpolate(config.prompt ?? "") }

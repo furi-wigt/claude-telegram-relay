@@ -28,7 +28,8 @@ export function initJobSchema(db: Database): void {
     );
 
     CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_dedup_key
-      ON jobs(dedup_key) WHERE dedup_key IS NOT NULL;
+      ON jobs(dedup_key) WHERE dedup_key IS NOT NULL
+        AND (status = 'pending' OR status = 'running' OR status = 'awaiting-intervention');
 
     CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
     CREATE INDEX IF NOT EXISTS idx_jobs_type ON jobs(type);

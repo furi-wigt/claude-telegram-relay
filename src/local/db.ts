@@ -186,6 +186,25 @@ function initSchema(db: Database) {
 
   // Job queue tables (jobs, job_checkpoints)
   initJobSchema(db);
+
+  // Migrate dedup index: old index blocked ALL statuses; new index only blocks pending/running/awaiting-intervention
+  // so failed jobs no longer prevent retries with the same dedup_key.
+  try {
+    const row = db
+      .query("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_jobs_dedup_key'")
+      .get() as { sql: string } | null;
+    if (row && !row.sql.includes("status")) {
+      db.exec("DROP INDEX IF EXISTS idx_jobs_dedup_key");
+      db.exec(
+        `CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_dedup_key
+           ON jobs(dedup_key) WHERE dedup_key IS NOT NULL
+             AND (status = 'pending' OR status = 'running' OR status = 'awaiting-intervention')`
+      );
+      console.log("[db] Migrated idx_jobs_dedup_key → active-only partial index");
+    }
+  } catch (e) {
+    console.warn("[db] Job dedup index migration skipped:", (e as Error).message);
+  }
 }
 
 function addColumnIfMissing(db: Database, table: string, column: string, typeDef: string): void {

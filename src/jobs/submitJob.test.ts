@@ -53,7 +53,7 @@ describe("submitJob", () => {
     expect(wakeEvents).toHaveLength(1);
   });
 
-  test("rejects duplicate dedup_key and returns null", () => {
+  test("rejects duplicate dedup_key while job is pending", () => {
     const first = submitJob({
       type: "routine",
       executor: "test",
@@ -69,6 +69,48 @@ describe("submitJob", () => {
       dedup_key: "dup-key",
     });
     expect(second).toBeNull();
+  });
+
+  test("allows resubmission with same dedup_key after job fails", () => {
+    const first = submitJob({
+      type: "routine",
+      executor: "test",
+      title: "Test",
+      dedup_key: "retry-key",
+    });
+    expect(first).not.toBeNull();
+
+    store.updateStatus(first!.id, "failed");
+
+    const retry = submitJob({
+      type: "routine",
+      executor: "test",
+      title: "Test",
+      dedup_key: "retry-key",
+    });
+    expect(retry).not.toBeNull();
+    expect(retry!.id).not.toBe(first!.id);
+  });
+
+  test("allows resubmission with same dedup_key after job is done", () => {
+    const first = submitJob({
+      type: "routine",
+      executor: "test",
+      title: "Test",
+      dedup_key: "done-key",
+    });
+    expect(first).not.toBeNull();
+
+    store.updateStatus(first!.id, "done");
+
+    const second = submitJob({
+      type: "routine",
+      executor: "test",
+      title: "Test",
+      dedup_key: "done-key",
+    });
+    expect(second).not.toBeNull();
+    expect(second!.id).not.toBe(first!.id);
   });
 
   test("applies default timeout_ms from type", () => {
