@@ -51,6 +51,10 @@ export interface DispatchState {
   contractFile: string | null;
   steps: StepState[];
   status: HarnessStatus;
+  /** Per-agent loop iteration counts (agent-id → times looped back to this agent) */
+  loopCounts?: Record<string, number>;
+  /** Max loop iterations for this dispatch (from contract, default 3) */
+  maxLoopIterations?: number;
   /** Populated when status === "suspended" — the question the agent asked */
   pendingQuestion?: string;
   /** Populated when status === "suspended" — which agent asked */
@@ -78,8 +82,10 @@ export type HarnessResult =
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const MAX_REDIRECT_HOPS = 3;
+const DEFAULT_MAX_LOOP_ITERATIONS = 3;
 const REDIRECT_TAG_RE = /\[REDIRECT:\s*([a-z][a-z0-9-]*)\]/i;
 const CLARIFY_TAG_RE = /\[CLARIFY:\s*(.+?)\]/i;
+const LOOP_TAG_RE = /\[LOOP:\s*([a-z][a-z0-9-]*)\]/i;
 
 // ── Tag helpers ───────────────────────────────────────────────────────────────
 
@@ -95,11 +101,18 @@ function parseClarifySignal(response: string): string | null {
   return m ? m[1].trim() : null;
 }
 
-/** Remove [REDIRECT:] and [CLARIFY:] tags before storing or displaying. */
+/** Extract agent-id from [LOOP: <agent-id>] tag. Returns null if absent. */
+function parseLoopSignal(response: string): string | null {
+  const m = response.match(LOOP_TAG_RE);
+  return m ? m[1].toLowerCase() : null;
+}
+
+/** Remove signal tags before storing or displaying. */
 function stripSignalTags(response: string): string {
   return response
     .replace(REDIRECT_TAG_RE, "")
     .replace(CLARIFY_TAG_RE, "")
+    .replace(LOOP_TAG_RE, "")
     .trim();
 }
 
@@ -176,6 +189,8 @@ async function runHarnessInner(
       status: "in_progress",
       ...(plan.cwd ? { cwd: plan.cwd } : {}),
       ...(plan.attachmentPaths?.length ? { attachmentPaths: plan.attachmentPaths } : {}),
+      loopCounts: {},
+      maxLoopIterations: contract?.maxLoopIterations ?? DEFAULT_MAX_LOOP_ITERATIONS,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
@@ -243,9 +258,10 @@ async function runHarnessInner(
     const result = await executeSingleDispatch(bot, stepPlan, ccChatId, ccThreadId);
     setCurrentAgentKey(plan.dispatchId, null);
 
-    // [CLARIFY:] takes precedence over [REDIRECT:] — suspend wins
+    // Signal priority: [CLARIFY:] > [LOOP:] > [REDIRECT:]
     const clarifyQuestion = result.success ? parseClarifySignal(result.response) : null;
-    const redirectTo = (!clarifyQuestion && result.success) ? parseRedirectSignal(result.response) : null;
+    const loopTo = (!clarifyQuestion && result.success) ? parseLoopSignal(result.response) : null;
+    const redirectTo = (!clarifyQuestion && !loopTo && result.success) ? parseRedirectSignal(result.response) : null;
     const cleanResponse = stripSignalTags(result.response);
 
     step.output = cleanResponse;
@@ -319,6 +335,49 @@ async function runHarnessInner(
           output: null,
           durationMs: null,
         });
+        await persistState(state);
+      }
+    }
+
+    // ── [LOOP:] handling — QA agent loops back to an implementer ─────────────
+
+    if (loopTo) {
+      const loopCounts = state.loopCounts ?? {};
+      const maxIter = state.maxLoopIterations ?? DEFAULT_MAX_LOOP_ITERATIONS;
+      const iterations = (loopCounts[loopTo] ?? 0) + 1;
+
+      if (!AGENTS[loopTo]) {
+        console.warn(`[harness] Unknown loop target "${loopTo}" from ${step.agent} — ignoring`);
+      } else if (iterations > maxIter) {
+        const qaName = AGENTS[step.agent]?.name ?? step.agent;
+        await postCCNotice(
+          bot,
+          `⚠️ <b>${qaName}</b> max loop iterations (${maxIter}) reached — stopping`,
+          ccChatId,
+          ccThreadId,
+        );
+        state.status = "failed";
+        await persistState(state);
+        return { outcome: "failed", error: "max loop iterations reached" };
+      } else {
+        loopCounts[loopTo] = iterations;
+        state.loopCounts = loopCounts;
+
+        const qaName = AGENTS[step.agent]?.name ?? step.agent;
+        const implName = AGENTS[loopTo]?.name ?? loopTo;
+        await postCCNotice(
+          bot,
+          `🔁 <b>${qaName}</b> → <b>${implName}</b> (iteration ${iterations}/${maxIter})`,
+          ccChatId,
+          ccThreadId,
+        );
+
+        // Append re-implementer step, then re-reviewer step
+        const nextSeq = state.steps.length + 1;
+        state.steps.push(
+          { seq: nextSeq, agent: loopTo, status: "pending", output: null, durationMs: null },
+          { seq: nextSeq + 1, agent: step.agent, status: "pending", output: null, durationMs: null },
+        );
         await persistState(state);
       }
     }
