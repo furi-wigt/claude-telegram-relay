@@ -34,13 +34,10 @@ function agentIdFromGroup(group: string): string {
   const map: Record<string, string> = {
     OPERATIONS: "general-assistant",
     ENGINEERING: "engineering",
-    CODE_QUALITY: "engineering",
     SECURITY: "security-compliance",
     CLOUD: "cloud-architect",
-    STRATEGY: "strategy-comms",
+    RESEARCH_STRATEGY: "research-strategy",
     COMMAND_CENTER: "command-center",
-    RESEARCH: "research-analyst",
-    DOCUMENTATION: "documentation-specialist",
     PERSONAL: "general-assistant",
   };
   return map[group] ?? "general-assistant";
