@@ -170,6 +170,8 @@ export async function orchestrateMessage(
     `${planText}\n\n⏳ Auto-dispatching in ${COUNTDOWN_SECONDS}s...`,
     { reply_markup: buildPlanKeyboard(dispatchId, COUNTDOWN_SECONDS) }
   );
+  // Track the plan message so a reply to it routes to the correct agent without re-classifying
+  trackAgentReply(chatId, planMsg.message_id, classification.primaryAgent, threadId);
 
   const plan: DispatchPlan = {
     dispatchId,

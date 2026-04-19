@@ -1,5 +1,12 @@
 # Decision Journal
 
+## 2026-04-19 — Track plan message for CC reply-to routing [cafdb39]
+
+**Change**: Call `trackAgentReply` with the dispatch plan message ID immediately after posting it in `orchestrateMessage`.
+**Why**: Users replying to the plan card ("DISPATCH PLAN → Engineering") got routed to the wrong agent. `lookupAgentReply` returned null (plan messages were never tracked), so the fallback `getLastActiveAgent` returned the stale last-run agent — often `operations-hub`.
+**Rejected**: Re-parsing the plan message text to extract the agent — fragile. Separate `pendingPlanMessages` map — unnecessary, `trackAgentReply` already does exactly what's needed.
+**Branch**: bugfix/cc-reply-plan-msg-routing
+
 ## 2026-04-18 — /schedule UX: token Jaccard over embedding similarity [feat/schedule_ux_hardening]
 
 **Change**: Similar job detection uses token Jaccard (set intersection / union on word tokens ≥3 chars) instead of embedding similarity.
