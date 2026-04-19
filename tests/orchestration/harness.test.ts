@@ -270,8 +270,8 @@ describe("harness", () => {
 
   test("redirect: hop limit (3) reached, state=failed", async () => {
     let hop = 0;
-    // 5 agents: 3 redirects allowed (ops→eng→strategy→cloud), 4th redirect (cloud→security) blocked
-    const agents = ["operations-hub", "engineering", "strategy-comms", "cloud-architect", "security-compliance"];
+    // 5 agents: 3 redirects allowed (ops→eng→research-strategy→cloud), 4th redirect (cloud→security) blocked
+    const agents = ["operations-hub", "engineering", "research-strategy", "cloud-architect", "security-compliance"];
     mock.module("../../src/orchestration/dispatchEngine", () => ({
       executeSingleDispatch: async (_bot: unknown, plan: any) => {
         const next = agents[hop + 1] ?? null;

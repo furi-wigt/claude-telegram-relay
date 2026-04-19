@@ -20,9 +20,9 @@ describe("intentClassifier — keyword fallback", () => {
     expect(result.confidence).toBeGreaterThanOrEqual(0.5);
   });
 
-  test("routes 'draft ADR for LTA integration' to strategy-comms", () => {
+  test("routes 'draft ADR for LTA integration' to research-strategy", () => {
     const result = classifyWithKeywords("draft ADR for LTA integration");
-    expect(result.primaryAgent).toBe("strategy-comms");
+    expect(result.primaryAgent).toBe("research-strategy");
   });
 
   test("routes 'what is 2+2' to operations-hub (default) with high confidence", () => {
