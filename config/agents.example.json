@@ -16,13 +16,11 @@
       "status-tracking"
     ],
     "meshPeers": [
-      "research-analyst",
+      "research-strategy",
       "engineering",
       "cloud-architect",
       "security-compliance",
-      "operations-hub",
-      "strategy-comms",
-      "documentation-specialist"
+      "operations-hub"
     ],
     "riskLevel": "low",
     "reviewRequired": false,
@@ -53,7 +51,7 @@
     },
     "meshPeers": [
       "command-center",
-      "code-quality-coach",
+      "engineering",
       "security-compliance"
     ],
     "riskLevel": "high",
@@ -86,7 +84,7 @@
       "command-center",
       "engineering",
       "cloud-architect",
-      "strategy-comms"
+      "research-strategy"
     ],
     "riskLevel": "high",
     "reviewRequired": true,
@@ -110,58 +108,40 @@
       "testing",
       "git-workflow",
       "typescript",
-      "bun"
+      "bun",
+      "architecture-review",
+      "quality-gates",
+      "adr-creation",
+      "technical-writing"
     ],
     "diagnostics": {
       "enabled": true
     },
     "meshPeers": [
       "command-center",
-      "code-quality-coach",
-      "security-compliance"
+      "security-compliance",
+      "cloud-architect"
     ],
     "riskLevel": "medium",
     "reviewRequired": true,
     "meshTopicId": null
   },
   {
-    "id": "code-quality-coach",
-    "name": "Code Quality & TDD Coach",
-    "groupName": "Code Quality & TDD",
-    "shortName": "Code Quality",
-    "groupKey": "CODE_QUALITY",
-    "chatId": null,
-    "topicId": null,
-    "capabilities": [
-      "code-review",
-      "test-generation",
-      "quality-gates",
-      "tdd-enforcement",
-      "refactoring",
-      "architecture-review"
-    ],
-    "diagnostics": {
-      "enabled": true
-    },
-    "meshPeers": [
-      "engineering",
-      "cloud-architect",
-      "strategy-comms"
-    ],
-    "riskLevel": "low",
-    "reviewRequired": false,
-    "meshTopicId": null
-  },
-  {
-    "id": "strategy-comms",
-    "name": "Strategy & Communications",
-    "groupName": "Strategy & Communications",
-    "shortName": "Strategy",
-    "groupKey": "STRATEGY",
+    "id": "research-strategy",
+    "name": "Research & Strategy",
+    "groupName": "Research & Strategy",
+    "shortName": "Research",
+    "groupKey": "RESEARCH_STRATEGY",
     "chatId": null,
     "topicId": null,
     "defaultModel": "sonnet",
     "capabilities": [
+      "technical-research",
+      "architecture-analysis",
+      "technology-evaluation",
+      "comparative-analysis",
+      "evidence-gathering",
+      "literature-review",
       "technical-proposal",
       "slide-deck",
       "adr",
@@ -171,53 +151,10 @@
       "report-generation",
       "pricing-model",
       "rfp-response",
-      "technology-evaluation",
       "market-research",
       "competitive-analysis",
       "vendor-assessment",
-      "strategic-planning"
-    ],
-    "meshPeers": [
-      "command-center",
-      "code-quality-coach",
-      "security-compliance"
-    ],
-    "riskLevel": "medium",
-    "reviewRequired": false,
-    "meshTopicId": null
-  },
-  {
-    "id": "research-analyst",
-    "name": "Technical Research Analyst",
-    "groupName": "Technical Research",
-    "shortName": "Research",
-    "groupKey": "RESEARCH",
-    "chatId": null,
-    "topicId": null,
-    "capabilities": [
-      "technical-research",
-      "architecture-analysis",
-      "technology-evaluation",
-      "comparative-analysis",
-      "evidence-gathering",
-      "literature-review"
-    ],
-    "meshPeers": [
-      "command-center"
-    ],
-    "riskLevel": "low",
-    "reviewRequired": false,
-    "meshTopicId": null
-  },
-  {
-    "id": "documentation-specialist",
-    "name": "Technical Documentation Specialist",
-    "groupName": "Technical Documentation",
-    "shortName": "Docs",
-    "groupKey": "DOCUMENTATION",
-    "chatId": null,
-    "topicId": null,
-    "capabilities": [
+      "strategic-planning",
       "adr-creation",
       "system-docs",
       "runbooks",
@@ -226,9 +163,11 @@
       "final-artifacts"
     ],
     "meshPeers": [
-      "command-center"
+      "command-center",
+      "security-compliance",
+      "engineering"
     ],
-    "riskLevel": "low",
+    "riskLevel": "medium",
     "reviewRequired": false,
     "meshTopicId": null
   },

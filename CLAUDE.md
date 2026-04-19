@@ -24,7 +24,7 @@
 This project turns Telegram into a personal AI assistant powered by Claude Code — with multi-agent group chats, persistent memory, scheduled routines, and agentic coding sessions you can start directly from Telegram.
 
 **What you get:**
-- 6 specialised AI agents, each in their own Telegram supergroup (Command Center, Cloud, Security, Engineering, Strategy, Operations)
+- 6 specialised AI agents, each in their own Telegram supergroup (Command Center, Cloud, Security, Engineering, Research & Strategy, Operations)
 - **NLAH command routing**: Command Center classifies intent, loads a Markdown contract, confirms with an inline button, then dispatches — single-agent or multi-step compound tasks
 - Long-term memory: facts, goals, preferences stored locally with semantic search (SQLite + Qdrant + MLX bge-m3)
 - Scheduled routines: morning briefing, evening summary, proactive check-ins, health watchdog — all config-driven via `config/routines.config.json`
@@ -48,7 +48,7 @@ graph TB
         G2["Cloud & Infrastructure"]
         G3["Security & Compliance"]
         G4["Engineering & Quality"]
-        G5["Strategy & Communications"]
+        G5["Research & Strategy"]
         G6["Operations Hub"]
     end
 
@@ -180,8 +180,8 @@ The relay supports 6 specialised AI agents, each in its own Telegram supergroup 
 | Jarvis Command Center | `command-center` | NLAH intent routing, contract-driven dispatch, CC thread audit log |
 | Cloud & Infrastructure | `cloud-architect` | AWS, CDK, GCC 2.0, cost optimisation, Well-Architected |
 | Security & Compliance | `security-compliance` | IM8 v4, PDPA, security audits, threat modelling, runbooks |
-| Engineering & Quality | `engineering` | Code review, TDD, refactoring, implementation |
-| Strategy & Communications | `strategy-comms` | Proposals, BD materials, decks, research, ADRs |
+| Engineering & Quality | `engineering` | Code review, TDD, refactoring, implementation, architecture review, ADRs |
+| Research & Strategy | `research-strategy` | Technology research, proposals, BD materials, decks, documentation, synthesis |
 | Operations Hub | `operations-hub` | General Q&A, meeting prep, task management (default) |
 
 ### How Routing Works
@@ -451,7 +451,7 @@ GROUP_COMMAND_CENTER_CHAT_ID=-100xxxxxxxxxx
 GROUP_CLOUD_CHAT_ID=-100xxxxxxxxxx
 GROUP_SECURITY_CHAT_ID=-100xxxxxxxxxx
 GROUP_ENGINEERING_CHAT_ID=-100xxxxxxxxxx
-GROUP_STRATEGY_CHAT_ID=-100xxxxxxxxxx
+GROUP_RESEARCH_STRATEGY_CHAT_ID=-100xxxxxxxxxx
 GROUP_OPERATIONS_CHAT_ID=-100xxxxxxxxxx
 ```
 

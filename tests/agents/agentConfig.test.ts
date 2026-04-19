@@ -46,9 +46,12 @@ describe("agents.example.json mesh contract fields", () => {
     }
   });
 
-  test("command-center has broadest mesh connectivity", () => {
+  test("command-center peers with all other agents", () => {
     const cc = agents.find((a: any) => a.id === "command-center");
-    expect(cc.meshPeers.length).toBeGreaterThanOrEqual(6);
+    const otherIds = agents.filter((a: any) => a.id !== "command-center").map((a: any) => a.id);
+    for (const id of otherIds) {
+      expect(cc.meshPeers).toContain(id);
+    }
   });
 
   test("high-risk agents require review", () => {
