@@ -153,3 +153,62 @@ describe("commandCenter — pendingPickerMessages (primary picker path)", () => 
     expect(pendingPickerMessages.has(dispatchId)).toBe(false);
   });
 });
+
+// ── inferAgentFromText — post-restart reply routing ───────────────────────────
+
+/** Mirrors inferAgentFromText in commandCenter.ts. */
+function inferAgentFromText(
+  text: string,
+  agents: Record<string, { name: string }>,
+): string | null {
+  for (const [id, agent] of Object.entries(agents)) {
+    if (id === "command-center") continue;
+    const name = agent.name;
+    if (
+      text.includes(`${name} — completed`) ||
+      text.includes(`${name} — failed`) ||
+      text.includes(`Target: ${name}`)
+    ) {
+      return id;
+    }
+  }
+  return null;
+}
+
+const TEST_AGENTS = {
+  "command-center":    { name: "Jarvis Command Center" },
+  "engineering":       { name: "Engineering & Quality Lead" },
+  "cloud-architect":   { name: "Cloud & Infrastructure" },
+  "security-compliance": { name: "Security & Compliance" },
+  "operations-hub":    { name: "Operations Hub" },
+};
+
+describe("commandCenter — inferAgentFromText (post-restart reply routing)", () => {
+  it("matches success header from postResult", () => {
+    const text = "✅ Engineering & Quality Lead — completed (5.2s)\n\nHere is the review.";
+    expect(inferAgentFromText(text, TEST_AGENTS)).toBe("engineering");
+  });
+
+  it("matches failure header from postResult", () => {
+    const text = "❌ Cloud & Infrastructure — failed (3.1s)";
+    expect(inferAgentFromText(text, TEST_AGENTS)).toBe("cloud-architect");
+  });
+
+  it("matches Target line from dispatch plan card", () => {
+    const text = "🎯 DISPATCH PLAN\n\nQuery: \"fix bug\"\nTarget: Engineering & Quality Lead (88% confidence)";
+    expect(inferAgentFromText(text, TEST_AGENTS)).toBe("engineering");
+  });
+
+  it("returns null for unrecognised text", () => {
+    expect(inferAgentFromText("some random message", TEST_AGENTS)).toBeNull();
+  });
+
+  it("skips command-center agent", () => {
+    const text = "✅ Jarvis Command Center — completed (1s)";
+    expect(inferAgentFromText(text, TEST_AGENTS)).toBeNull();
+  });
+
+  it("returns null for empty text", () => {
+    expect(inferAgentFromText("", TEST_AGENTS)).toBeNull();
+  });
+});

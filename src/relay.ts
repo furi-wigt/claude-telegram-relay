@@ -44,7 +44,7 @@ import { learnTopicName, learnChatName, getTopicName } from "./utils/chatNames.t
 import { getRegistry } from "./models/index.ts";
 import { callRoutineModel } from "./routines/routineModel.ts";
 import { getAgentForChat, autoDiscoverGroup, loadGroupMappings } from "./routing/groupRouter.ts";
-import { isCommandCenter, orchestrateMessage, rerouteToAgent, lookupAgentReply, getLastActiveAgent, registerOrchestrationCallbacks, setDispatchRunner, setTopicCreator, setDispatchNotifier } from "./orchestration/index.ts";
+import { isCommandCenter, orchestrateMessage, rerouteToAgent, lookupAgentReply, getLastActiveAgent, inferAgentFromText, registerOrchestrationCallbacks, setDispatchRunner, setTopicCreator, setDispatchNotifier } from "./orchestration/index.ts";
 // Router removed: always use Sonnet for simplicity and predictable latency
 import { loadSession as loadGroupSession, updateSessionIdGuarded, initSessions, loadAllSessions, saveSession, isResumeReliable, didResumeFail, lockActiveCwd, resetSession, renewSession, getSessionSince, getSession } from "./session/groupSessions.ts";
 import { buildAgentPrompt } from "./agents/promptBuilder.ts";
@@ -305,9 +305,11 @@ function flushTextBurst(burstKey: string): void {
         ? `[In reply to: "${replyText.substring(0, 300)}"]\n\n${assembled}`
         : assembled;
 
-      // Try tracked agent first (exact match), fall back to last active agent
+      // Try tracked agent first (exact match), then last active, then parse agent name from message text
       const pending = lookupAgentReply(chatId, replyToMsgId);
-      const agentId = pending?.agentId ?? getLastActiveAgent(chatId, threadId);
+      const agentId = pending?.agentId
+        ?? getLastActiveAgent(chatId, threadId)
+        ?? (replyText ? inferAgentFromText(replyText) : null);
       if (agentId) {
         queueManager.getOrCreate(chatId, threadId).enqueue({
           label: `[chat:${chatId}] CC re-route → ${agentId}: ${assembled.substring(0, 30)}`,

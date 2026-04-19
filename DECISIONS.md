@@ -1,5 +1,12 @@
 # Decision Journal
 
+## 2026-04-19 — Infer agent from reply text as post-restart fallback [8714097]
+
+**Change**: Added `inferAgentFromText()` as a 3rd fallback in CC reply routing: `lookupAgentReply → getLastActiveAgent → inferAgentFromText(replyText)`.
+**Why**: `pendingAgentReplies` is in-memory and cleared on restart. After a PM2 restart, users replying to pre-restart engineering responses got re-classified as ops-hub. The replied-to message text always contains the agent name (postResult header or plan card), making text-based inference reliable and zero-latency.
+**Rejected**: Persisting the tracking map to SQLite — heavier change with more failure surface; text inference is sufficient and simpler.
+**Branch**: bugfix/cc-reply-agent-inference
+
 ## 2026-04-19 — Track plan message for CC reply-to routing [cafdb39]
 
 **Change**: Call `trackAgentReply` with the dispatch plan message ID immediately after posting it in `orchestrateMessage`.
