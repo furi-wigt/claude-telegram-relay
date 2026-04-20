@@ -1,5 +1,22 @@
 # Changelog
 
+## [Unreleased] / 2026-04-20 — Follow-up redirect handling + dispatch kill-switch
+
+### Fixed
+- **Follow-up `[REDIRECT:]` tags**: Picker-callback dispatch (`commandCenter.ts:executePickerDispatch`) now delegates to `runHarness` instead of bespoke streaming, so `[REDIRECT:engineering]` / `[CLARIFY:]` tags emitted by an agent's reply are stripped from the user-visible message and trigger automatic re-routing. Previously these tags appeared literally and never fired the next hop.
+
+### Added
+- **In-memory harness registry** (`src/orchestration/harnessRegistry.ts`): tracks in-flight dispatches with `{ ccChatId, ccThreadId, currentAgentKey, cancelled }`. Lookup by dispatchId or by CC chat/thread.
+- **`abortStreamsForDispatch(dispatchId)`** (`src/cancel.ts`): aborts every active Claude stream tagged with `dispatchId`. Called by the harness when a cancel flag is set between steps.
+- **❌ Cancel-dispatch button**: appears on the "🚀 Dispatching to …" status message in CC. Tap → flips registry's `cancelled` flag → harness aborts current stream and skips remaining steps.
+- **`/cancel-dispatch`** slash command (CC only): same effect as the button. No `/cd` alias (collides visually with `/cwd`).
+- **`/cancel` reroute in CC**: when a harness is in flight, `/cancel` cancels the dispatch instead of CC's own (unrelated) Claude stream.
+- **`outcome: "cancelled"`** on `HarnessResult`. `claudeSessionExecutor` posts a `🛑 Cancelled` job card and returns `{ status: "failed", summary: "cancelled by user" }`.
+
+### Changed
+- **`runHarness`** wraps execution in `try/finally` to always `unregisterHarness(plan.dispatchId)` — registry never leaks even on throw.
+- **Per-turn redirect hop reset** (`MAX_REDIRECT_HOPS = 3` per agent turn, not per dispatch).
+
 ## [Unreleased] / 2026-04-18 — /jobs CRUD: cancel, retry, detail, clear subcommands
 
 ### Added

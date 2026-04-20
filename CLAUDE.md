@@ -588,7 +588,8 @@ Summarise what was set up and what is running. Remind the user:
 | `/help` | All available commands |
 | `/new` | Start a fresh conversation |
 | `/status` | Session status |
-| `/cancel` | Cancel in-progress Claude response |
+| `/cancel` | Cancel in-progress Claude response. In Command Center with a harness in flight, cancels the dispatch instead. |
+| `/cancel-dispatch` | Command Center only — kill the in-flight NLAH dispatch (also available as ❌ button on the status message) |
 | `/cwd [path]` | Set or show working directory for coding sessions |
 | `/memory` | Browse your memory (goals, facts, prefs, dates) |
 | `/remember [text]` | Save something to memory |

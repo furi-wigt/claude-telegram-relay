@@ -8,7 +8,7 @@
  */
 
 import { describe, test, expect, mock, beforeEach } from "bun:test";
-import { streamKey, parseCancelKey, handleCancelCallback, handleCancelCommand, activeStreams } from "./cancel.ts";
+import { streamKey, parseCancelKey, handleCancelCallback, handleCancelCommand, activeStreams, abortStreamsForDispatch } from "./cancel.ts";
 
 // ── Mock Telegram API ─────────────────────────────────────────────────────────
 
@@ -361,5 +361,70 @@ describe("Double cancel — idempotency", () => {
 
     expect(controller.signal.aborted).toBe(true);
     expect(ctx.reply).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════
+// Suite I: abortStreamsForDispatch — mid-stream cancel from harness
+// ═══════════════════════════════════════════════════════════════
+
+describe("abortStreamsForDispatch()", () => {
+  test("aborts only the stream tagged with the matching dispatchId", () => {
+    const cA = new AbortController();
+    const cB = new AbortController();
+    const cUntagged = new AbortController();
+
+    activeStreams.set("agent-A:0", { controller: cA, dispatchId: "dispatch-1" });
+    activeStreams.set("agent-B:0", { controller: cB, dispatchId: "dispatch-2" });
+    activeStreams.set("user-direct:0", { controller: cUntagged }); // no dispatchId
+
+    abortStreamsForDispatch("dispatch-1");
+
+    expect(cA.signal.aborted).toBe(true);
+    expect(cB.signal.aborted).toBe(false);
+    expect(cUntagged.signal.aborted).toBe(false);
+  });
+
+  test("removes aborted entries from activeStreams (no leak)", () => {
+    const c = new AbortController();
+    activeStreams.set("agent-A:0", { controller: c, dispatchId: "dispatch-1" });
+
+    abortStreamsForDispatch("dispatch-1");
+
+    expect(activeStreams.has("agent-A:0")).toBe(false);
+  });
+
+  test("leaves untagged direct-user streams untouched", () => {
+    const c = new AbortController();
+    activeStreams.set("user-direct:0", { controller: c }); // no dispatchId
+
+    abortStreamsForDispatch("dispatch-1");
+
+    expect(c.signal.aborted).toBe(false);
+    expect(activeStreams.has("user-direct:0")).toBe(true);
+  });
+
+  test("unknown dispatchId is a no-op (does not throw, does not mutate)", () => {
+    const c = new AbortController();
+    activeStreams.set("agent-A:0", { controller: c, dispatchId: "dispatch-1" });
+
+    expect(() => abortStreamsForDispatch("nonexistent")).not.toThrow();
+    expect(c.signal.aborted).toBe(false);
+    expect(activeStreams.has("agent-A:0")).toBe(true);
+  });
+
+  test("aborts multiple streams sharing the same dispatchId", () => {
+    // Edge case: a single dispatch could (in theory) own multiple streams
+    // if a step triggers parallel sub-calls — guard against that.
+    const c1 = new AbortController();
+    const c2 = new AbortController();
+    activeStreams.set("agent-A:0", { controller: c1, dispatchId: "dispatch-1" });
+    activeStreams.set("agent-B:0", { controller: c2, dispatchId: "dispatch-1" });
+
+    abortStreamsForDispatch("dispatch-1");
+
+    expect(c1.signal.aborted).toBe(true);
+    expect(c2.signal.aborted).toBe(true);
+    expect(activeStreams.size).toBe(0);
   });
 });

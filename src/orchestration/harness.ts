@@ -24,6 +24,13 @@ import { chunkMessage } from "../utils/sendToGroup.ts";
 import type { DispatchPlan } from "./types.ts";
 import { AGENTS } from "../agents/config.ts";
 import { trackAgentReply, trackLastActiveAgent } from "./pendingAgentReplies.ts";
+import {
+  registerHarness,
+  unregisterHarness,
+  setCurrentAgentKey,
+  cancelled as isCancelled,
+} from "./harnessRegistry.ts";
+import { abortStreamsForDispatch, streamKey } from "../cancel.ts";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -55,7 +62,8 @@ export interface DispatchState {
 export type HarnessResult =
   | { outcome: "done" }
   | { outcome: "failed"; error?: string }
-  | { outcome: "suspended"; question: string; agentId: string };
+  | { outcome: "suspended"; question: string; agentId: string }
+  | { outcome: "cancelled" };
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -94,6 +102,22 @@ function stripSignalTags(response: string): string {
  *                    Use when an executor re-runs after a "suspended" clarification cycle.
  */
 export async function runHarness(
+  bot: Bot,
+  plan: DispatchPlan,
+  ccChatId: number,
+  ccThreadId: number | null,
+  opts?: { resumeFrom?: DispatchState },
+): Promise<HarnessResult> {
+  registerHarness(plan.dispatchId, { ccChatId, ccThreadId });
+
+  try {
+    return await runHarnessInner(bot, plan, ccChatId, ccThreadId, opts);
+  } finally {
+    unregisterHarness(plan.dispatchId);
+  }
+}
+
+async function runHarnessInner(
   bot: Bot,
   plan: DispatchPlan,
   ccChatId: number,
@@ -150,6 +174,19 @@ export async function runHarness(
 
   // while-loop (not for-of) so we can dynamically append redirect steps
   while (stepIdx < state.steps.length) {
+    // Cancellation check (between steps, AND before any step has run).
+    // Catches both: pre-cancel (flag set before runHarness was invoked) and
+    // mid-stream cancel (flag set during the previous executeSingleDispatch).
+    if (isCancelled(plan.dispatchId)) {
+      // Best-effort: abort any stream still tagged with this dispatchId.
+      // No-op when there is no in-flight stream (e.g. pre-cancel path).
+      abortStreamsForDispatch(plan.dispatchId);
+      state.status = "cancelled";
+      state.updatedAt = new Date().toISOString();
+      await persistState(state);
+      return { outcome: "cancelled" };
+    }
+
     const step = state.steps[stepIdx];
     step.status = "in_progress";
     state.updatedAt = new Date().toISOString();
@@ -172,7 +209,17 @@ export async function runHarness(
       tasks: [{ seq: step.seq, agentId: step.agent, topicHint: plan.classification.topicHint, taskDescription }],
     };
 
+    // Snapshot the stream key for this agent so a concurrent cancel can
+    // target exactly the in-flight `claudeStream` (and nothing else in the
+    // same agent group). Cleared after the dispatch resolves.
+    const agentChatId = AGENTS[step.agent]?.chatId;
+    const agentTopicId = AGENTS[step.agent]?.topicId ?? null;
+    if (agentChatId != null) {
+      setCurrentAgentKey(plan.dispatchId, streamKey(agentChatId, agentTopicId));
+    }
+
     const result = await executeSingleDispatch(bot, stepPlan, ccChatId, ccThreadId);
+    setCurrentAgentKey(plan.dispatchId, null);
 
     // [CLARIFY:] takes precedence over [REDIRECT:] — suspend wins
     const clarifyQuestion = result.success ? parseClarifySignal(result.response) : null;

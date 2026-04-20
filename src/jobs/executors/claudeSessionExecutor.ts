@@ -122,12 +122,14 @@ export class ClaudeSessionExecutor implements JobExecutor {
         };
       }
 
+      const cancelled = result.outcome === "cancelled";
       const success = result.outcome === "done";
       if (ccChatId && jobCardMessageId) {
-        await editMessage(ccChatId, jobCardMessageId, buildJobCard(jobNumStr, prompt, agentName, success ? "✅ Done" : "❌ Failed"));
+        const label = cancelled ? "🛑 Cancelled" : success ? "✅ Done" : "❌ Failed";
+        await editMessage(ccChatId, jobCardMessageId, buildJobCard(jobNumStr, prompt, agentName, label));
       }
       this.store.insertCheckpoint(job.id, 0, { sessionId: job.id });
-      return { status: success ? "done" : "failed", summary: result.outcome };
+      return { status: success ? "done" : "failed", summary: cancelled ? "cancelled by user" : result.outcome };
     } catch (err) {
       if (ccChatId && jobCardMessageId) {
         await editMessage(ccChatId, jobCardMessageId, buildJobCard(jobNumStr, prompt, agentName, "❌ Failed"));
@@ -178,11 +180,13 @@ export class ClaudeSessionExecutor implements JobExecutor {
         { resumeFrom: existingState ?? undefined },
       );
 
+      const cancelled = result.outcome === "cancelled";
       const success = result.outcome === "done";
       if (ccChatId && jobCardMessageId) {
-        await editMessage(ccChatId, jobCardMessageId, buildJobCard(jobNumStr, originalPrompt, agentName, success ? "✅ Done" : "❌ Failed"));
+        const label = cancelled ? "🛑 Cancelled" : success ? "✅ Done" : "❌ Failed";
+        await editMessage(ccChatId, jobCardMessageId, buildJobCard(jobNumStr, originalPrompt, agentName, label));
       }
-      return { status: success ? "done" : "failed", summary: result.outcome };
+      return { status: success ? "done" : "failed", summary: cancelled ? "cancelled by user" : result.outcome };
     } catch (err) {
       if (ccChatId && jobCardMessageId) {
         await editMessage(ccChatId, jobCardMessageId, buildJobCard(jobNumStr, originalPrompt, agentName, "❌ Failed"));

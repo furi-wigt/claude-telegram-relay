@@ -93,7 +93,9 @@ export async function executeSingleDispatch(
 
   let response: string | null = null;
   if (_dispatchRunner) {
-    response = await _dispatchRunner(agent.chatId, effectiveTopicId, task.taskDescription);
+    // Pass plan.dispatchId so the runner can tag its ActiveStream entry,
+    // enabling abortStreamsForDispatch(dispatchId) for mid-stream cancel.
+    response = await _dispatchRunner(agent.chatId, effectiveTopicId, task.taskDescription, plan.dispatchId);
   } else {
     console.error("[dispatchEngine] No dispatch runner registered");
   }
@@ -118,7 +120,12 @@ export async function executeSingleDispatch(
 
 // ── Dependency Injection ─────────────────────────────────────────────────────
 
-type DispatchRunner = (chatId: number, topicId: number | null, text: string) => Promise<string | null>;
+type DispatchRunner = (
+  chatId: number,
+  topicId: number | null,
+  text: string,
+  dispatchId?: string,
+) => Promise<string | null>;
 let _dispatchRunner: DispatchRunner | null = null;
 
 export function setDispatchRunner(fn: DispatchRunner): void {

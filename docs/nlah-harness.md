@@ -147,13 +147,52 @@ State files are audit-only — a write failure never blocks dispatch.
 
 ---
 
+## Cancellation
+
+Long-running dispatches are cancellable via three independent UX paths — all flip the same `cancelled` flag in the in-memory `harnessRegistry`:
+
+| UX | Where | Effect |
+|---|---|---|
+| **❌ Cancel dispatch** button | "🚀 Dispatching to …" status message in CC | Flips `cancelled`, removes button, shows "🛑 Cancelled" popup |
+| **`/cancel-dispatch`** | CC group only | Flips `cancelled` for the in-flight harness in this chat/thread |
+| **`/cancel`** in CC | CC group, harness in flight | Auto-routes to `/cancel-dispatch` (does NOT touch CC's own Claude stream) |
+
+When the flag is set, the harness:
+
+1. At the next step boundary, sees `cancelled === true` and short-circuits the loop.
+2. Calls `abortStreamsForDispatch(dispatchId)` (`src/cancel.ts`) which scans `activeStreams` for any entry tagged with this dispatchId and aborts each — killing the in-flight agent stream mid-token.
+3. Returns `HarnessResult { outcome: "cancelled" }`.
+
+Job-queue executors (`claudeSessionExecutor`) detect this outcome and post a `🛑 Cancelled` job card with `summary: "cancelled by user"`.
+
+**Registry lifecycle:** `runHarness` registers on entry and unregisters in a `finally` block — the registry never leaks even if the inner loop throws.
+
+---
+
+## Follow-up Routing
+
+When an agent's reply contains a signal tag, the harness handles it before posting to CC:
+
+```
+[REDIRECT: <agent-id>]   →  strip tag, dispatch the prior task to <agent-id>
+[CLARIFY: <question>]    →  strip tag, suspend dispatch, prompt user (job-queue path)
+```
+
+- Per-turn redirect cap: `MAX_REDIRECT_HOPS = 3` (resets on each new agent turn, not per dispatch).
+- Both the contract-driven path (CC inline button → `executeAndReport`) and the picker-callback path (`executePickerDispatch`) flow through `runHarness` — signal-tag handling is therefore identical.
+- An unknown redirect target is logged and ignored (the original reply is posted as-is).
+
+---
+
 ## Key Files
 
 | File | Purpose |
 |---|---|
 | `src/orchestration/harness.ts` | Main event loop: load contract → execute steps → post to CC |
+| `src/orchestration/harnessRegistry.ts` | In-memory dispatch registry (cancellation flag, CC-chat lookup) |
 | `src/orchestration/contractLoader.ts` | Parse `~/.claude-relay/contracts/<intent>.md` |
-| `src/orchestration/commandCenter.ts` | CC group handler: confirm routing, show inline keyboard |
+| `src/orchestration/commandCenter.ts` | CC group handler: confirm routing, show inline keyboard, cancel handlers |
 | `src/orchestration/dispatchEngine.ts` | Send task to agent group, stream and collect response |
 | `src/orchestration/intentClassifier.ts` | Classify free-text → intent + confidence |
 | `src/orchestration/interruptProtocol.ts` | Handle `/cancel` mid-dispatch |
+| `src/cancel.ts` | `activeStreams` registry + `abortStreamsForDispatch(dispatchId)` |
