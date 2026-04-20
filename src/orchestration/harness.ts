@@ -55,6 +55,11 @@ export interface DispatchState {
   pendingQuestion?: string;
   /** Populated when status === "suspended" — which agent asked */
   pendingAgent?: string;
+  /**
+   * Local file paths of downloaded attachments (photos/files sent to CC).
+   * Persisted so clarify-resume survives a service restart between suspend and resume.
+   */
+  attachmentPaths?: string[];
   createdAt: string;
   updatedAt: string;
 }
@@ -159,6 +164,7 @@ async function runHarnessInner(
       contractFile: contract?.name ?? null,
       steps,
       status: "in_progress",
+      ...(plan.attachmentPaths?.length ? { attachmentPaths: plan.attachmentPaths } : {}),
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
@@ -199,9 +205,14 @@ async function runHarnessInner(
       .map((s) => `[${AGENTS[s.agent]?.name ?? s.agent}]:\n${s.output}`)
       .join("\n\n---\n\n");
 
+    // Prepend vision context once (analyzed at CC entry) so every step sees the image description
+    const imageCtxBlock = plan.imageContext
+      ? `[Attachment context — images analyzed at dispatch time:\n${plan.imageContext}]\n\n`
+      : "";
+
     const taskDescription = priorContext
-      ? `${priorContext}\n\n---\n\nUser request: ${plan.userMessage}`
-      : plan.userMessage;
+      ? `${imageCtxBlock}${priorContext}\n\n---\n\nUser request: ${plan.userMessage}`
+      : `${imageCtxBlock}${plan.userMessage}`;
 
     const stepPlan: DispatchPlan = {
       ...plan,
