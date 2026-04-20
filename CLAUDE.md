@@ -25,7 +25,7 @@ This project turns Telegram into a personal AI assistant powered by Claude Code 
 
 **What you get:**
 - 6 specialised AI agents, each in their own Telegram supergroup (Command Center, Cloud, Security, Engineering, Research & Strategy, Operations)
-- **NLAH command routing**: Command Center classifies intent, loads a Markdown contract, confirms with an inline button, then dispatches — single-agent or multi-step compound tasks
+- **NLAH command routing**: Command Center classifies intent, loads a Markdown contract, confirms with an inline button, then dispatches — single-agent or multi-step compound tasks. Photos/albums sent to CC are debounced, vision-described, and injected as `imageContext` into every harness step; attachment paths survive suspend/resume via `DispatchState`
 - Long-term memory: facts, goals, preferences stored locally with semantic search (SQLite + Qdrant + MLX bge-m3)
 - Scheduled routines: morning briefing, evening summary, proactive check-ins, health watchdog — all config-driven via `config/routines.config.json`
 - Document RAG: upload PDFs, ask questions, get answers grounded in your documents
@@ -144,10 +144,10 @@ All user data lives outside the project directory in `~/.claude-relay/`:
 | Document Processor | `src/documents/documentProcessor.ts` | Ingest PDFs/XLSX/CSV: extract, chunk, embed, store |
 | Job Queue | `src/jobs/jobQueue.ts` | Persistent background job system with priority dispatch |
 | Model Registry | `src/model-registry/ModelRegistry.ts` | Cascade logic, health checks, provider selection |
-| **Command Center** | `src/orchestration/commandCenter.ts` | CC group handler: intent confirm, inline keyboard, audit thread |
+| **Command Center** | `src/orchestration/commandCenter.ts` | CC group handler: intent confirm, inline keyboard, audit thread; photo/album handler with album debounce (`ccAlbumAccumulators`) |
 | **Intent Classifier** | `src/orchestration/intentClassifier.ts` | Classify free-text intent + confidence via local model |
 | **Contract Loader** | `src/orchestration/contractLoader.ts` | Load `~/.claude-relay/contracts/<intent>.md`, parse steps |
-| **NLAH Harness** | `src/orchestration/harness.ts` | Execute contract steps sequentially; write state JSON; post to CC thread |
+| **NLAH Harness** | `src/orchestration/harness.ts` | Execute contract steps sequentially; write state JSON; post to CC thread. `DispatchState` carries `attachmentPaths?` so attachment context survives suspend/resume |
 | **Dispatch Engine** | `src/orchestration/dispatchEngine.ts` | Send task prompt to agent group, stream and collect response |
 
 ### Session Lifecycle

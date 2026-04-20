@@ -1,5 +1,12 @@
 # Decision Journal
 
+## 2026-04-21 — CC photo/album orchestration + attachment harness [79121df]
+
+**Change**: Photos sent to Command Center are intercepted before the generic photo handler; vision API describes them and the description is injected as `[Attachment context…]` into every harness step's task description. Album multi-photo messages are debounced (300ms) and combined into a single context string. `DispatchState` stores `attachmentPaths[]` so suspend/resume survives a service restart. `dangerouslySkipPermissions: true` is threaded through all CC dispatch paths.
+**Why**: Without CC-specific photo handling, images sent to CC were processed by the generic vision pipeline and lost to orchestration — no context reached the dispatched agents. Storing attachment paths in state is required for `[CLARIFY:]` suspend/resume continuity.
+**Rejected**: Processing only the first image of an album (user chose all images). Falling through to generic pipeline for CC photos (loses context from harness). Not storing paths in state (paths would be lost on restart, harness resume would have no files to reference).
+**Branch**: feat/cc-attachment-vision
+
 ## 2026-04-20 — Unify follow-up dispatch via runHarness + add kill-switch [pending]
 
 **Change**: Picker callback in `commandCenter.ts` now delegates to `runHarness` instead of bespoke single-shot dispatch. Added an in-memory `harnessRegistry` plus three independent cancel UX paths (❌ button, `/cancel-dispatch`, `/cancel`-in-CC reroute). Harness gains `outcome: "cancelled"` and aborts in-flight streams via `abortStreamsForDispatch(dispatchId)`.
@@ -175,3 +182,10 @@
 **Why**: The progress indicator is started before session load. Using `getSession()` avoids a second disk read; if the session isn't in cache yet, `sessionModel` is undefined which correctly falls back to agentDefault.
 **Rejected**: Moving the full `loadGroupSession()` call before `resolveModelPrefix()` — would block vision analysis start on a disk read.
 **Branch**: feat/model-session-scoped
+
+## 2026-04-21 — CC photo handler registered before general handler [79121df]
+
+**Change**: New `bot.on("message:photo")` handler for CC is registered before the existing general photo handler. It calls `next()` for non-CC chats.
+**Why**: Grammy processes middleware in registration order. By intercepting CC first and not calling `next()`, the existing handler is left completely unchanged for all non-CC groups. No modification of existing photo logic needed.
+**Rejected**: Modifying the existing handler with an `if (isCommandCenter)` branch — would mix CC orchestration logic into the standard vision pipeline and increase coupling.
+**Branch**: feat/cc-attachment-vision
