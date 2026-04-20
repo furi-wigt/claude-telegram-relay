@@ -95,7 +95,11 @@ export async function executeSingleDispatch(
   if (_dispatchRunner) {
     // Pass plan.dispatchId so the runner can tag its ActiveStream entry,
     // enabling abortStreamsForDispatch(dispatchId) for mid-stream cancel.
-    response = await _dispatchRunner(agent.chatId, effectiveTopicId, task.taskDescription, plan.dispatchId);
+    // CC dispatches always run with dangerouslySkipPermissions so agents can
+    // freely read attachment files injected via plan.attachmentPaths.
+    response = await _dispatchRunner(agent.chatId, effectiveTopicId, task.taskDescription, plan.dispatchId, {
+      dangerouslySkipPermissions: true,
+    });
   } else {
     console.error("[dispatchEngine] No dispatch runner registered");
   }
@@ -120,11 +124,17 @@ export async function executeSingleDispatch(
 
 // ── Dependency Injection ─────────────────────────────────────────────────────
 
-type DispatchRunner = (
+export interface DispatchRunnerOpts {
+  /** Enable --dangerously-skip-permissions for the spawned Claude process. */
+  dangerouslySkipPermissions?: boolean;
+}
+
+export type DispatchRunner = (
   chatId: number,
   topicId: number | null,
   text: string,
   dispatchId?: string,
+  opts?: DispatchRunnerOpts,
 ) => Promise<string | null>;
 let _dispatchRunner: DispatchRunner | null = null;
 

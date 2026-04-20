@@ -64,6 +64,16 @@ export interface DispatchPlan {
   tasks: SubTask[];
   /** Telegram message ID of the plan message in CC */
   planMessageId?: number;
+  /**
+   * Pre-computed vision description for photo attachments sent to CC.
+   * Analyzed once at CC entry; injected into every step's taskDescription.
+   */
+  imageContext?: string;
+  /**
+   * Local file paths of downloaded attachments.
+   * Persisted in DispatchState so clarify-resume can re-inject them after restart.
+   */
+  attachmentPaths?: string[];
 }
 
 // ── Dispatch Events (emitted by engine) ─────────────────────────────────────

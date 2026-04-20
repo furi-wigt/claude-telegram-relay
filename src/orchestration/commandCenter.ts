@@ -42,6 +42,12 @@ const PICKER_CONFIDENCE_THRESHOLD = 0.8;
 const pendingPickerMessages = new Map<string, string>();
 
 /**
+ * Stores attachment context (vision + file paths) for low-confidence picker dispatches
+ * so it can be re-attached when the user selects an agent from the picker.
+ */
+const pendingPickerAttachments = new Map<string, { imageContext: string; attachmentPaths: string[] }>();
+
+/**
  * Stores plan + planText for dispatches that were paused mid-countdown.
  * Cleared when the user taps Resume or Cancel on the paused keyboard.
  */
@@ -100,6 +106,9 @@ export async function rerouteToAgent(
 /**
  * Main orchestration entry point.
  * Called from relay.ts when a text message arrives in the CC group.
+ *
+ * @param attachmentContext  Optional — vision description + local file paths for photo attachments.
+ *   Analyzed once at CC entry and injected into every dispatch step via the plan.
  */
 export async function orchestrateMessage(
   bot: Bot,
@@ -107,6 +116,7 @@ export async function orchestrateMessage(
   text: string,
   chatId: number,
   threadId: number | null,
+  attachmentContext?: { imageContext: string; attachmentPaths: string[] },
 ): Promise<void> {
   const { label: modelLabel, text: classifyText } = resolveModelPrefix(text);
   let effectiveText = classifyText.trim() || text;
@@ -144,6 +154,7 @@ export async function orchestrateMessage(
   // Low confidence on a non-default agent → show inline picker
   if (classification.confidence < PICKER_CONFIDENCE_THRESHOLD && classification.primaryAgent !== DEFAULT_AGENT.id) {
     pendingPickerMessages.set(dispatchId, text);
+    if (attachmentContext) pendingPickerAttachments.set(dispatchId, attachmentContext);
     const keyboard = buildAgentPickerKeyboard(dispatchId);
     await ctx.reply(
       `${planText}\n\n⚠️ Low confidence (${(classification.confidence * 100).toFixed(0)}%) — please pick the right agent:`,
@@ -166,6 +177,10 @@ export async function orchestrateMessage(
     classification,
     tasks: [{ seq: 1, agentId: classification.primaryAgent, topicHint: classification.topicHint, taskDescription: text }],
     planMessageId: planMsg.message_id,
+    ...(attachmentContext ? {
+      imageContext: attachmentContext.imageContext,
+      attachmentPaths: attachmentContext.attachmentPaths,
+    } : {}),
   };
 
   const outcome = await startCountdown(
@@ -295,6 +310,7 @@ export function registerOrchestrationCallbacks(bot: Bot): void {
       case "cancelled":
         await ctx.answerCallbackQuery({ text: "❌ Cancelled" });
         pendingPickerMessages.delete(dispatchId);
+        pendingPickerAttachments.delete(dispatchId);
         pendingPausedPlans.delete(dispatchId);
         break;
     }
@@ -321,6 +337,8 @@ export function registerOrchestrationCallbacks(bot: Bot): void {
     const msgText = ctx.callbackQuery.message?.text;
     const userMessage = storedMessage ?? extractUserMessageFromPlan(msgText ?? "");
     pendingPickerMessages.delete(dispatchId);
+    const pickerAttachment = pendingPickerAttachments.get(dispatchId);
+    pendingPickerAttachments.delete(dispatchId);
 
     if (ctx.callbackQuery.message) {
       await bot.api.editMessageReplyMarkup(
@@ -342,6 +360,10 @@ export function registerOrchestrationCallbacks(bot: Bot): void {
         reasoning: `User selected ${agent.name}`,
       },
       tasks: [{ seq: 1, agentId, topicHint: null, taskDescription: userMessage }],
+      ...(pickerAttachment ? {
+        imageContext: pickerAttachment.imageContext,
+        attachmentPaths: pickerAttachment.attachmentPaths,
+      } : {}),
     };
 
     const chatId = ctx.callbackQuery.message?.chat.id;

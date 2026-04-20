@@ -11,6 +11,7 @@ import { Bot, Context, InlineKeyboard } from "grammy";
 import { writeFile, mkdir, readFile, unlink, appendFile } from "fs/promises";
 import { readFileSync, existsSync } from "fs";
 import { join, dirname, basename, extname } from "path";
+import { homedir } from "os";
 import { insertMessageRecord, deleteDocumentRecords } from "./local/storageBackend";
 import {
   activeStreams,
@@ -751,7 +752,7 @@ registerOrchestrationCallbacks(bot);
 
 // Register dispatch runner — dispatch engine calls processTextMessage directly
 // instead of going through Telegram API (outgoing bot messages don't trigger handlers).
-setDispatchRunner(async (chatId: number, topicId: number | null, text: string, dispatchId?: string) => {
+setDispatchRunner(async (chatId: number, topicId: number | null, text: string, dispatchId?: string, opts?: { dangerouslySkipPermissions?: boolean }) => {
   // Each dispatch starts with a clean slate — no --resume from a previous CC session.
   // renewSession() clears sessionId (forcing a fresh subprocess) while still allowing
   // memory/context injection. Silent no-op if the session doesn't exist yet (first dispatch
@@ -783,7 +784,7 @@ setDispatchRunner(async (chatId: number, topicId: number | null, text: string, d
     from: { id: allowedUserId },
   } as unknown as Context;
 
-  await processTextMessage(chatId, topicId, text, syntheticCtx, { dispatchId });
+  await processTextMessage(chatId, topicId, text, syntheticCtx, { dispatchId, dangerouslySkipPermissions: opts?.dangerouslySkipPermissions });
   return lastAssistantResponses.get(streamKey(chatId, topicId))?.join("") ?? null;
 });
 
@@ -946,6 +947,8 @@ async function callClaude(
      * before indicator.start() fires — closing the cancel race window.
      */
     externalController?: AbortController;
+    /** Run Claude with --dangerously-skip-permissions (CC dispatches with file attachments). */
+    dangerouslySkipPermissions?: boolean;
   }
 ): Promise<string> {
   console.log(`Calling Claude: ${prompt.substring(0, 50)}...`);
@@ -982,6 +985,7 @@ async function callClaude(
       signal: controller.signal,
       model: options?.model,
       onQuestion: options?.onQuestion,
+      dangerouslySkipPermissions: options?.dangerouslySkipPermissions,
       // Notify the user in Telegram when Claude has been running for 30 min (soft ceiling).
       // The stream is NOT killed — the user can tap /cancel if they want to stop.
       onSoftCeiling: chatId != null ? (msg) => {
@@ -1981,7 +1985,7 @@ async function processTextMessage(
   threadId: number | null,
   text: string,
   ctx: Context,
-  opts?: { dispatchId?: string }
+  opts?: { dispatchId?: string; dangerouslySkipPermissions?: boolean }
 ): Promise<void> {
   // M1: Clear last-turn accumulator on each new user message to prevent unbounded growth.
   lastAssistantResponses.delete(streamKey(chatId, threadId));
@@ -2275,6 +2279,7 @@ async function processTextMessage(
         onQuestion,
         onToolUse: makeWorktreeTracker(session),
         externalController: cancelController,
+        dangerouslySkipPermissions: opts?.dangerouslySkipPermissions,
       });
       await indicator.finish(true);
     } catch (claudeErr) {
@@ -2321,6 +2326,7 @@ async function processTextMessage(
             onQuestion,
             onToolUse: makeWorktreeTracker(session),
             externalController: cancelController,
+            dangerouslySkipPermissions: opts?.dangerouslySkipPermissions,
           });
           await indicator.finish(true);
           staleCorrected = true;  // retry succeeded — suppress false resumeFailed detection below
@@ -3056,6 +3062,153 @@ async function processAlbum(acc: AlbumAccumulator): Promise<void> {
 
   enqueuePhotoJob(acc.ctx, acc.chatId, acc.threadId, buffers, caption);
 }
+
+// ── CC Photo handler (must be registered BEFORE the general photo handler) ────
+//
+// Intercepts photos sent to Command Center and routes them through the NLAH
+// orchestration pipeline instead of the standard vision pipeline.
+//
+// Flow:
+//   1. Download all images (single or album with 800ms debounce)
+//   2. Save to ~/.claude-relay/attachments/{uuid}/
+//   3. Run analyzeImages() once → imageContext
+//   4. Call orchestrateMessage() with attachmentContext
+//
+// The general handler below handles all non-CC groups unchanged.
+
+interface CcAlbumAccumulator {
+  caption: string;
+  chatId: number;
+  threadId: number | null;
+  ctx: Parameters<Parameters<typeof bot.on>[1]>[0];
+  fileIds: string[];
+  timer: ReturnType<typeof setTimeout>;
+}
+
+const ccAlbumAccumulators = new Map<string, CcAlbumAccumulator>();
+
+async function processCcAlbum(acc: CcAlbumAccumulator): Promise<void> {
+  const uuid = crypto.randomUUID();
+  const attachDir = join(homedir(), ".claude-relay", "attachments", uuid);
+  await mkdir(attachDir, { recursive: true });
+
+  // Download all images in parallel
+  const downloads = acc.fileIds.map(async (fileId, i) => {
+    try {
+      const file = await bot.api.getFile(fileId);
+      if (!file.file_path) return null;
+      const resp = await fetch(`https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`);
+      const buf = Buffer.from(await resp.arrayBuffer());
+      const localPath = join(attachDir, `photo_${i}.jpg`);
+      await writeFile(localPath, buf);
+      return { buf, localPath };
+    } catch (err) {
+      console.error("[cc-photo-album] Download failed for fileId", fileId, err);
+      return null;
+    }
+  });
+
+  const results = (await Promise.all(downloads)).filter((r): r is { buf: Buffer; localPath: string } => r !== null);
+  if (!results.length) {
+    await bot.api.sendMessage(acc.chatId, "⚠️ Could not download images. Please try again.", {
+      message_thread_id: acc.threadId ?? undefined,
+    }).catch(() => {});
+    return;
+  }
+
+  const buffers = results.map((r) => r.buf);
+  const attachmentPaths = results.map((r) => r.localPath);
+  const caption = acc.caption || "";
+
+  let imageContext: string | undefined;
+  try {
+    const analyses = await analyzeImages(buffers, caption);
+    imageContext = combineImageContexts(analyses);
+  } catch (err) {
+    console.error("[cc-photo-album] Vision analysis failed:", err);
+  }
+
+  await orchestrateMessage(
+    bot,
+    acc.ctx as Context,
+    caption,
+    acc.chatId,
+    acc.threadId,
+    imageContext ? { imageContext, attachmentPaths } : undefined,
+  );
+}
+
+bot.on("message:photo", async (ctx, next) => {
+  const chatId = ctx.chat?.id;
+  const threadId = ctx.message?.message_thread_id ?? null;
+  if (!chatId || !isCommandCenter(chatId)) return next();
+
+  // CC photo — intercept and route through orchestration
+  const photos = ctx.message.photo;
+  const photo = photos[photos.length - 1];
+  const mediaGroupId = ctx.message.media_group_id;
+
+  if (mediaGroupId) {
+    // Album: two-phase pattern (collect file_ids first, download after debounce)
+    const existing = ccAlbumAccumulators.get(mediaGroupId);
+    if (existing) {
+      clearTimeout(existing.timer);
+      existing.fileIds.push(photo.file_id);
+      if (!existing.caption && ctx.message.caption) existing.caption = ctx.message.caption;
+    } else {
+      ccAlbumAccumulators.set(mediaGroupId, {
+        caption: ctx.message.caption || "",
+        chatId,
+        threadId,
+        ctx,
+        fileIds: [photo.file_id],
+        timer: undefined as unknown as ReturnType<typeof setTimeout>,
+      });
+    }
+    const acc = ccAlbumAccumulators.get(mediaGroupId)!;
+    acc.timer = setTimeout(async () => {
+      ccAlbumAccumulators.delete(mediaGroupId);
+      await processCcAlbum(acc);
+    }, MEDIA_GROUP_DEBOUNCE_MS);
+    return;
+  }
+
+  // Single photo — download immediately
+  let imageBuffer: Buffer;
+  let localPath: string;
+  try {
+    const uuid = crypto.randomUUID();
+    const attachDir = join(homedir(), ".claude-relay", "attachments", uuid);
+    await mkdir(attachDir, { recursive: true });
+    const file = await ctx.api.getFile(photo.file_id);
+    const resp = await fetch(`https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`);
+    imageBuffer = Buffer.from(await resp.arrayBuffer());
+    localPath = join(attachDir, "photo_0.jpg");
+    await writeFile(localPath, imageBuffer);
+  } catch (err) {
+    console.error("[cc-photo] Download failed:", err);
+    await ctx.reply("Could not download image. Please try again.").catch(() => {});
+    return;
+  }
+
+  const caption = ctx.message.caption || "";
+  let imageContext: string | undefined;
+  try {
+    const analyses = await analyzeImages([imageBuffer], caption);
+    imageContext = combineImageContexts(analyses);
+  } catch (err) {
+    console.error("[cc-photo] Vision analysis failed:", err);
+  }
+
+  await orchestrateMessage(
+    bot,
+    ctx,
+    caption,
+    chatId,
+    threadId,
+    imageContext ? { imageContext, attachmentPaths: [localPath] } : undefined,
+  );
+});
 
 // ── Photo event handler ────────────────────────────────────────────────────────
 
