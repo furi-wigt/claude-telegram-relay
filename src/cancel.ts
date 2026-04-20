@@ -17,6 +17,13 @@ export interface ActiveStream {
   controller: AbortController;
   /** message_id of the progress indicator message, used to remove Cancel button */
   progressMessageId?: number;
+  /**
+   * If set, this stream belongs to an NLAH harness dispatch.
+   * `abortStreamsForDispatch(dispatchId)` aborts only streams whose
+   * `dispatchId` matches — preserving unrelated direct-user streams in the
+   * same agent group.
+   */
+  dispatchId?: string;
 }
 
 // ── Active stream registry ───────────────────────────────────────────────────
@@ -105,6 +112,27 @@ export async function handleCancelCallback(
   activeStreams.delete(key);
 
   await ctx.reply("Cancelled. Here is what was generated so far:").catch(() => {});
+}
+
+/**
+ * Abort all in-flight claudeStreams that belong to a given dispatchId.
+ *
+ * Used by the NLAH harness when a user requests cancellation of a dispatch:
+ * the harness loop detects the cancelled flag and calls this to terminate
+ * the currently-running agent's claudeStream without affecting unrelated
+ * direct-user streams in the same agent group.
+ *
+ * Iterates the activeStreams map (O(n) in concurrent streams; n is small —
+ * one per chat/thread). Aborts the controller and removes the entry to
+ * prevent the harness from finding a stale aborted stream on retry.
+ */
+export function abortStreamsForDispatch(dispatchId: string): void {
+  for (const [key, entry] of activeStreams) {
+    if (entry.dispatchId === dispatchId) {
+      entry.controller.abort();
+      activeStreams.delete(key);
+    }
+  }
 }
 
 /**

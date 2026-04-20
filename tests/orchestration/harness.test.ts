@@ -433,4 +433,192 @@ describe("harness", () => {
     const state = await readState(existingState.dispatchId);
     expect(state.status).toBe("done");
   });
+
+  // ── Cancellation tests (Phase 2b) ───────────────────────────────────────────
+
+  describe("cancellation", () => {
+    test("cancel between steps: step 2 is skipped, status=cancelled", async () => {
+      let callCount = 0;
+      const { requestCancel, _resetRegistryForTests } = await import("../../src/orchestration/harnessRegistry");
+      _resetRegistryForTests();
+
+      mock.module("../../src/orchestration/dispatchEngine", () => ({
+        executeSingleDispatch: async (_bot: unknown, plan: any) => {
+          callCount++;
+          // Cancel the dispatch right after step 1 completes
+          if (callCount === 1) {
+            requestCancel(plan.dispatchId);
+          }
+          return { success: true, response: `step ${callCount}`, durationMs: 100 };
+        },
+      }));
+
+      const { runHarness } = await import("../../src/orchestration/harness");
+      const bot = makeMockBot() as any;
+      const plan = makePlan("security-audit-test", "security-compliance");
+
+      const result = await runHarness(bot, plan, -100901, null);
+
+      // Step 1 ran; step 2 must NOT have run
+      expect(callCount).toBe(1);
+      expect(result.outcome).toBe("cancelled");
+
+      const state = await readState(plan.dispatchId);
+      expect(state.status).toBe("cancelled");
+      expect(state.steps[0].status).toBe("done");
+      expect(state.steps[1].status).toBe("pending"); // never started
+    });
+
+    test("cancel before any step runs: status=cancelled, no dispatch calls", async () => {
+      let callCount = 0;
+      const { registerHarness, requestCancel, _resetRegistryForTests } =
+        await import("../../src/orchestration/harnessRegistry");
+      _resetRegistryForTests();
+
+      mock.module("../../src/orchestration/dispatchEngine", () => ({
+        executeSingleDispatch: async () => {
+          callCount++;
+          return { success: true, response: "should not run", durationMs: 50 };
+        },
+      }));
+
+      const { runHarness } = await import("../../src/orchestration/harness");
+      const bot = makeMockBot() as any;
+      const plan = makePlan("security-audit-test", "security-compliance");
+
+      // Pre-register and cancel BEFORE runHarness starts. runHarness's
+      // idempotent registerHarness must NOT clear the cancelled flag.
+      registerHarness(plan.dispatchId, { ccChatId: -100902, ccThreadId: null });
+      requestCancel(plan.dispatchId);
+
+      const result = await runHarness(bot, plan, -100902, null);
+
+      expect(callCount).toBe(0);
+      expect(result.outcome).toBe("cancelled");
+
+      const state = await readState(plan.dispatchId);
+      expect(state.status).toBe("cancelled");
+    });
+
+    test("idempotent cancel: double requestCancel does not throw", async () => {
+      const { requestCancel, _resetRegistryForTests } =
+        await import("../../src/orchestration/harnessRegistry");
+      _resetRegistryForTests();
+
+      mock.module("../../src/orchestration/dispatchEngine", () => ({
+        executeSingleDispatch: async (_bot: unknown, plan: any) => {
+          requestCancel(plan.dispatchId);
+          requestCancel(plan.dispatchId); // double cancel
+          return { success: true, response: "step", durationMs: 50 };
+        },
+      }));
+
+      const { runHarness } = await import("../../src/orchestration/harness");
+      const bot = makeMockBot() as any;
+      const plan = makePlan("security-audit-test", "security-compliance");
+
+      const result = await runHarness(bot, plan, -100903, null);
+      expect(result.outcome).toBe("cancelled");
+    });
+
+    test("registry is unregistered after harness completes (finally path)", async () => {
+      const { lookupByCcChat, _resetRegistryForTests } =
+        await import("../../src/orchestration/harnessRegistry");
+      _resetRegistryForTests();
+
+      mock.module("../../src/orchestration/dispatchEngine", () => ({
+        executeSingleDispatch: async () => ({ success: true, response: "ok", durationMs: 50 }),
+      }));
+
+      const { runHarness } = await import("../../src/orchestration/harness");
+      const bot = makeMockBot() as any;
+      const plan = makePlan("code-review-test");
+
+      await runHarness(bot, plan, -100904, null);
+
+      // After completion, no harness should be registered for this CC chat
+      expect(lookupByCcChat(-100904, null)).toBeNull();
+    });
+
+    test("registry is unregistered after harness throws (finally path)", async () => {
+      const { lookupByCcChat, _resetRegistryForTests } =
+        await import("../../src/orchestration/harnessRegistry");
+      _resetRegistryForTests();
+
+      mock.module("../../src/orchestration/dispatchEngine", () => ({
+        executeSingleDispatch: async () => {
+          throw new Error("simulated dispatch failure");
+        },
+      }));
+
+      const { runHarness } = await import("../../src/orchestration/harness");
+      const bot = makeMockBot() as any;
+      const plan = makePlan("code-review-test");
+
+      await runHarness(bot, plan, -100905, null).catch(() => {
+        /* swallow — we're testing the finally cleanup, not the error path */
+      });
+
+      expect(lookupByCcChat(-100905, null)).toBeNull();
+    });
+
+    test("mid-step: setCurrentAgentKey is set before each dispatch (mid-stream abort target)", async () => {
+      const { currentAgentKey, _resetRegistryForTests } =
+        await import("../../src/orchestration/harnessRegistry");
+      _resetRegistryForTests();
+
+      const observedKeys: Array<string | null> = [];
+
+      mock.module("../../src/orchestration/dispatchEngine", () => ({
+        executeSingleDispatch: async (_bot: unknown, plan: any) => {
+          // At this point harness must have set currentAgentKey for this step
+          observedKeys.push(currentAgentKey(plan.dispatchId));
+          return { success: true, response: "ok", durationMs: 50 };
+        },
+      }));
+
+      const { runHarness } = await import("../../src/orchestration/harness");
+      const bot = makeMockBot() as any;
+      const plan = makePlan("security-audit-test", "security-compliance");
+
+      await runHarness(bot, plan, -100906, null);
+
+      expect(observedKeys).toHaveLength(2);
+      expect(observedKeys[0]).not.toBeNull();
+      expect(observedKeys[1]).not.toBeNull();
+      // Keys are stream-key shaped: "${chatId}:${threadId ?? ''}"
+      expect(observedKeys[0]).toMatch(/^-?\d+:/);
+    });
+
+    test("mid-stream cancel: abortStreamsForDispatch removes streams tagged with dispatchId", async () => {
+      const { requestCancel, _resetRegistryForTests } =
+        await import("../../src/orchestration/harnessRegistry");
+      const { activeStreams } = await import("../../src/cancel");
+      _resetRegistryForTests();
+      activeStreams.clear();
+
+      mock.module("../../src/orchestration/dispatchEngine", () => ({
+        executeSingleDispatch: async (_bot: unknown, plan: any) => {
+          // Pre-seed an in-flight stream tagged with this dispatchId, then
+          // simulate user clicking Cancel WHILE the stream is in flight.
+          const controller = new AbortController();
+          activeStreams.set(`-100907:`, {
+            controller,
+            dispatchId: plan.dispatchId,
+          });
+          requestCancel(plan.dispatchId);
+          return { success: true, response: "partial", durationMs: 100 };
+        },
+      }));
+
+      const { runHarness } = await import("../../src/orchestration/harness");
+      const bot = makeMockBot() as any;
+      const plan = makePlan("security-audit-test", "security-compliance");
+
+      await runHarness(bot, plan, -100907, null);
+
+      // Harness must have aborted the tagged stream — entry removed from map.
+      expect(activeStreams.has(`-100907:`)).toBe(false);
+    });
+  });
 });

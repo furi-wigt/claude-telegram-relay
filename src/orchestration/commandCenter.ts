@@ -13,9 +13,6 @@
 import type { Bot, Context } from "grammy";
 import { AGENTS, DEFAULT_AGENT, type AgentConfig } from "../agents/config.ts";
 import { classifyIntent, AUTO_DISPATCH_THRESHOLD } from "./intentClassifier.ts";
-import { chunkMessage } from "../utils/sendToGroup.ts";
-import { executeSingleDispatch } from "./dispatchEngine.ts";
-import { markdownToHtml, splitMarkdown, decodeHtmlEntities } from "../utils/htmlFormat.ts";
 import {
   buildPlanKeyboard,
   buildPausedKeyboard,
@@ -27,8 +24,9 @@ import {
 import { resolveModelPrefix } from "../utils/modelPrefix.ts";
 import { InlineKeyboard } from "grammy";
 import { runHarness } from "./harness.ts";
+import { requestCancel, lookupByCcChat } from "./harnessRegistry.ts";
 import type { ClassificationResult, DispatchPlan } from "./types.ts";
-import { trackAgentReply, trackLastActiveAgent } from "./pendingAgentReplies.ts";
+import { trackAgentReply } from "./pendingAgentReplies.ts";
 import { isJobTopic, getJobTopic } from "../jobs/jobTopicRegistry.ts";
 import { getBridgeJob, resumeJobWithAnswer } from "../jobs/jobBridge.ts";
 
@@ -58,6 +56,10 @@ export function isCommandCenter(chatId: number): boolean {
  * Re-route a user reply directly to the agent that last asked a question,
  * bypassing intent classification. Called when the user explicitly replies to
  * a tracked agent response message in the CC thread.
+ *
+ * Unified via `runHarness` (Phase 3) so [REDIRECT:] / [CLARIFY:] tags emitted
+ * by the agent are honoured consistently with the main NLAH path. Without this
+ * unification, redirect tags leaked into CC text instead of triggering re-routing.
  */
 export async function rerouteToAgent(
   bot: Bot,
@@ -73,9 +75,8 @@ export async function rerouteToAgent(
     return;
   }
 
-  const dispatchId = crypto.randomUUID();
   const plan: DispatchPlan = {
-    dispatchId,
+    dispatchId: crypto.randomUUID(),
     userMessage: text,
     classification: {
       intent: "follow-up",
@@ -90,30 +91,10 @@ export async function rerouteToAgent(
 
   await ctx.reply(`↩️ Follow-up → <b>${agent.name}</b>`, { parse_mode: "HTML" }).catch(() => {});
 
-  const result = await executeSingleDispatch(bot, plan, ccChatId, ccThreadId);
-
-  const sec = (result.durationMs / 1000).toFixed(1);
-  const icon = result.success ? "✅" : "❌";
-  const header = `${icon} <b>${agent.name}</b> — ${result.success ? "completed" : "failed"} (${sec}s)`;
-  const chunks = splitMarkdown(result.response, 3800);
-
-  for (let i = 0; i < chunks.length; i++) {
-    const html = i === 0 ? `${header}\n\n${markdownToHtml(chunks[i])}` : markdownToHtml(chunks[i]);
-    const sent = await bot.api.sendMessage(ccChatId, html, {
-      parse_mode: "HTML",
-      message_thread_id: ccThreadId ?? undefined,
-    }).catch(async () => {
-      const plain = decodeHtmlEntities(html.replace(/<[^>]+>/g, ""));
-      for (const chunk of chunkMessage(plain)) {
-        const s = await bot.api.sendMessage(ccChatId, chunk, { message_thread_id: ccThreadId ?? undefined }).catch(() => null);
-        if (s) trackAgentReply(ccChatId, s.message_id, agentId, ccThreadId);
-      }
-      return null;
-    });
-    if (sent) trackAgentReply(ccChatId, sent.message_id, agentId, ccThreadId);
-  }
-  // Record as last active agent so bare continuation commands route here
-  trackLastActiveAgent(ccChatId, ccThreadId, agentId);
+  // Delegate to runHarness — it handles [REDIRECT:] / [CLARIFY:] parsing,
+  // postResult chunking, trackAgentReply, trackLastActiveAgent, and the
+  // multi-step synthesis line.
+  await runHarness(bot, plan, ccChatId, ccThreadId);
 }
 
 /**
@@ -253,6 +234,7 @@ async function executeAndReport(
     ccChatId,
     planMessageId,
     `${planText}\n\n🚀 Dispatching to ${agentName}...`,
+    { reply_markup: buildCancelDispatchKeyboard(plan.dispatchId) },
   ).catch(() => {});
 
   await runHarness(bot, plan, ccChatId, ccThreadId);
@@ -261,6 +243,7 @@ async function executeAndReport(
     ccChatId,
     planMessageId,
     `${planText}\n\n✅ Dispatch complete`,
+    { reply_markup: { inline_keyboard: [] } },
   ).catch(() => {});
 }
 
@@ -269,6 +252,16 @@ async function executeAndReport(
  * Called once at bot startup.
  */
 export function registerOrchestrationCallbacks(bot: Bot): void {
+  // Cancel-dispatch button on in-flight harness status messages.
+  // Registered FIRST so its `ocd:` prefix is consumed before the picker /
+  // countdown handlers get a chance.
+  bot.on("callback_query:data", async (ctx, next) => {
+    const data = ctx.callbackQuery.data;
+    if (!data.startsWith(CANCEL_DISPATCH_CB_PREFIX)) return next();
+    const dispatchId = data.slice(CANCEL_DISPATCH_CB_PREFIX.length);
+    await handleCancelDispatchCallback(ctx, bot, dispatchId);
+  });
+
   // Countdown interrupt buttons (Pause / Edit / Cancel / Resume)
   bot.on("callback_query:data", async (ctx, next) => {
     const data = ctx.callbackQuery.data;
@@ -355,30 +348,105 @@ export function registerOrchestrationCallbacks(bot: Bot): void {
     const threadId = ctx.callbackQuery.message?.message_thread_id ?? null;
     if (!chatId) return;
 
-    const result = await executeSingleDispatch(bot, plan, chatId, threadId);
-
-    const sec = (result.durationMs / 1000).toFixed(1);
-    const icon = result.success ? "✅" : "❌";
-    const header = `${icon} <b>${agent.name}</b> — ${result.success ? "completed" : "failed"} (${sec}s)`;
-    const chunks = splitMarkdown(result.response, 3800);
-    for (let i = 0; i < chunks.length; i++) {
-      const html = i === 0 ? `${header}\n\n${markdownToHtml(chunks[i])}` : markdownToHtml(chunks[i]);
-      const sent = await bot.api.sendMessage(chatId, html, {
-        parse_mode: "HTML",
-        message_thread_id: threadId ?? undefined,
-      }).catch(async () => {
-        const plain = decodeHtmlEntities(html.replace(/<[^>]+>/g, ""));
-        for (const chunk of chunkMessage(plain)) {
-          const s = await bot.api.sendMessage(chatId, chunk, { message_thread_id: threadId ?? undefined }).catch(() => null);
-          if (s) trackAgentReply(chatId, s.message_id, agentId, threadId);
-        }
-        return null;
-      });
-      if (sent) trackAgentReply(chatId, sent.message_id, agentId, threadId);
-    }
-    // Record as last active agent for continuation commands
-    trackLastActiveAgent(chatId, threadId, agentId);
+    await executePickerDispatch(bot, plan, chatId, threadId);
   });
+}
+
+/** Picker-path dispatch — delegates to the harness so [REDIRECT:]/[CLARIFY:] fire. */
+export async function executePickerDispatch(
+  bot: Bot,
+  plan: DispatchPlan,
+  ccChatId: number,
+  ccThreadId: number | null,
+): Promise<void> {
+  await runHarness(bot, plan, ccChatId, ccThreadId);
+}
+
+const CANCEL_DISPATCH_CB_PREFIX = "ocd:";
+
+function buildCancelDispatchKeyboard(dispatchId: string): InlineKeyboard {
+  return new InlineKeyboard().text("❌ Cancel dispatch", `${CANCEL_DISPATCH_CB_PREFIX}${dispatchId}`);
+}
+
+// ── Cancel-dispatch (kill-switch for in-flight harness runs) ─────────────────
+
+/**
+ * Callback handler for the inline `❌ Cancel dispatch` button on the
+ * "🚀 Dispatching to ..." status message. Flips the harness registry's
+ * cancellation flag for `dispatchId`. The harness loop checks the flag
+ * between steps and aborts the in-flight stream via
+ * `abortStreamsForDispatch(dispatchId)`.
+ *
+ * Idempotent: a second tap (or a tap after natural completion) returns the
+ * "already completed or expired" popup instead of throwing.
+ */
+export async function handleCancelDispatchCallback(
+  ctx: {
+    callbackQuery: { message?: { chat: { id: number }; message_id: number } };
+    answerCallbackQuery: (opts?: { text?: string }) => Promise<unknown>;
+  },
+  bot: { api: { editMessageReplyMarkup: (chatId: number, msgId: number, opts: unknown) => Promise<unknown> } },
+  dispatchId: string,
+): Promise<void> {
+  const accepted = requestCancel(dispatchId);
+  if (!accepted) {
+    await ctx.answerCallbackQuery({ text: "Dispatch already completed or expired." }).catch(() => {});
+    return;
+  }
+  const msg = ctx.callbackQuery.message;
+  if (msg) {
+    await bot.api.editMessageReplyMarkup(msg.chat.id, msg.message_id, { reply_markup: { inline_keyboard: [] } }).catch(() => {});
+  }
+  await ctx.answerCallbackQuery({ text: "🛑 Cancelled" }).catch(() => {});
+}
+
+/**
+ * `/cancel-dispatch` slash command handler. Only meaningful inside the
+ * Command Center group: looks up any in-flight harness run for that chat/
+ * thread via `harnessRegistry.lookupByCcChat`, flips the cancel flag, and
+ * confirms.
+ */
+export async function handleCancelDispatchCommand(
+  ctx: {
+    chat?: { id: number };
+    message?: { message_thread_id?: number | null };
+    reply: (text: string, opts?: unknown) => Promise<unknown>;
+  },
+  bot: unknown,
+): Promise<void> {
+  const chatId = ctx.chat?.id;
+  if (chatId == null || !isCommandCenter(chatId)) {
+    await ctx.reply("`/cancel-dispatch` only works in Command Center.").catch(() => {});
+    return;
+  }
+  const threadId = ctx.message?.message_thread_id ?? null;
+  const handled = await handleCancelInCommandCenter(chatId, threadId, ctx, bot);
+  if (!handled) {
+    await ctx.reply("Nothing to cancel — no dispatch in flight.").catch(() => {});
+  }
+}
+
+/**
+ * `/cancel` reroute when invoked inside the Command Center.
+ *
+ * Returns `true` if a harness was active and we cancelled it (caller MUST
+ * NOT fall through to the existing `handleCancelCommand`, otherwise it would
+ * delete CC's own activeStream entry and abort an unrelated stream).
+ *
+ * Returns `false` if no harness is active — caller falls through to the
+ * existing `/cancel` flow unchanged.
+ */
+export async function handleCancelInCommandCenter(
+  chatId: number,
+  threadId: number | null,
+  ctx: { reply: (text: string, opts?: unknown) => Promise<unknown> },
+  _bot: unknown,
+): Promise<boolean> {
+  const dispatchId = lookupByCcChat(chatId, threadId);
+  if (!dispatchId) return false;
+  requestCancel(dispatchId);
+  await ctx.reply("🛑 Cancelling current dispatch…").catch(() => {});
+  return true;
 }
 
 // ── Formatting ────────────────────────────────────────────────────────────────

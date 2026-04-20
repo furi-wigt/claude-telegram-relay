@@ -44,7 +44,7 @@ import { learnTopicName, learnChatName, getTopicName } from "./utils/chatNames.t
 import { getRegistry } from "./models/index.ts";
 import { callRoutineModel } from "./routines/routineModel.ts";
 import { getAgentForChat, autoDiscoverGroup, loadGroupMappings } from "./routing/groupRouter.ts";
-import { isCommandCenter, orchestrateMessage, rerouteToAgent, lookupAgentReply, getLastActiveAgent, inferAgentFromText, registerOrchestrationCallbacks, setDispatchRunner, setTopicCreator, setDispatchNotifier } from "./orchestration/index.ts";
+import { isCommandCenter, orchestrateMessage, rerouteToAgent, lookupAgentReply, getLastActiveAgent, inferAgentFromText, registerOrchestrationCallbacks, setDispatchRunner, setTopicCreator, setDispatchNotifier, handleCancelDispatchCommand, handleCancelInCommandCenter } from "./orchestration/index.ts";
 // Router removed: always use Sonnet for simplicity and predictable latency
 import { loadSession as loadGroupSession, updateSessionIdGuarded, initSessions, loadAllSessions, saveSession, isResumeReliable, didResumeFail, lockActiveCwd, resetSession, renewSession, getSessionSince, getSession } from "./session/groupSessions.ts";
 import { buildAgentPrompt } from "./agents/promptBuilder.ts";
@@ -751,7 +751,7 @@ registerOrchestrationCallbacks(bot);
 
 // Register dispatch runner — dispatch engine calls processTextMessage directly
 // instead of going through Telegram API (outgoing bot messages don't trigger handlers).
-setDispatchRunner(async (chatId: number, topicId: number | null, text: string) => {
+setDispatchRunner(async (chatId: number, topicId: number | null, text: string, dispatchId?: string) => {
   // Each dispatch starts with a clean slate — no --resume from a previous CC session.
   // renewSession() clears sessionId (forcing a fresh subprocess) while still allowing
   // memory/context injection. Silent no-op if the session doesn't exist yet (first dispatch
@@ -783,7 +783,7 @@ setDispatchRunner(async (chatId: number, topicId: number | null, text: string) =
     from: { id: allowedUserId },
   } as unknown as Context;
 
-  await processTextMessage(chatId, topicId, text, syntheticCtx);
+  await processTextMessage(chatId, topicId, text, syntheticCtx, { dispatchId });
   return lastAssistantResponses.get(streamKey(chatId, topicId))?.join("") ?? null;
 });
 
@@ -1478,7 +1478,21 @@ bot.command("cancel", async (ctx) => {
   pendingSaveStates.delete(key);
   if (hadDocState) { await ctx.reply("Cancelled."); return; }
 
+  // In CC: if a harness is in-flight, /cancel cancels the dispatch (NOT
+  // CC's own activeStream). Falls through to handleCancelCommand otherwise.
+  if (isCommandCenter(chatId)) {
+    const handled = await handleCancelInCommandCenter(chatId, threadId, ctx, bot);
+    if (handled) return;
+  }
+
   await handleCancelCommand(chatId, threadId, ctx, bot);
+});
+
+// `/cancel-dispatch` — kill-switch for in-flight harness runs.
+// Only meaningful inside the Command Center group.
+// (No `/cd` alias — collides visually with the existing `/cwd` command.)
+bot.command("cancel-dispatch", async (ctx) => {
+  await handleCancelDispatchCommand(ctx, bot);
 });
 
 // Handle iq: and cancel: callback queries.
@@ -1966,7 +1980,8 @@ async function processTextMessage(
   chatId: number,
   threadId: number | null,
   text: string,
-  ctx: Context
+  ctx: Context,
+  opts?: { dispatchId?: string }
 ): Promise<void> {
   // M1: Clear last-turn accumulator on each new user message to prevent unbounded growth.
   lastAssistantResponses.delete(streamKey(chatId, threadId));
@@ -2017,7 +2032,11 @@ async function processTextMessage(
     // where the Cancel button is visible but activeStreams has no entry yet.
     // handleCancelCallback will find this entry immediately even during context fetches.
     const cancelController = new AbortController();
-    activeStreams.set(cancelKey, { controller: cancelController });
+    // Tag with dispatchId when invoked from the NLAH harness so
+    // abortStreamsForDispatch(dispatchId) can target this exact stream
+    // for mid-stream cancellation without affecting unrelated direct-user
+    // streams in the same agent group.
+    activeStreams.set(cancelKey, { controller: cancelController, dispatchId: opts?.dispatchId });
     const indicator = new ProgressIndicator();
     indicator.start(chatId, bot, threadId, {
       cancelKey,

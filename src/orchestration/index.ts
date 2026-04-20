@@ -3,7 +3,7 @@
  */
 
 export { classifyIntent, classifyWithKeywords, AUTO_DISPATCH_THRESHOLD } from "./intentClassifier.ts";
-export { isCommandCenter, orchestrateMessage, rerouteToAgent, registerOrchestrationCallbacks, inferAgentFromText } from "./commandCenter.ts";
+export { isCommandCenter, orchestrateMessage, rerouteToAgent, registerOrchestrationCallbacks, inferAgentFromText, handleCancelDispatchCommand, handleCancelInCommandCenter } from "./commandCenter.ts";
 export { lookupAgentReply, trackAgentReply, getLastActiveAgent } from "./pendingAgentReplies.ts";
 export { executeSingleDispatch, getRecentDispatches, getYesterdayActivity, setDispatchRunner, getDispatchRunner, setTopicCreator, setDispatchNotifier } from "./dispatchEngine.ts";
 export type { TopicCreator, DispatchNotifier } from "./dispatchEngine.ts";

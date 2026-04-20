@@ -1,5 +1,12 @@
 # Decision Journal
 
+## 2026-04-20 — Unify follow-up dispatch via runHarness + add kill-switch [pending]
+
+**Change**: Picker callback in `commandCenter.ts` now delegates to `runHarness` instead of bespoke single-shot dispatch. Added an in-memory `harnessRegistry` plus three independent cancel UX paths (❌ button, `/cancel-dispatch`, `/cancel`-in-CC reroute). Harness gains `outcome: "cancelled"` and aborts in-flight streams via `abortStreamsForDispatch(dispatchId)`.
+**Why**: `[REDIRECT:engineering]` tags from agent follow-ups appeared literally in CC because the picker path skipped the harness's signal-tag stripper and re-routing loop. Unifying both dispatch paths through `runHarness` is "Option B" — eliminates the divergence at its root rather than re-implementing tag handling in the picker path. Kill-switch is a forcing function for early Phase-1 surfacing of harness state ownership and a real user need (long-running multi-step dispatches).
+**Rejected**: Option A (re-implement signal-tag parsing in picker callback) — duplicates harness logic, perpetuates two code paths. Persistent registry (SQLite) — cancellation is inherently a live-session concern; in-memory map is sufficient and crash-equivalent (process death cancels everything anyway). `/cd` alias — collides visually with `/cwd`.
+**Branch**: bugfix/follow_up_redirect_harness
+
 ## 2026-04-19 — Infer agent from reply text as post-restart fallback [8714097]
 
 **Change**: Added `inferAgentFromText()` as a 3rd fallback in CC reply routing: `lookupAgentReply → getLastActiveAgent → inferAgentFromText(replyText)`.
