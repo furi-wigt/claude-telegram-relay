@@ -16,6 +16,26 @@ import type { ClassificationResult } from "./types.ts";
 /** Minimum confidence to auto-dispatch without user confirmation */
 export const AUTO_DISPATCH_THRESHOLD = 0.6;
 
+// ── Intent Aliases ───────────────────────────────────────────────────────────
+
+/**
+ * Canonical intent mapping — synonymous intents resolved to one contract file.
+ * Any intent listed here loads the canonical contract instead of its own file,
+ * eliminating duplicate contract files with identical content.
+ *
+ * To add a new synonym: add an entry here. No contract file needed.
+ */
+export const INTENT_ALIASES: Readonly<Record<string, string>> = {
+  "development": "coding",
+  "implementation": "coding",
+  "feature-implementation": "coding",
+};
+
+/** Resolve a raw intent to its canonical form. O(1). */
+export function normaliseIntent(intent: string): string {
+  return INTENT_ALIASES[intent] ?? intent;
+}
+
 /** Agents eligible for orchestration routing (excludes command-center itself) */
 function getRoutableAgents(): AgentConfig[] {
   return Object.values(AGENTS).filter((a) => a.id !== "command-center");
@@ -87,8 +107,9 @@ export function detectCompound(message: string): boolean {
  * Tries registry classify slot first, falls back to keyword matching on error.
  */
 export async function classifyIntent(message: string): Promise<ClassificationResult> {
+  let result: ClassificationResult;
   try {
-    return await classifyWithRegistry(message);
+    result = await classifyWithRegistry(message);
   } catch (err) {
     // AbortError = timeout; log one-liner instead of full DOMException dump
     const name = err instanceof DOMException ? err.name : "";
@@ -97,9 +118,12 @@ export async function classifyIntent(message: string): Promise<ClassificationRes
     } else {
       console.warn("[intentClassifier] classify model failed, using keyword fallback:", String(err));
     }
+    result = classifyWithKeywords(message);
   }
 
-  return classifyWithKeywords(message);
+  // Resolve synonym intents to canonical form so contractLoader loads one file.
+  const canonical = normaliseIntent(result.intent);
+  return canonical === result.intent ? result : { ...result, intent: canonical };
 }
 
 // ── Registry Classification ─────────────────────────────────────────────────
