@@ -23,6 +23,7 @@ export interface Contract {
   intent: string;
   agents: string[];
   steps: ContractStep[];
+  maxLoopIterations?: number;
   contextInjection?: string;
   output?: string;
 }
@@ -61,11 +62,13 @@ function parseContract(content: string, fileName: string): Contract {
     ? parseArray(frontmatter["agents"])
     : steps.map((s) => s.agent);
 
+  const rawMaxLoop = frontmatter["max_loop_iterations"] ?? frontmatter["maxLoopIterations"];
   return {
     name: fileName.replace(/\.md$/, ""),
     intent: frontmatter["intent"] ?? fileName.replace(/\.md$/, ""),
     agents: agentsFromFrontmatter,
     steps,
+    maxLoopIterations: rawMaxLoop ? parseInt(rawMaxLoop, 10) : undefined,
     contextInjection: frontmatter["context-injection"] ?? frontmatter["contextInjection"],
     output: frontmatter["output"],
   };

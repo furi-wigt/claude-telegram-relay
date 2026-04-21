@@ -1,5 +1,12 @@
 # Decision Journal
 
+## 2026-04-19 — NLAH loop pattern: [LOOP: <agent-id>] signal [06919a5]
+
+**Change**: Added `[LOOP: <agent-id>]` signal to the NLAH harness enabling a QA/reviewer agent to request a re-run of an implementer agent with configurable max iterations.
+**Why**: `[REDIRECT:]` prevents circular routing by blocking agents already in `triedAgents`. A dedicated `[LOOP:]` signal enables opt-in iteration with its own per-agent counter (`loopCounts`) and configurable limit (`maxLoopIterations`, default 3, overridable via `max_loop_iterations` frontmatter). This unlocks the implementer+QA TDD cycle as a contract-native pattern.
+**Rejected**: Using `triedAgents` for loop detection (would block second dispatch to same agent); storing loop state outside `DispatchState` (would break resume). Agent ID `engineering-qa` not present in agents config — tests use `code-quality-coach` instead.
+**Branch**: feat/nlah-loop-pattern
+
 ## 2026-04-21 — Propagate CC session cwd to NLAH dispatch agents [pending]
 
 **Change**: Added `cwd?: string` to `DispatchPlan` and `DispatchState`. Command Center captures `session.cwd` at plan-creation time (all 3 construction sites: orchestrateMessage, picker callback, rerouteToAgent). `dispatchEngine` passes it as `cwdOverride` to the dispatch runner. The relay dispatch runner temporarily pins `session.cwd` on the target agent's session before `processTextMessage` (restored in `finally`) so `lockActiveCwd` picks up the CC cwd for that dispatch.

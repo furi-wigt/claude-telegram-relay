@@ -29,6 +29,18 @@ agents: [security-compliance, engineering]
 2. **engineering** — code scan
 `;
 
+const LOOP_CONTRACT = `---
+intent: code-review-loop
+agents: [engineering, code-quality-coach]
+max_loop_iterations: 2
+---
+# Code Review with Loop
+
+## Steps
+1. **engineering** — implement the feature
+2. **code-quality-coach** — review; emit [LOOP: engineering] if issues found
+`;
+
 // ── Mocks ─────────────────────────────────────────────────────────────────────
 
 /** Minimal mock bot that captures sendMessage calls */
@@ -82,10 +94,11 @@ describe("harness", () => {
     await mkdir(STATE_DIR, { recursive: true });
     await writeFile(join(CONTRACTS_DIR, "code-review-test.md"), SINGLE_STEP_CONTRACT);
     await writeFile(join(CONTRACTS_DIR, "security-audit-test.md"), TWO_STEP_CONTRACT);
+    await writeFile(join(CONTRACTS_DIR, "code-review-loop-test.md"), LOOP_CONTRACT);
   });
 
   afterAll(async () => {
-    for (const f of ["code-review-test.md", "security-audit-test.md"]) {
+    for (const f of ["code-review-test.md", "security-audit-test.md", "code-review-loop-test.md"]) {
       await rm(join(CONTRACTS_DIR, f), { force: true });
     }
   });
@@ -619,6 +632,146 @@ describe("harness", () => {
 
       // Harness must have aborted the tagged stream — entry removed from map.
       expect(activeStreams.has(`-100907:`)).toBe(false);
+    });
+  });
+
+  // ── Loop pattern tests ────────────────────────────────────────────────────────
+
+  describe("loop pattern", () => {
+    test("loop: QA passes on first try → done, no loop steps appended", async () => {
+      const dispatched: string[] = [];
+      mock.module("../../src/orchestration/dispatchEngine", () => ({
+        executeSingleDispatch: async (_bot: unknown, plan: any) => {
+          dispatched.push(plan.classification.primaryAgent);
+          return { success: true, response: "LGTM.", durationMs: 300 };
+        },
+      }));
+
+      const { runHarness } = await import("../../src/orchestration/harness");
+      const bot = makeMockBot() as any;
+      const plan = makePlan("code-review-loop-test", "engineering");
+
+      const result = await runHarness(bot, plan, -300001, null);
+
+      expect(result.outcome).toBe("done");
+      expect(dispatched).toEqual(["engineering", "code-quality-coach"]);
+      const state = await readState(plan.dispatchId);
+      expect(state.status).toBe("done");
+      expect(state.steps).toHaveLength(2);
+    });
+
+    test("loop: QA fails once, engineer re-runs, QA passes → done (4 steps total)", async () => {
+      let callCount = 0;
+      const dispatched: string[] = [];
+      mock.module("../../src/orchestration/dispatchEngine", () => ({
+        executeSingleDispatch: async (_bot: unknown, plan: any) => {
+          callCount++;
+          const agentId = plan.classification.primaryAgent;
+          dispatched.push(agentId);
+          if (agentId === "code-quality-coach" && callCount === 2) {
+            return { success: true, response: "Needs fixes. [LOOP: engineering]", durationMs: 400 };
+          }
+          return { success: true, response: "Done.", durationMs: 300 };
+        },
+      }));
+
+      const { runHarness } = await import("../../src/orchestration/harness");
+      const bot = makeMockBot() as any;
+      const plan = makePlan("code-review-loop-test", "engineering");
+
+      const result = await runHarness(bot, plan, -300002, null);
+
+      expect(result.outcome).toBe("done");
+      expect(dispatched).toEqual(["engineering", "code-quality-coach", "engineering", "code-quality-coach"]);
+      expect(callCount).toBe(4);
+      const state = await readState(plan.dispatchId);
+      expect(state.status).toBe("done");
+      expect(state.steps).toHaveLength(4);
+
+      const qaStepWithTag = state.steps.find((s: any) => s.output?.includes("[LOOP:"));
+      expect(qaStepWithTag).toBeUndefined();
+
+      const loopMsg = bot._sent.find((m: any) =>
+        typeof m.text === "string" && m.text.includes("iteration 1/2")
+      );
+      expect(loopMsg).not.toBeUndefined();
+    });
+
+    test("loop: max iterations (2) exceeded → state=failed", async () => {
+      mock.module("../../src/orchestration/dispatchEngine", () => ({
+        executeSingleDispatch: async (_bot: unknown, plan: any) => {
+          if (plan.classification.primaryAgent === "code-quality-coach") {
+            return { success: true, response: "Still broken. [LOOP: engineering]", durationMs: 400 };
+          }
+          return { success: true, response: "Implemented.", durationMs: 300 };
+        },
+      }));
+
+      const { runHarness } = await import("../../src/orchestration/harness");
+      const bot = makeMockBot() as any;
+      const plan = makePlan("code-review-loop-test", "engineering");
+
+      const result = await runHarness(bot, plan, -300003, null);
+
+      expect(result.outcome).toBe("failed");
+      if (result.outcome === "failed") {
+        expect(result.error).toBe("max loop iterations reached");
+      }
+      const state = await readState(plan.dispatchId);
+      expect(state.status).toBe("failed");
+
+      const warnMsg = bot._sent.find((m: any) =>
+        typeof m.text === "string" && m.text.toLowerCase().includes("max loop")
+      );
+      expect(warnMsg).not.toBeUndefined();
+    });
+
+    test("loop: [LOOP:] wins over [REDIRECT:] when both present", async () => {
+      const dispatched: string[] = [];
+      mock.module("../../src/orchestration/dispatchEngine", () => ({
+        executeSingleDispatch: async (_bot: unknown, plan: any) => {
+          dispatched.push(plan.classification.primaryAgent);
+          if (plan.classification.primaryAgent === "code-quality-coach") {
+            return {
+              success: true,
+              response: "Needs work. [LOOP: engineering] [REDIRECT: cloud-architect]",
+              durationMs: 400,
+            };
+          }
+          return { success: true, response: "Done.", durationMs: 300 };
+        },
+      }));
+
+      const { runHarness } = await import("../../src/orchestration/harness");
+      const bot = makeMockBot() as any;
+      const plan = makePlan("code-review-loop-test", "engineering");
+
+      await runHarness(bot, plan, -300004, null);
+
+      expect(dispatched).not.toContain("cloud-architect");
+      expect(dispatched).toContain("code-quality-coach");
+    });
+
+    test("loop: unknown agent-id in [LOOP:] tag is ignored, dispatch completes normally", async () => {
+      const dispatched: string[] = [];
+      mock.module("../../src/orchestration/dispatchEngine", () => ({
+        executeSingleDispatch: async (_bot: unknown, plan: any) => {
+          dispatched.push(plan.classification.primaryAgent);
+          if (plan.classification.primaryAgent === "code-quality-coach") {
+            return { success: true, response: "Oops. [LOOP: nonexistent-agent]", durationMs: 300 };
+          }
+          return { success: true, response: "Done.", durationMs: 200 };
+        },
+      }));
+
+      const { runHarness } = await import("../../src/orchestration/harness");
+      const bot = makeMockBot() as any;
+      const plan = makePlan("code-review-loop-test", "engineering");
+
+      const result = await runHarness(bot, plan, -300005, null);
+
+      expect(result.outcome).toBe("done");
+      expect(dispatched).toEqual(["engineering", "code-quality-coach"]);
     });
   });
 });
