@@ -752,7 +752,7 @@ registerOrchestrationCallbacks(bot);
 
 // Register dispatch runner — dispatch engine calls processTextMessage directly
 // instead of going through Telegram API (outgoing bot messages don't trigger handlers).
-setDispatchRunner(async (chatId: number, topicId: number | null, text: string, dispatchId?: string, opts?: { dangerouslySkipPermissions?: boolean }) => {
+setDispatchRunner(async (chatId: number, topicId: number | null, text: string, dispatchId?: string, opts?: { dangerouslySkipPermissions?: boolean; cwdOverride?: string }) => {
   // Each dispatch starts with a clean slate — no --resume from a previous CC session.
   // renewSession() clears sessionId (forcing a fresh subprocess) while still allowing
   // memory/context injection. Silent no-op if the session doesn't exist yet (first dispatch
@@ -784,7 +784,13 @@ setDispatchRunner(async (chatId: number, topicId: number | null, text: string, d
     from: { id: allowedUserId },
   } as unknown as Context;
 
-  await processTextMessage(chatId, topicId, text, syntheticCtx, { dispatchId, dangerouslySkipPermissions: opts?.dangerouslySkipPermissions });
+  // Pass cwdOverride directly to processTextMessage so it is applied at Claude spawn time
+  // without mutating the agent's session.cwd — avoiding race conditions and session state leaks.
+  await processTextMessage(chatId, topicId, text, syntheticCtx, {
+    dispatchId,
+    dangerouslySkipPermissions: opts?.dangerouslySkipPermissions,
+    cwdOverride: opts?.cwdOverride,
+  });
   return lastAssistantResponses.get(streamKey(chatId, topicId))?.join("") ?? null;
 });
 
@@ -1985,7 +1991,7 @@ async function processTextMessage(
   threadId: number | null,
   text: string,
   ctx: Context,
-  opts?: { dispatchId?: string; dangerouslySkipPermissions?: boolean }
+  opts?: { dispatchId?: string; dangerouslySkipPermissions?: boolean; cwdOverride?: string }
 ): Promise<void> {
   // M1: Clear last-turn accumulator on each new user message to prevent unbounded growth.
   lastAssistantResponses.delete(streamKey(chatId, threadId));
@@ -2275,7 +2281,7 @@ async function processTextMessage(
         chatId,
         threadId,
         model: resolvedModel,
-        cwd: session.activeCwd,
+        cwd: opts?.cwdOverride ?? session.activeCwd,
         onQuestion,
         onToolUse: makeWorktreeTracker(session),
         externalController: cancelController,
@@ -2322,7 +2328,7 @@ async function processTextMessage(
             chatId,
             threadId,
             model: resolvedModel,
-            cwd: session.cwd ?? PROJECT_DIR ?? undefined,
+            cwd: opts?.cwdOverride ?? session.cwd ?? PROJECT_DIR ?? undefined,
             onQuestion,
             onToolUse: makeWorktreeTracker(session),
             externalController: cancelController,

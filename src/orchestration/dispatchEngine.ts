@@ -99,6 +99,7 @@ export async function executeSingleDispatch(
     // freely read attachment files injected via plan.attachmentPaths.
     response = await _dispatchRunner(agent.chatId, effectiveTopicId, task.taskDescription, plan.dispatchId, {
       dangerouslySkipPermissions: true,
+      cwdOverride: plan.cwd,
     });
   } else {
     console.error("[dispatchEngine] No dispatch runner registered");
@@ -127,6 +128,11 @@ export async function executeSingleDispatch(
 export interface DispatchRunnerOpts {
   /** Enable --dangerously-skip-permissions for the spawned Claude process. */
   dangerouslySkipPermissions?: boolean;
+  /**
+   * Working directory override for the dispatched agent.
+   * Propagated from DispatchPlan.cwd (captured from CC session at plan-creation time).
+   */
+  cwdOverride?: string;
 }
 
 export type DispatchRunner = (
