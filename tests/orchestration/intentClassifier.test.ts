@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { classifyWithKeywords, detectCompound } from "../../src/orchestration/intentClassifier";
+import { classifyWithKeywords, detectCompound, normaliseIntent, INTENT_ALIASES } from "../../src/orchestration/intentClassifier";
 
 describe("intentClassifier — keyword fallback", () => {
   test("routes 'review EDEN security posture' to security-compliance", () => {
@@ -88,6 +88,33 @@ describe("intentClassifier — keyword fallback", () => {
     expect(typeof result.confidence).toBe("number");
     expect(result.confidence).toBeGreaterThanOrEqual(0);
     expect(result.confidence).toBeLessThanOrEqual(1);
+  });
+});
+
+describe("normaliseIntent", () => {
+  test("resolves all INTENT_ALIASES to canonical intents", () => {
+    for (const [alias, canonical] of Object.entries(INTENT_ALIASES)) {
+      expect(normaliseIntent(alias)).toBe(canonical);
+    }
+  });
+
+  test("passthrough: unknown intent is returned unchanged", () => {
+    expect(normaliseIntent("coding")).toBe("coding");
+    expect(normaliseIntent("research")).toBe("research");
+    expect(normaliseIntent("security-audit")).toBe("security-audit");
+    expect(normaliseIntent("general")).toBe("general");
+  });
+
+  test("development → coding", () => {
+    expect(normaliseIntent("development")).toBe("coding");
+  });
+
+  test("implementation → coding", () => {
+    expect(normaliseIntent("implementation")).toBe("coding");
+  });
+
+  test("feature-implementation → coding", () => {
+    expect(normaliseIntent("feature-implementation")).toBe("coding");
   });
 });
 
