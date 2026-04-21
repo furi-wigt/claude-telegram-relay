@@ -26,6 +26,20 @@ export interface Contract {
   maxLoopIterations?: number;
   contextInjection?: string;
   output?: string;
+  /**
+   * When true, the dispatch for this contract runs inside a newly created
+   * Telegram forum topic in the CC group. Keeps long pipelines out of root chat.
+   */
+  isolate?: boolean;
+}
+
+/** Parse a "true"/"false"/"yes"/"no"/"1"/"0" string → boolean. Undefined for absent/unknown. */
+function parseBool(value: string | undefined): boolean | undefined {
+  if (value == null) return undefined;
+  const v = value.trim().toLowerCase();
+  if (v === "true" || v === "yes" || v === "1") return true;
+  if (v === "false" || v === "no" || v === "0") return false;
+  return undefined;
 }
 
 const CONTRACTS_DIR = join(homedir(), ".claude-relay", "contracts");
@@ -71,6 +85,7 @@ function parseContract(content: string, fileName: string): Contract {
     maxLoopIterations: rawMaxLoop ? parseInt(rawMaxLoop, 10) : undefined,
     contextInjection: frontmatter["context-injection"] ?? frontmatter["contextInjection"],
     output: frontmatter["output"],
+    isolate: parseBool(frontmatter["isolate"]),
   };
 }
 

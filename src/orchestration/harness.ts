@@ -69,6 +69,12 @@ export interface DispatchState {
    * Persisted so cwd survives service restart between suspend and resume.
    */
   cwd?: string;
+  /**
+   * Telegram forum topic ID created for an isolated dispatch (contract has
+   * `isolate: true`). Persisted so suspend/resume continues posting into the
+   * same topic even after service restart.
+   */
+  isolateTopicId?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -189,6 +195,7 @@ async function runHarnessInner(
       status: "in_progress",
       ...(plan.cwd ? { cwd: plan.cwd } : {}),
       ...(plan.attachmentPaths?.length ? { attachmentPaths: plan.attachmentPaths } : {}),
+      ...(plan.isolateTopicId != null ? { isolateTopicId: plan.isolateTopicId } : {}),
       loopCounts: {},
       maxLoopIterations: contract?.maxLoopIterations ?? DEFAULT_MAX_LOOP_ITERATIONS,
       createdAt: new Date().toISOString(),

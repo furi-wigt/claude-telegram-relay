@@ -25,6 +25,8 @@ import { resolveModelPrefix } from "../utils/modelPrefix.ts";
 import { InlineKeyboard } from "grammy";
 import { runHarness } from "./harness.ts";
 import { requestCancel, lookupByCcChat } from "./harnessRegistry.ts";
+import { loadContract } from "./contractLoader.ts";
+import { callRoutineModel } from "../routines/routineModel.ts";
 import type { ClassificationResult, DispatchPlan } from "./types.ts";
 import { trackAgentReply } from "./pendingAgentReplies.ts";
 import { isJobTopic, getJobTopic } from "../jobs/jobTopicRegistry.ts";
@@ -165,6 +167,12 @@ export async function orchestrateMessage(
     return;
   }
 
+  // Peek at the contract up front so we know whether this dispatch should be
+  // isolated into a dedicated forum topic. Safe fallback to false if the
+  // contract file is missing or parse fails.
+  const contract = await loadContract(classification.intent).catch(() => null);
+  const isolate = contract?.isolate === true;
+
   // Show plan with countdown
   const planMsg = await ctx.reply(
     `${planText}\n\n⏳ Auto-dispatching in ${COUNTDOWN_SECONDS}s...`,
@@ -184,6 +192,7 @@ export async function orchestrateMessage(
       attachmentPaths: attachmentContext.attachmentPaths,
     } : {}),
     cwd: getSession(chatId, threadId)?.cwd,
+    ...(isolate ? { isolate: true } : {}),
   };
 
   const outcome = await startCountdown(
@@ -237,6 +246,10 @@ export async function orchestrateMessage(
 
 /**
  * Update plan message to "dispatching" and hand off to the NLAH harness.
+ *
+ * If `plan.isolate === true`, creates a forum topic in the CC group and
+ * routes all step outputs into it (overrides `ccThreadId`). Topic creation
+ * failure is non-fatal — dispatch falls back to the original thread.
  */
 async function executeAndReport(
   bot: Bot,
@@ -248,6 +261,22 @@ async function executeAndReport(
 ): Promise<void> {
   const agentName = AGENTS[plan.classification.primaryAgent]?.name ?? plan.classification.primaryAgent;
 
+  // Topic isolation — opt-in per contract via `isolate: true`
+  let effectiveThreadId: number | null = ccThreadId;
+  if (plan.isolate === true) {
+    const topicName = await buildIsolatedTopicName(plan.classification.intent, plan.userMessage);
+    try {
+      const topic = await bot.api.createForumTopic(ccChatId, topicName);
+      effectiveThreadId = topic.message_thread_id;
+      plan.isolateTopicId = topic.message_thread_id;
+    } catch (err) {
+      console.warn(
+        `[commandCenter] createForumTopic failed (isolate=true) — falling back to root thread:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
   await bot.api.editMessageText(
     ccChatId,
     planMessageId,
@@ -255,7 +284,7 @@ async function executeAndReport(
     { reply_markup: buildCancelDispatchKeyboard(plan.dispatchId) },
   ).catch(() => {});
 
-  await runHarness(bot, plan, ccChatId, ccThreadId);
+  await runHarness(bot, plan, ccChatId, effectiveThreadId);
 
   await bot.api.editMessageText(
     ccChatId,
@@ -263,6 +292,43 @@ async function executeAndReport(
     `${planText}\n\n✅ Dispatch complete`,
     { reply_markup: { inline_keyboard: [] } },
   ).catch(() => {});
+}
+
+/**
+ * Generate a short forum-topic title for an isolated dispatch.
+ * Uses the routine model to summarise the user request in 4–6 words (Title Case,
+ * no punctuation). Falls back to a truncated raw message on any failure.
+ *
+ * Final format: `🛠 <summary>` — always starts with the tool emoji.
+ */
+export async function buildIsolatedTopicName(intent: string, userMessage: string): Promise<string> {
+  const MAX_TITLE_LEN = 60; // Telegram forum topic names ≤ 128 chars; keep it short
+  const fallback = `🛠 ${truncate(userMessage.replace(/\s+/g, " ").trim(), MAX_TITLE_LEN - 3)}`;
+
+  const prompt =
+    `Summarise this user request in 4-6 words. Title Case. No punctuation. No quotes. Output only the title, nothing else.\n\n` +
+    `Request: ${userMessage}`;
+
+  try {
+    const raw = await callRoutineModel(prompt, {
+      timeoutMs: 8000,
+      maxTokens: 20,
+      label: "isolate-topic-name",
+    });
+    const summary = raw
+      .replace(/^["'`]+|["'`]+$/g, "")
+      .replace(/[.!?,;:]+$/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!summary) return fallback;
+    return `🛠 ${truncate(summary, MAX_TITLE_LEN - 3)}`;
+  } catch (err) {
+    console.warn(
+      `[commandCenter] topic-name LLM failed (intent=${intent}) — using truncated fallback:`,
+      err instanceof Error ? err.message : err,
+    );
+    return fallback;
+  }
 }
 
 /**
