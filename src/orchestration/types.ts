@@ -80,6 +80,16 @@ export interface DispatchPlan {
    * Persisted in DispatchState so cwd survives suspend/resume restarts.
    */
   cwd?: string;
+  /**
+   * When true (set from Contract.isolate), the command center creates a dedicated
+   * forum topic in the CC group for this dispatch and routes all step outputs there.
+   */
+  isolate?: boolean;
+  /**
+   * ID of the forum topic created for this dispatch (if `isolate` is true and
+   * topic creation succeeded). Persisted in DispatchState for suspend/resume.
+   */
+  isolateTopicId?: number;
 }
 
 // ── Dispatch Events (emitted by engine) ─────────────────────────────────────
