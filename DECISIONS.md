@@ -1,5 +1,12 @@
 # Decision Journal
 
+## 2026-04-21 — Propagate CC session cwd to NLAH dispatch agents [pending]
+
+**Change**: Added `cwd?: string` to `DispatchPlan` and `DispatchState`. Command Center captures `session.cwd` at plan-creation time (all 3 construction sites: orchestrateMessage, picker callback, rerouteToAgent). `dispatchEngine` passes it as `cwdOverride` to the dispatch runner. The relay dispatch runner temporarily pins `session.cwd` on the target agent's session before `processTextMessage` (restored in `finally`) so `lockActiveCwd` picks up the CC cwd for that dispatch.
+**Why**: When a user sets `/cwd /my/worktree` in CC and dispatches to Engineering, Engineering runs in its own session cwd (or PROJECT_DIR), not the CC user's intended directory. The cwd context is lost at dispatch boundary. `DispatchState` stores it for suspend/resume durability — matching the same pattern as `attachmentPaths`.
+**Rejected**: Mutating the agent's session cwd permanently — would corrupt the agent's own config. Using `/schedule` as a CC session container (Points 2+3 from design discussion) — wrong abstraction; adds hidden coupling with no safe escape hatch. Changing `lockActiveCwd` to accept an override parameter — wider blast radius, touches non-dispatch paths.
+**Branch**: feat/dispatch-cwd-propagation
+
 ## 2026-04-21 — CC photo/album orchestration + attachment harness [79121df]
 
 **Change**: Photos sent to Command Center are intercepted before the generic photo handler; vision API describes them and the description is injected as `[Attachment context…]` into every harness step's task description. Album multi-photo messages are debounced (300ms) and combined into a single context string. `DispatchState` stores `attachmentPaths[]` so suspend/resume survives a service restart. `dangerouslySkipPermissions: true` is threaded through all CC dispatch paths.

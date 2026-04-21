@@ -133,6 +133,7 @@ After each step, the harness writes a state file:
   "dispatchId": "d-1713412800-abc",
   "userMessage": "Review this PR for security issues",
   "contractFile": "security-audit",
+  "cwd": "/Users/furi/my-project",
   "steps": [
     { "seq": 1, "agent": "security-compliance", "status": "done", "output": "...", "durationMs": 8200 },
     { "seq": 2, "agent": "engineering", "status": "done", "output": "...", "durationMs": 6100 }
@@ -142,6 +143,8 @@ After each step, the harness writes a state file:
   "updatedAt": "2026-04-18T06:02:30.000Z"
 }
 ```
+
+`cwd` is only present when the CC session had a working directory set via `/cwd`. When present, every dispatched agent step runs with that directory — the harness passes it as `cwdOverride` to the dispatch runner which temporarily pins it on the target agent's session.
 
 State files are audit-only — a write failure never blocks dispatch.
 

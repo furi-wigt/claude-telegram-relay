@@ -60,6 +60,11 @@ export interface DispatchState {
    * Persisted so clarify-resume survives a service restart between suspend and resume.
    */
   attachmentPaths?: string[];
+  /**
+   * Working directory captured from DispatchPlan at harness entry.
+   * Persisted so cwd survives service restart between suspend and resume.
+   */
+  cwd?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -133,7 +138,12 @@ async function runHarnessInner(
   let stepIdx: number;
 
   if (opts?.resumeFrom) {
-    // Resume — re-run the suspended step with the enriched prompt already in plan.userMessage
+    // Resume — re-run the suspended step with the enriched prompt already in plan.userMessage.
+    // Reconstitute plan.cwd from persisted state if the caller didn't supply it — ensures cwd
+    // survives a service restart between suspend and resume.
+    if (!plan.cwd && opts.resumeFrom.cwd) {
+      (plan as { cwd?: string }).cwd = opts.resumeFrom.cwd;
+    }
     state = { ...opts.resumeFrom, status: "in_progress", updatedAt: new Date().toISOString() };
     delete state.pendingQuestion;
     delete state.pendingAgent;
@@ -164,6 +174,7 @@ async function runHarnessInner(
       contractFile: contract?.name ?? null,
       steps,
       status: "in_progress",
+      ...(plan.cwd ? { cwd: plan.cwd } : {}),
       ...(plan.attachmentPaths?.length ? { attachmentPaths: plan.attachmentPaths } : {}),
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),

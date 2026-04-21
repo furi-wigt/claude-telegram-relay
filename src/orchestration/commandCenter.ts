@@ -29,6 +29,7 @@ import type { ClassificationResult, DispatchPlan } from "./types.ts";
 import { trackAgentReply } from "./pendingAgentReplies.ts";
 import { isJobTopic, getJobTopic } from "../jobs/jobTopicRegistry.ts";
 import { getBridgeJob, resumeJobWithAnswer } from "../jobs/jobBridge.ts";
+import { getSession } from "../session/groupSessions.ts";
 
 const COUNTDOWN_SECONDS = 5;
 
@@ -93,6 +94,7 @@ export async function rerouteToAgent(
       reasoning: `Follow-up reply routed to ${agent.name}`,
     },
     tasks: [{ seq: 1, agentId, topicHint: null, taskDescription: text }],
+    cwd: getSession(ccChatId, ccThreadId)?.cwd,
   };
 
   await ctx.reply(`↩️ Follow-up → <b>${agent.name}</b>`, { parse_mode: "HTML" }).catch(() => {});
@@ -181,6 +183,7 @@ export async function orchestrateMessage(
       imageContext: attachmentContext.imageContext,
       attachmentPaths: attachmentContext.attachmentPaths,
     } : {}),
+    cwd: getSession(chatId, threadId)?.cwd,
   };
 
   const outcome = await startCountdown(
@@ -348,6 +351,10 @@ export function registerOrchestrationCallbacks(bot: Bot): void {
       ).catch(() => {});
     }
 
+    const chatId = ctx.callbackQuery.message?.chat.id;
+    const threadId = ctx.callbackQuery.message?.message_thread_id ?? null;
+    if (!chatId) return;
+
     const plan: DispatchPlan = {
       dispatchId,
       userMessage,
@@ -364,11 +371,8 @@ export function registerOrchestrationCallbacks(bot: Bot): void {
         imageContext: pickerAttachment.imageContext,
         attachmentPaths: pickerAttachment.attachmentPaths,
       } : {}),
+      cwd: getSession(chatId, threadId)?.cwd,
     };
-
-    const chatId = ctx.callbackQuery.message?.chat.id;
-    const threadId = ctx.callbackQuery.message?.message_thread_id ?? null;
-    if (!chatId) return;
 
     await executePickerDispatch(bot, plan, chatId, threadId);
   });

@@ -74,6 +74,12 @@ export interface DispatchPlan {
    * Persisted in DispatchState so clarify-resume can re-inject them after restart.
    */
   attachmentPaths?: string[];
+  /**
+   * Working directory captured from the CC session at plan-creation time.
+   * Propagated to every dispatched agent step so they all operate in the same directory.
+   * Persisted in DispatchState so cwd survives suspend/resume restarts.
+   */
+  cwd?: string;
 }
 
 // ── Dispatch Events (emitted by engine) ─────────────────────────────────────

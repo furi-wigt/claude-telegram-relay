@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased] / 2026-04-21 — CC session cwd propagation to dispatched agents
+
+### Added
+- **`DispatchPlan.cwd`**: optional working directory captured from the CC session at plan-creation time. Populated in all 3 CC plan construction sites: `orchestrateMessage`, picker callback, `rerouteToAgent`.
+- **`DispatchState.cwd`**: persists `plan.cwd` to the harness state file so cwd survives suspend/resume service restarts.
+- **`DispatchRunnerOpts.cwdOverride`**: new field threaded from `dispatchEngine` → relay dispatch runner so the dispatched agent's Claude process runs with the CC user's cwd.
+
+### Changed
+- **`dispatchEngine.executeSingleDispatch`**: passes `plan.cwd` as `cwdOverride` alongside `dangerouslySkipPermissions: true`.
+- **Relay dispatch runner** (`relay.ts:setDispatchRunner`): if `opts.cwdOverride` is set, temporarily pins `session.cwd` on the target agent's session before `processTextMessage` (restored in `finally`). `lockActiveCwd` then applies the CC cwd to the fresh session.
+
 ## [Unreleased] / 2026-04-20 — Follow-up redirect handling + dispatch kill-switch
 
 ### Fixed
