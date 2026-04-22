@@ -3082,24 +3082,30 @@ async function processAlbum(acc: AlbumAccumulator): Promise<void> {
 //
 // The general handler below handles all non-CC groups unchanged.
 
-interface CcAlbumAccumulator {
+// G1: Unified accumulator — photos and documents sharing the same Telegram
+// media_group_id are buffered into a single entry and processed together so
+// a mixed album fires one orchestrateMessage with both imageContext and
+// documentContext. Keyed by media_group_id.
+interface CcAttachmentAccumulator {
   caption: string;
   chatId: number;
   threadId: number | null;
   ctx: Parameters<Parameters<typeof bot.on>[1]>[0];
-  fileIds: string[];
+  photoFileIds: string[];
+  docEntries: Array<{ fileId: string; fileName: string | undefined; mimeType: string | undefined; sizeBytes: number | undefined }>;
   timer: ReturnType<typeof setTimeout>;
 }
 
-const ccAlbumAccumulators = new Map<string, CcAlbumAccumulator>();
+const ccAttachmentAccumulators = new Map<string, CcAttachmentAccumulator>();
 
-async function processCcAlbum(acc: CcAlbumAccumulator): Promise<void> {
+async function processCcAttachmentAlbum(acc: CcAttachmentAccumulator): Promise<void> {
+  const { sanitizeDocFilename, uniquifyFilename, buildDocumentContext } = await import("./orchestration/ccDocuments.ts");
   const uuid = crypto.randomUUID();
   const attachDir = join(homedir(), ".claude-relay", "attachments", uuid);
   await mkdir(attachDir, { recursive: true });
 
-  // Download all images in parallel
-  const downloads = acc.fileIds.map(async (fileId, i) => {
+  // Photo downloads (parallel)
+  const photoDownloads = acc.photoFileIds.map(async (fileId, i) => {
     try {
       const file = await bot.api.getFile(fileId);
       if (!file.file_path) return null;
@@ -3109,39 +3115,98 @@ async function processCcAlbum(acc: CcAlbumAccumulator): Promise<void> {
       await writeFile(localPath, buf);
       return { buf, localPath };
     } catch (err) {
-      console.error("[cc-photo-album] Download failed for fileId", fileId, err);
+      console.error("[cc-attach-album] Photo download failed for fileId", fileId, err);
       return null;
     }
   });
 
-  const results = (await Promise.all(downloads)).filter((r): r is { buf: Buffer; localPath: string } => r !== null);
-  if (!results.length) {
-    await bot.api.sendMessage(acc.chatId, "⚠️ Could not download images. Please try again.", {
+  // Document downloads (parallel); names deduped within the album
+  const seenNames = new Set<string>();
+  const docDownloads = acc.docEntries.map(async (entry, i) => {
+    try {
+      const file = await bot.api.getFile(entry.fileId);
+      if (!file.file_path) return null;
+      const resp = await fetch(`https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`);
+      const buf = Buffer.from(await resp.arrayBuffer());
+      const safeBase = sanitizeDocFilename(entry.fileName, `file_${i}.bin`);
+      const uniqueName = uniquifyFilename(safeBase, seenNames);
+      seenNames.add(uniqueName);
+      const localPath = join(attachDir, uniqueName);
+      await writeFile(localPath, buf);
+      return { fileName: uniqueName, localPath, mimeType: entry.mimeType, sizeBytes: entry.sizeBytes };
+    } catch (err) {
+      console.error("[cc-attach-album] Doc download failed for fileId", entry.fileId, err);
+      return null;
+    }
+  });
+
+  const [photoResults, docResults] = await Promise.all([
+    Promise.all(photoDownloads).then((r) => r.filter((x): x is { buf: Buffer; localPath: string } => x !== null)),
+    Promise.all(docDownloads).then((r) => r.filter((x): x is { fileName: string; localPath: string; mimeType: string | undefined; sizeBytes: number | undefined } => x !== null)),
+  ]);
+
+  const photosExpected = acc.photoFileIds.length;
+  const docsExpected = acc.docEntries.length;
+  const photosMissing = photosExpected - photoResults.length;
+  const docsMissing = docsExpected - docResults.length;
+
+  if (!photoResults.length && !docResults.length) {
+    await bot.api.sendMessage(acc.chatId, "⚠️ Could not download any attachments. Please try again.", {
       message_thread_id: acc.threadId ?? undefined,
     }).catch(() => {});
     return;
   }
 
-  const buffers = results.map((r) => r.buf);
-  const attachmentPaths = results.map((r) => r.localPath);
-  const caption = acc.caption || "";
-
-  let imageContext: string | undefined;
-  try {
-    const analyses = await analyzeImages(buffers, caption);
-    imageContext = combineImageContexts(analyses);
-  } catch (err) {
-    console.error("[cc-photo-album] Vision analysis failed:", err);
+  // I1: surface partial failures instead of silently proceeding
+  if (photosMissing > 0 || docsMissing > 0) {
+    const parts: string[] = [];
+    if (photosMissing > 0) parts.push(`${photosMissing}/${photosExpected} photo(s)`);
+    if (docsMissing > 0) parts.push(`${docsMissing}/${docsExpected} document(s)`);
+    await bot.api.sendMessage(
+      acc.chatId,
+      `⚠️ Partial download — failed to fetch ${parts.join(" and ")}. Continuing with what was received.`,
+      { message_thread_id: acc.threadId ?? undefined },
+    ).catch(() => {});
   }
 
+  const caption = acc.caption || "";
+
+  // Vision analysis on successfully downloaded photos
+  let imageContext: string | undefined;
+  if (photoResults.length) {
+    try {
+      const analyses = await analyzeImages(photoResults.map((r) => r.buf), caption);
+      imageContext = combineImageContexts(analyses);
+    } catch (err) {
+      console.error("[cc-attach-album] Vision analysis failed:", err);
+    }
+  }
+
+  const documentContext = docResults.length ? buildDocumentContext(docResults) : undefined;
+  const attachmentPaths = [
+    ...photoResults.map((r) => r.localPath),
+    ...docResults.map((r) => r.localPath),
+  ];
+
+  const hasAttachmentCtx = imageContext || documentContext || attachmentPaths.length;
   await orchestrateMessage(
     bot,
     acc.ctx as Context,
     caption,
     acc.chatId,
     acc.threadId,
-    imageContext ? { imageContext, attachmentPaths } : undefined,
+    hasAttachmentCtx ? { imageContext, documentContext, attachmentPaths } : undefined,
   );
+}
+
+function scheduleCcAlbumTimer(mediaGroupId: string): void {
+  const acc = ccAttachmentAccumulators.get(mediaGroupId);
+  if (!acc) return;
+  clearTimeout(acc.timer);
+  acc.timer = setTimeout(async () => {
+    ccAttachmentAccumulators.delete(mediaGroupId);
+    await processCcAttachmentAlbum(acc);
+  }, MEDIA_GROUP_DEBOUNCE_MS);
 }
 
 bot.on("message:photo", async (ctx, next) => {
@@ -3156,26 +3221,22 @@ bot.on("message:photo", async (ctx, next) => {
 
   if (mediaGroupId) {
     // Album: two-phase pattern (collect file_ids first, download after debounce)
-    const existing = ccAlbumAccumulators.get(mediaGroupId);
+    const existing = ccAttachmentAccumulators.get(mediaGroupId);
     if (existing) {
-      clearTimeout(existing.timer);
-      existing.fileIds.push(photo.file_id);
+      existing.photoFileIds.push(photo.file_id);
       if (!existing.caption && ctx.message.caption) existing.caption = ctx.message.caption;
     } else {
-      ccAlbumAccumulators.set(mediaGroupId, {
+      ccAttachmentAccumulators.set(mediaGroupId, {
         caption: ctx.message.caption || "",
         chatId,
         threadId,
         ctx,
-        fileIds: [photo.file_id],
+        photoFileIds: [photo.file_id],
+        docEntries: [],
         timer: undefined as unknown as ReturnType<typeof setTimeout>,
       });
     }
-    const acc = ccAlbumAccumulators.get(mediaGroupId)!;
-    acc.timer = setTimeout(async () => {
-      ccAlbumAccumulators.delete(mediaGroupId);
-      await processCcAlbum(acc);
-    }, MEDIA_GROUP_DEBOUNCE_MS);
+    scheduleCcAlbumTimer(mediaGroupId);
     return;
   }
 
@@ -3462,67 +3523,6 @@ async function processDocumentAlbum(acc: DocAlbumAccumulator): Promise<void> {
 //   3. Build documentContext listing (no content extraction — lazy reads downstream)
 //   4. Call orchestrateMessage() with attachmentContext.documentContext + paths
 
-interface CcDocAlbumAccumulator {
-  caption: string;
-  chatId: number;
-  threadId: number | null;
-  ctx: Parameters<Parameters<typeof bot.on>[1]>[0];
-  entries: Array<{ fileId: string; fileName: string | undefined; mimeType: string | undefined; sizeBytes: number | undefined }>;
-  timer: ReturnType<typeof setTimeout>;
-}
-
-const ccDocAlbumAccumulators = new Map<string, CcDocAlbumAccumulator>();
-
-async function processCcDocAlbum(acc: CcDocAlbumAccumulator): Promise<void> {
-  const { sanitizeDocFilename, uniquifyFilename, buildDocumentContext } = await import("./orchestration/ccDocuments.ts");
-  const uuid = crypto.randomUUID();
-  const attachDir = join(homedir(), ".claude-relay", "attachments", uuid);
-  await mkdir(attachDir, { recursive: true });
-
-  const seenNames = new Set<string>();
-  const downloads = acc.entries.map(async (entry, i) => {
-    try {
-      const file = await bot.api.getFile(entry.fileId);
-      if (!file.file_path) return null;
-      const resp = await fetch(`https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`);
-      const buf = Buffer.from(await resp.arrayBuffer());
-      const safeBase = sanitizeDocFilename(entry.fileName, `file_${i}.bin`);
-      const uniqueName = uniquifyFilename(safeBase, seenNames);
-      seenNames.add(uniqueName);
-      const localPath = join(attachDir, uniqueName);
-      await writeFile(localPath, buf);
-      return { fileName: uniqueName, localPath, mimeType: entry.mimeType, sizeBytes: entry.sizeBytes };
-    } catch (err) {
-      console.error("[cc-doc-album] Download failed for fileId", entry.fileId, err);
-      return null;
-    }
-  });
-
-  const results = (await Promise.all(downloads)).filter(
-    (r): r is { fileName: string; localPath: string; mimeType: string | undefined; sizeBytes: number | undefined } => r !== null,
-  );
-
-  if (!results.length) {
-    await bot.api.sendMessage(acc.chatId, "⚠️ Could not download documents. Please try again.", {
-      message_thread_id: acc.threadId ?? undefined,
-    }).catch(() => {});
-    return;
-  }
-
-  const documentContext = buildDocumentContext(results);
-  const attachmentPaths = results.map((r) => r.localPath);
-  const caption = acc.caption || "";
-
-  await orchestrateMessage(
-    bot,
-    acc.ctx as Context,
-    caption,
-    acc.chatId,
-    acc.threadId,
-    documentContext ? { documentContext, attachmentPaths } : undefined,
-  );
-}
-
 bot.on("message:document", async (ctx, next) => {
   const chatId = ctx.chat?.id;
   const threadId = ctx.message?.message_thread_id ?? null;
@@ -3540,33 +3540,30 @@ bot.on("message:document", async (ctx, next) => {
   const mediaGroupId = ctx.message.media_group_id;
 
   if (mediaGroupId) {
-    // Album — two-phase: collect file_ids, debounce, download all when timer fires
+    // G1: unified accumulator — docs and photos sharing the same media_group_id
+    // fold into one dispatch with merged imageContext + documentContext.
     const entry = {
       fileId: doc.file_id,
       fileName: doc.file_name,
       mimeType: doc.mime_type,
       sizeBytes: doc.file_size,
     };
-    const existing = ccDocAlbumAccumulators.get(mediaGroupId);
+    const existing = ccAttachmentAccumulators.get(mediaGroupId);
     if (existing) {
-      clearTimeout(existing.timer);
-      existing.entries.push(entry);
+      existing.docEntries.push(entry);
       if (!existing.caption && rawCaption) existing.caption = rawCaption;
     } else {
-      ccDocAlbumAccumulators.set(mediaGroupId, {
+      ccAttachmentAccumulators.set(mediaGroupId, {
         caption: rawCaption,
         chatId,
         threadId,
         ctx,
-        entries: [entry],
+        photoFileIds: [],
+        docEntries: [entry],
         timer: undefined as unknown as ReturnType<typeof setTimeout>,
       });
     }
-    const acc = ccDocAlbumAccumulators.get(mediaGroupId)!;
-    acc.timer = setTimeout(async () => {
-      ccDocAlbumAccumulators.delete(mediaGroupId);
-      await processCcDocAlbum(acc);
-    }, DOCUMENT_GROUP_DEBOUNCE_MS);
+    scheduleCcAlbumTimer(mediaGroupId);
     return;
   }
 

@@ -1,5 +1,19 @@
 # Changelog
 
+## [Unreleased] / 2026-04-22 — CC attachment UX hardening (G1/G2/I1/I2/I3)
+
+### Added
+- **`src/orchestration/attachmentContinuity.ts`** (new): in-memory store keyed by `(chatId, agentId)` that remembers the last `AttachmentContext` (imageContext / documentContext / attachmentPaths) used for a dispatch. 30-min TTL, 200-entry capacity cap with oldest-expiry eviction. Exports `rememberAttachment`, `recallAttachment`, `forgetAttachment`. (**G2** fix — `rerouteToAgent` follow-ups used to lose attachments on turn 2.)
+- **`routines/handlers/attachment-gc.ts`** (new): daily (03:00) garbage-collector for `~/.claude-relay/attachments/{uuid}/` dirs older than `ATTACHMENT_GC_MAX_AGE_DAYS` (default 7 days). Silent when nothing is removed; posts a one-line notice to OPERATIONS when it reclaims space. Registered in `config/routines.config.json`. (**I2** fix — unbounded disk growth.)
+- **Dispatch-ID prefix** in `🎯 DISPATCH PLAN [d7f3a2c1]` header — `formatPlanMessage` now accepts `dispatchId` and renders the first 8 chars so concurrent plans in CC are distinguishable at a glance. (**I3** fix.)
+
+### Changed
+- **Unified CC album accumulator** in `src/relay.ts` — one `ccAttachmentAccumulators` map keyed by `media_group_id` replaces the separate `ccAlbumAccumulators` (photos) and `ccDocAlbumAccumulators` (docs) maps. A mixed photo+doc album now fires one `orchestrateMessage` call with merged `{imageContext, documentContext, attachmentPaths}` instead of splitting into two dispatches. (**G1** fix.)
+- **Partial-download warning** in `processCcAttachmentAlbum`: if any individual photo/doc download fails, a `⚠️ Partial download — failed to fetch N/M photo(s) and K/L document(s)` notice is sent before `orchestrateMessage` so the user knows context is incomplete. (**I1** fix.)
+- **`rerouteToAgent`** now calls `recallAttachment(ccChatId, agentId)` and re-injects the remembered `imageContext`/`documentContext`/`attachmentPaths` into the follow-up plan. Reply text gets a `(reusing attachments)` hint when context is restored.
+- **`runHarness`** (`src/orchestration/harness.ts`): after state construction, calls `rememberAttachment` once per unique agent in the dispatch so any of them can be re-routed to later with attachments intact.
+- **`/new` command** (`src/commands/botCommands.ts`): after `resetSession`, calls `forgetAttachment(chatId)` to clear all continuity entries for the chat so a fresh conversation does not resurrect stale attachment context.
+
 ## [Unreleased] / 2026-04-22 — CC document attachment propagation to dispatched agents
 
 ### Added
