@@ -147,6 +147,7 @@ After each step, the harness writes a state file:
   "userMessage": "Review this PR for security issues",
   "contractFile": "security-audit",
   "cwd": "/Users/furi/my-project",
+  "attachmentPaths": ["/Users/furi/.claude-relay/attachments/5f3a.../photo.jpg"],
   "steps": [
     { "seq": 1, "agent": "security-compliance", "status": "done", "output": "...", "durationMs": 8200 },
     { "seq": 2, "agent": "engineering", "status": "done", "output": "...", "durationMs": 6100 }
@@ -159,7 +160,27 @@ After each step, the harness writes a state file:
 
 `cwd` is only present when the CC session had a working directory set via `/cwd`. When present, every dispatched agent step runs with that directory — the harness passes it as `cwdOverride` to the dispatch runner which temporarily pins it on the target agent's session.
 
+`attachmentPaths?: string[]` is persisted when the triggering CC message had photos/documents, so attachment context survives suspend/resume service restarts.
+
 State files are audit-only — a write failure never blocks dispatch.
+
+---
+
+## Attachments
+
+Photos and documents sent to CC are debounced by `media_group_id` (single `ccAttachmentAccumulators` map in `src/relay.ts`) and merged into a unified dispatch with:
+
+- `imageContext` — vision-described photo summaries (prefixed first)
+- `documentContext` — filename → local-path listing for PDF/XLSX/CSV/... (prefixed second)
+- `attachmentPaths` — flat list of all local paths, persisted in `DispatchState`
+
+Mixed photo+doc albums produce **one** dispatch, not two. If a subset of downloads fails, the orchestrator posts a `⚠️ Partial download — failed to fetch N/M photo(s) and K/L document(s)` notice before dispatch proceeds.
+
+**Follow-up continuity** — `src/orchestration/attachmentContinuity.ts` stores the last `AttachmentContext` per `(chatId, agentId)` with a 30-min TTL and 200-entry cap. When the user reroutes (`[REDIRECT: …]` or reply-with-different-agent), the follow-up plan recalls and re-injects the attachments so the user never has to re-upload. `/new` calls `forgetAttachment(chatId)` to clear all entries for the chat.
+
+**Garbage collection** — a daily 03:00 `attachment-gc` routine (`routines/handlers/attachment-gc.ts`) removes `~/.claude-relay/attachments/{uuid}/` dirs older than `ATTACHMENT_GC_MAX_AGE_DAYS` (default 7).
+
+Plan headers carry the first 8 chars of `dispatchId` (e.g. `🎯 DISPATCH PLAN [a1b2c3d4]`) so concurrent dispatches in CC are distinguishable.
 
 ---
 
