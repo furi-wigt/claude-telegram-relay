@@ -45,10 +45,19 @@ const PICKER_CONFIDENCE_THRESHOLD = 0.8;
 const pendingPickerMessages = new Map<string, string>();
 
 /**
- * Stores attachment context (vision + file paths) for low-confidence picker dispatches
- * so it can be re-attached when the user selects an agent from the picker.
+ * Stores attachment context (vision + document listing + file paths) for
+ * low-confidence picker dispatches so it can be re-attached when the user
+ * selects an agent from the picker. Both `imageContext` and `documentContext`
+ * are optional so either modality (or both) can be present.
  */
-const pendingPickerAttachments = new Map<string, { imageContext: string; attachmentPaths: string[] }>();
+const pendingPickerAttachments = new Map<string, AttachmentContext>();
+
+/** Shared shape for photo and/or document context passed through CC. */
+export type AttachmentContext = {
+  imageContext?: string;
+  documentContext?: string;
+  attachmentPaths: string[];
+};
 
 /**
  * Stores plan + planText for dispatches that were paused mid-countdown.
@@ -111,8 +120,10 @@ export async function rerouteToAgent(
  * Main orchestration entry point.
  * Called from relay.ts when a text message arrives in the CC group.
  *
- * @param attachmentContext  Optional — vision description + local file paths for photo attachments.
- *   Analyzed once at CC entry and injected into every dispatch step via the plan.
+ * @param attachmentContext  Optional — vision description (photos), document listing (files),
+ *   and local file paths for any attachments. Built once at CC entry and injected into
+ *   every dispatch step via the plan. Either field (`imageContext`/`documentContext`) may
+ *   be present independently; `attachmentPaths` is the union of on-disk paths.
  */
 export async function orchestrateMessage(
   bot: Bot,
@@ -120,7 +131,7 @@ export async function orchestrateMessage(
   text: string,
   chatId: number,
   threadId: number | null,
-  attachmentContext?: { imageContext: string; attachmentPaths: string[] },
+  attachmentContext?: AttachmentContext,
 ): Promise<void> {
   const { label: modelLabel, text: classifyText } = resolveModelPrefix(text);
   let effectiveText = classifyText.trim() || text;
@@ -188,7 +199,8 @@ export async function orchestrateMessage(
     tasks: [{ seq: 1, agentId: classification.primaryAgent, topicHint: classification.topicHint, taskDescription: text }],
     planMessageId: planMsg.message_id,
     ...(attachmentContext ? {
-      imageContext: attachmentContext.imageContext,
+      ...(attachmentContext.imageContext ? { imageContext: attachmentContext.imageContext } : {}),
+      ...(attachmentContext.documentContext ? { documentContext: attachmentContext.documentContext } : {}),
       attachmentPaths: attachmentContext.attachmentPaths,
     } : {}),
     cwd: getSession(chatId, threadId)?.cwd,
@@ -434,7 +446,8 @@ export function registerOrchestrationCallbacks(bot: Bot): void {
       },
       tasks: [{ seq: 1, agentId, topicHint: null, taskDescription: userMessage }],
       ...(pickerAttachment ? {
-        imageContext: pickerAttachment.imageContext,
+        ...(pickerAttachment.imageContext ? { imageContext: pickerAttachment.imageContext } : {}),
+        ...(pickerAttachment.documentContext ? { documentContext: pickerAttachment.documentContext } : {}),
         attachmentPaths: pickerAttachment.attachmentPaths,
       } : {}),
       cwd: getSession(chatId, threadId)?.cwd,

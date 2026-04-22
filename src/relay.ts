@@ -3448,6 +3448,162 @@ async function processDocumentAlbum(acc: DocAlbumAccumulator): Promise<void> {
   }
 }
 
+// ── CC document handler — intercept BEFORE generic doc handler ─────────────────
+//
+// Mirrors the CC photo handler (above): documents sent to Command Center are
+// routed through the NLAH orchestration pipeline so dispatched agents see the
+// files too. Only bare attachments go down this path — `/doc ingest` captions
+// and active `await-content` ingest states fall through to the generic handler
+// (so RAG ingestion still works in CC).
+//
+// Flow (mirrors photos):
+//   1. Gate: isCommandCenter && NOT /doc ingest && NOT in await-content state
+//   2. Download file(s) → ~/.claude-relay/attachments/{uuid}/{safe_filename}
+//   3. Build documentContext listing (no content extraction — lazy reads downstream)
+//   4. Call orchestrateMessage() with attachmentContext.documentContext + paths
+
+interface CcDocAlbumAccumulator {
+  caption: string;
+  chatId: number;
+  threadId: number | null;
+  ctx: Parameters<Parameters<typeof bot.on>[1]>[0];
+  entries: Array<{ fileId: string; fileName: string | undefined; mimeType: string | undefined; sizeBytes: number | undefined }>;
+  timer: ReturnType<typeof setTimeout>;
+}
+
+const ccDocAlbumAccumulators = new Map<string, CcDocAlbumAccumulator>();
+
+async function processCcDocAlbum(acc: CcDocAlbumAccumulator): Promise<void> {
+  const { sanitizeDocFilename, uniquifyFilename, buildDocumentContext } = await import("./orchestration/ccDocuments.ts");
+  const uuid = crypto.randomUUID();
+  const attachDir = join(homedir(), ".claude-relay", "attachments", uuid);
+  await mkdir(attachDir, { recursive: true });
+
+  const seenNames = new Set<string>();
+  const downloads = acc.entries.map(async (entry, i) => {
+    try {
+      const file = await bot.api.getFile(entry.fileId);
+      if (!file.file_path) return null;
+      const resp = await fetch(`https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`);
+      const buf = Buffer.from(await resp.arrayBuffer());
+      const safeBase = sanitizeDocFilename(entry.fileName, `file_${i}.bin`);
+      const uniqueName = uniquifyFilename(safeBase, seenNames);
+      seenNames.add(uniqueName);
+      const localPath = join(attachDir, uniqueName);
+      await writeFile(localPath, buf);
+      return { fileName: uniqueName, localPath, mimeType: entry.mimeType, sizeBytes: entry.sizeBytes };
+    } catch (err) {
+      console.error("[cc-doc-album] Download failed for fileId", entry.fileId, err);
+      return null;
+    }
+  });
+
+  const results = (await Promise.all(downloads)).filter(
+    (r): r is { fileName: string; localPath: string; mimeType: string | undefined; sizeBytes: number | undefined } => r !== null,
+  );
+
+  if (!results.length) {
+    await bot.api.sendMessage(acc.chatId, "⚠️ Could not download documents. Please try again.", {
+      message_thread_id: acc.threadId ?? undefined,
+    }).catch(() => {});
+    return;
+  }
+
+  const documentContext = buildDocumentContext(results);
+  const attachmentPaths = results.map((r) => r.localPath);
+  const caption = acc.caption || "";
+
+  await orchestrateMessage(
+    bot,
+    acc.ctx as Context,
+    caption,
+    acc.chatId,
+    acc.threadId,
+    documentContext ? { documentContext, attachmentPaths } : undefined,
+  );
+}
+
+bot.on("message:document", async (ctx, next) => {
+  const chatId = ctx.chat?.id;
+  const threadId = ctx.message?.message_thread_id ?? null;
+  if (!chatId || !isCommandCenter(chatId)) return next();
+
+  // Respect RAG ingestion paths in CC — fall through to the generic handler
+  // if the caption is `/doc ingest` OR there is an active await-content state.
+  const rawCaption = (ctx.message.caption ?? "").trim();
+  if (/^\/doc\s+ingest(?:\s|$)/i.test(rawCaption)) return next();
+  const docKey = streamKey(chatId, threadId);
+  const ingestState = pendingIngestStates.get(docKey);
+  if (ingestState?.stage === "await-content") return next();
+
+  const doc = ctx.message.document;
+  const mediaGroupId = ctx.message.media_group_id;
+
+  if (mediaGroupId) {
+    // Album — two-phase: collect file_ids, debounce, download all when timer fires
+    const entry = {
+      fileId: doc.file_id,
+      fileName: doc.file_name,
+      mimeType: doc.mime_type,
+      sizeBytes: doc.file_size,
+    };
+    const existing = ccDocAlbumAccumulators.get(mediaGroupId);
+    if (existing) {
+      clearTimeout(existing.timer);
+      existing.entries.push(entry);
+      if (!existing.caption && rawCaption) existing.caption = rawCaption;
+    } else {
+      ccDocAlbumAccumulators.set(mediaGroupId, {
+        caption: rawCaption,
+        chatId,
+        threadId,
+        ctx,
+        entries: [entry],
+        timer: undefined as unknown as ReturnType<typeof setTimeout>,
+      });
+    }
+    const acc = ccDocAlbumAccumulators.get(mediaGroupId)!;
+    acc.timer = setTimeout(async () => {
+      ccDocAlbumAccumulators.delete(mediaGroupId);
+      await processCcDocAlbum(acc);
+    }, DOCUMENT_GROUP_DEBOUNCE_MS);
+    return;
+  }
+
+  // Single document — download immediately
+  const { sanitizeDocFilename, buildDocumentContext } = await import("./orchestration/ccDocuments.ts");
+  let localPath: string;
+  let safeName: string;
+  try {
+    const uuid = crypto.randomUUID();
+    const attachDir = join(homedir(), ".claude-relay", "attachments", uuid);
+    await mkdir(attachDir, { recursive: true });
+    const file = await ctx.api.getFile(doc.file_id);
+    const resp = await fetch(`https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`);
+    const buf = Buffer.from(await resp.arrayBuffer());
+    safeName = sanitizeDocFilename(doc.file_name, `file_${Date.now()}.bin`);
+    localPath = join(attachDir, safeName);
+    await writeFile(localPath, buf);
+  } catch (err) {
+    console.error("[cc-doc] Download failed:", err);
+    await ctx.reply("Could not download document. Please try again.").catch(() => {});
+    return;
+  }
+
+  const documentContext = buildDocumentContext([
+    { fileName: safeName, localPath, mimeType: doc.mime_type, sizeBytes: doc.file_size },
+  ]);
+
+  await orchestrateMessage(
+    bot,
+    ctx,
+    rawCaption,
+    chatId,
+    threadId,
+    documentContext ? { documentContext, attachmentPaths: [localPath] } : undefined,
+  );
+});
+
 bot.on("message:document", async (ctx) => {
   const doc = ctx.message.document;
   const chatId = ctx.chat?.id;

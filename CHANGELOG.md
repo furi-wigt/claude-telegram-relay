@@ -1,5 +1,18 @@
 # Changelog
 
+## [Unreleased] / 2026-04-22 — CC document attachment propagation to dispatched agents
+
+### Added
+- **`DispatchPlan.documentContext`**: optional listing of non-image attachments (filename, mime, size, local path) injected as a prefix into every harness step's taskDescription — parallel to the existing `imageContext` path. Lets dispatched agents (Cloud/Security/Engineering/etc.) see PDFs, XLSX, CSV, and other documents attached to the CC message and read them on demand with `dangerouslySkipPermissions: true`.
+- **`src/orchestration/ccDocuments.ts`** (new, pure helpers): `sanitizeDocFilename`, `uniquifyFilename`, `buildDocumentContext`. Sanitisation strips path traversal, Windows backslashes, NUL, shell meta-chars, leading dots; clamps to 120 chars while preserving extension.
+- **CC `message:document` handler** in `src/relay.ts`: intercepts documents sent to the Command Center chat *before* the generic handler. Falls through to the existing pipeline when caption is `/doc ingest` or an `await-content` ingest state is active, so RAG ingestion in CC still works. Single-file and album (multi-file) paths supported with the same 800 ms debounce window as photos.
+- **`AttachmentContext`** (exported) type in `src/orchestration/commandCenter.ts` unifies the photo/document attachment shape threaded through `orchestrateMessage`.
+
+### Changed
+- **`orchestrateMessage` signature**: `attachmentContext` param now accepts `{ imageContext?, documentContext?, attachmentPaths }` (both content fields optional). Existing callers keep working — they pass only `imageContext`.
+- **`pendingPickerAttachments`**: now holds `AttachmentContext` so picker-flow dispatches preserve document context across agent-selection callbacks (same parity as images).
+- **Harness step prefix**: task description now prepends `imageContext` first, then `documentContext` (stable order), so agents see both sources when an album includes both photos and docs.
+
 ## [Unreleased] / 2026-04-21 — CC session cwd propagation to dispatched agents
 
 ### Added
