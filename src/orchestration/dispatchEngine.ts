@@ -81,10 +81,10 @@ export async function executeSingleDispatch(
     }
   }
 
-  // Post "dispatched" status to CC
+  // Post "dispatched" status to CC — include step seq so multi-step contracts don't look like repeats
   await bot.api.sendMessage(
     ccChatId,
-    `📤 → ${agent.name}: "${truncate(plan.userMessage, 80)}"`,
+    `📤 [step ${task.seq}] → ${agent.name}: "${truncate(plan.userMessage, 80)}"`,
     { message_thread_id: ccThreadId ?? undefined }
   ).catch(() => {});
 
@@ -172,7 +172,7 @@ function persistDispatch(plan: DispatchPlan): void {
   const db = getDb();
   try {
     db.run(
-      `INSERT INTO dispatches (id, command_center_msg_id, user_message, intent, confidence, is_compound, status, plan_json)
+      `INSERT OR IGNORE INTO dispatches (id, command_center_msg_id, user_message, intent, confidence, is_compound, status, plan_json)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         plan.dispatchId,

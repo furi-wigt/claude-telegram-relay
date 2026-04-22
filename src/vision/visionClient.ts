@@ -1,14 +1,19 @@
 /**
  * Vision Client
  *
- * Analyzes images using an OpenAI-compatible local LLM (LM Studio) with
- * fallback to the Anthropic API. No OAuth, no keychain, no subprocess.
+ * Analyzes images via the Anthropic API (Sonnet) by default.
+ * Optionally routes to a local OpenAI-compatible LLM (LM Studio) first
+ * when VISION_BACKEND=local is set.
  *
- * Auth priority:
- *   1. Local LLM via LM Studio OpenAI-compat API (always tried first)
- *   2. Anthropic API key (ANTHROPIC_API_KEY env var) — fallback if local fails
+ * Auth priority (default):
+ *   1. Anthropic API key (ANTHROPIC_API_KEY env var)
  *
- * Config env vars (all optional — defaults work with stock LM Studio):
+ * Auth priority when VISION_BACKEND=local:
+ *   1. Local LLM via LM Studio OpenAI-compat API
+ *   2. Anthropic API key — fallback if local fails
+ *
+ * Config env vars (all optional):
+ *   VISION_BACKEND      "anthropic" (default) | "local" — set to "local" to try LM Studio first
  *   LOCAL_VISION_URL    Base URL for OpenAI-compat server  (default: http://localhost:1234)
  *   LOCAL_VISION_MODEL  Model identifier                   (default: gemma-4-e4b-it)
  */
@@ -259,14 +264,14 @@ export function combineImageContexts(results: ImageAnalysisResult[]): string {
 }
 
 /**
- * Analyze an image — tries local LLM first, falls back to Anthropic API.
+ * Analyze an image — uses Anthropic API (Sonnet) by default.
+ * Set VISION_BACKEND=local to try LM Studio first with Anthropic as fallback.
  *
- * Local LLM (LM Studio):
+ * Local LLM (LM Studio) — only when VISION_BACKEND=local:
  *   - No API key required; configured via LOCAL_VISION_URL + LOCAL_VISION_MODEL
  *   - Uses OpenAI-compatible /v1/chat/completions with base64 data URI
  *
- * Anthropic fallback:
- *   - Only attempted if local LLM fails
+ * Anthropic (default and fallback):
  *   - Requires ANTHROPIC_API_KEY in env
  *
  * @param imageBuffer  Raw image bytes downloaded from Telegram
@@ -302,32 +307,34 @@ export async function analyzeImage(
   const timer = setTimeout(() => controller.abort(), VISION_TIMEOUT_MS);
 
   try {
-    // ── 1. Try local LLM (LM Studio) ────────────────────────────────────────
-    try {
-      const text = await analyzeImageWithLocalLLM(
-        imageBuffer,
-        mediaType,
-        prompt,
-        controller.signal
-      );
-      trace({
-        event: "vision_complete",
-        backend: "local",
-        model: localVisionModel(),
-        durationMs: Date.now() - start,
-        responseLength: text.length,
-      });
-      return text;
-    } catch (localErr) {
-      trace({
-        event: "vision_local_failed",
-        error: localErr instanceof Error ? localErr.message : String(localErr),
-        durationMs: Date.now() - start,
-      });
-      // Fall through to Anthropic
+    // ── 1. Optional: Try local LLM (LM Studio) when VISION_BACKEND=local ────
+    if (process.env.VISION_BACKEND === "local") {
+      try {
+        const text = await analyzeImageWithLocalLLM(
+          imageBuffer,
+          mediaType,
+          prompt,
+          controller.signal
+        );
+        trace({
+          event: "vision_complete",
+          backend: "local",
+          model: localVisionModel(),
+          durationMs: Date.now() - start,
+          responseLength: text.length,
+        });
+        return text;
+      } catch (localErr) {
+        trace({
+          event: "vision_local_failed",
+          error: localErr instanceof Error ? localErr.message : String(localErr),
+          durationMs: Date.now() - start,
+        });
+        // Fall through to Anthropic
+      }
     }
 
-    // ── 2. Fallback: Anthropic API ───────────────────────────────────────────
+    // ── 2. Anthropic API (default) ───────────────────────────────────────────
     const text = await analyzeImageWithAnthropic(
       imageBuffer,
       mediaType,

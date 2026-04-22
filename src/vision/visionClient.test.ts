@@ -13,7 +13,7 @@
  * Run: bun test src/vision/visionClient.test.ts
  */
 
-import { describe, test, expect, mock, beforeEach } from "bun:test";
+import { describe, test, expect, mock, beforeEach, afterEach } from "bun:test";
 
 // Set API key so Anthropic fallback doesn't throw "key not set"
 process.env.ANTHROPIC_API_KEY = "test-key";
@@ -210,8 +210,13 @@ describe("analyzeImage (local LLM — LM Studio available)", () => {
     } as Response);
 
   beforeEach(() => {
+    process.env.VISION_BACKEND = "local";
     mockCreate.mockClear();
     mockFetch.mockClear();
+  });
+
+  afterEach(() => {
+    delete process.env.VISION_BACKEND;
   });
 
   test("returns local LLM response when fetch succeeds", async () => {
