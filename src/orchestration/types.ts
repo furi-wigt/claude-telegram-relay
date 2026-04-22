@@ -70,7 +70,14 @@ export interface DispatchPlan {
    */
   imageContext?: string;
   /**
-   * Local file paths of downloaded attachments.
+   * Lightweight listing of non-image attachments (PDF/XLSX/CSV/etc.) sent to CC:
+   * filename, mime, size, and on-disk path. Built once at CC entry (no content
+   * extraction — agents read files lazily via Read/extractPdf tools). Prefixed
+   * into every step's taskDescription so each agent sees the available files.
+   */
+  documentContext?: string;
+  /**
+   * Local file paths of downloaded attachments (photos AND documents).
    * Persisted in DispatchState so clarify-resume can re-inject them after restart.
    */
   attachmentPaths?: string[];

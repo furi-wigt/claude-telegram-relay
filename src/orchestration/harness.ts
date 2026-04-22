@@ -243,9 +243,16 @@ async function runHarnessInner(
       ? `[Attachment context — images analyzed at dispatch time:\n${plan.imageContext}]\n\n`
       : "";
 
+    // Prepend document context (filenames + local paths) so agents can read files on demand
+    const docCtxBlock = plan.documentContext
+      ? `[Attachment context — documents available at dispatch time:\n${plan.documentContext}]\n\n`
+      : "";
+
+    const attachmentsPrefix = `${imageCtxBlock}${docCtxBlock}`;
+
     const taskDescription = priorContext
-      ? `${imageCtxBlock}${priorContext}\n\n---\n\nUser request: ${plan.userMessage}`
-      : `${imageCtxBlock}${plan.userMessage}`;
+      ? `${attachmentsPrefix}${priorContext}\n\n---\n\nUser request: ${plan.userMessage}`
+      : `${attachmentsPrefix}${plan.userMessage}`;
 
     const stepPlan: DispatchPlan = {
       ...plan,
