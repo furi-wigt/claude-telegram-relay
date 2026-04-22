@@ -40,6 +40,7 @@ import { handleCwdCommand } from "./cwdCommand.ts";
 import { resolveSourceLabel } from "../utils/chatNames.ts";
 import { smartSplit } from "../utils/smartBoundary";
 import { indexCwdDocuments, getIndexStatus } from "../rag/filesystemIndex";
+import { forgetAttachment } from "../orchestration/attachmentContinuity.ts";
 
 const TELEGRAM_MAX_MESSAGE_LENGTH = 4096;
 
@@ -918,6 +919,11 @@ export function registerCommands(bot: Bot, options: CommandOptions): void {
       // Continue — session may not have existed yet (first use after restart).
       // The next Claude call will start a fresh session without --resume anyway.
     }
+
+    // G2: also forget any remembered attachment context for this chat so a
+    // fresh conversation does not resurrect stale imageContext/documentContext
+    // on the first follow-up reply.
+    forgetAttachment(chatId);
 
     try {
       if (prompt.startsWith("/")) {

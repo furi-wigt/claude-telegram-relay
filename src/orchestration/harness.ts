@@ -31,6 +31,7 @@ import {
   cancelled as isCancelled,
 } from "./harnessRegistry.ts";
 import { abortStreamsForDispatch, streamKey } from "../cancel.ts";
+import { rememberAttachment } from "./attachmentContinuity.ts";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -203,6 +204,22 @@ async function runHarnessInner(
     };
     stepIdx = 0;
     await persistState(state);
+  }
+
+  // Remember attachment context for every agent in this dispatch so a
+  // follow-up reply to any of them (via rerouteToAgent) can re-inject the
+  // same attachments within the 30-minute TTL.
+  if (plan.imageContext || plan.documentContext || plan.attachmentPaths?.length) {
+    const seenAgents = new Set<string>();
+    for (const s of state.steps) {
+      if (seenAgents.has(s.agent)) continue;
+      seenAgents.add(s.agent);
+      rememberAttachment(ccChatId, s.agent, {
+        imageContext: plan.imageContext,
+        documentContext: plan.documentContext,
+        attachmentPaths: plan.attachmentPaths ?? [],
+      });
+    }
   }
 
   // Loop guard — skip agents that already ran (handles resume case too)

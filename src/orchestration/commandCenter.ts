@@ -32,6 +32,7 @@ import { trackAgentReply } from "./pendingAgentReplies.ts";
 import { isJobTopic, getJobTopic } from "../jobs/jobTopicRegistry.ts";
 import { getBridgeJob, resumeJobWithAnswer } from "../jobs/jobBridge.ts";
 import { getSession } from "../session/groupSessions.ts";
+import { recallAttachment } from "./attachmentContinuity.ts";
 
 const COUNTDOWN_SECONDS = 5;
 
@@ -93,6 +94,11 @@ export async function rerouteToAgent(
     return;
   }
 
+  // G2: Recall the attachment context from the most recent dispatch to this
+  // agent. Without this, a follow-up reply like "any more concerns?" loses
+  // the original image/document context that the first dispatch carried.
+  const recalled = recallAttachment(ccChatId, agentId);
+
   const plan: DispatchPlan = {
     dispatchId: crypto.randomUUID(),
     userMessage: text,
@@ -106,9 +112,15 @@ export async function rerouteToAgent(
     },
     tasks: [{ seq: 1, agentId, topicHint: null, taskDescription: text }],
     cwd: getSession(ccChatId, ccThreadId)?.cwd,
+    imageContext: recalled?.imageContext,
+    documentContext: recalled?.documentContext,
+    attachmentPaths: recalled?.attachmentPaths,
   };
 
-  await ctx.reply(`↩️ Follow-up → <b>${agent.name}</b>`, { parse_mode: "HTML" }).catch(() => {});
+  const recalledNote = recalled
+    ? ` <i>(reusing attachments)</i>`
+    : "";
+  await ctx.reply(`↩️ Follow-up → <b>${agent.name}</b>${recalledNote}`, { parse_mode: "HTML" }).catch(() => {});
 
   // Delegate to runHarness — it handles [REDIRECT:] / [CLARIFY:] parsing,
   // postResult chunking, trackAgentReply, trackLastActiveAgent, and the
@@ -164,7 +176,7 @@ export async function orchestrateMessage(
   }
 
   const dispatchId = crypto.randomUUID();
-  const planText = formatPlanMessage(classification, agent, text, modelLabel);
+  const planText = formatPlanMessage(classification, agent, text, modelLabel, dispatchId);
 
   // Low confidence on a non-default agent → show inline picker
   if (classification.confidence < PICKER_CONFIDENCE_THRESHOLD && classification.primaryAgent !== DEFAULT_AGENT.id) {
@@ -561,11 +573,14 @@ function formatPlanMessage(
   agent: AgentConfig,
   userMessage: string,
   modelLabel?: string,
+  dispatchId?: string,
 ): string {
   const confidence = (classification.confidence * 100).toFixed(0);
   const modelLine = modelLabel && modelLabel !== "Sonnet" ? `Model: 🧠 ${modelLabel}` : null;
+  // I3: short dispatch-id prefix lets the user disambiguate concurrent plans.
+  const idTag = dispatchId ? ` [${dispatchId.slice(0, 8)}]` : "";
   return [
-    `🎯 DISPATCH PLAN`,
+    `🎯 DISPATCH PLAN${idTag}`,
     ``,
     `Query: "${truncate(userMessage, 100)}"`,
     ...(modelLine ? [modelLine] : []),
