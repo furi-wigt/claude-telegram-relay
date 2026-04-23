@@ -189,6 +189,28 @@ describe("buildConfirmationMessage", () => {
     // Shows 5 numbered items
     expect((msg.match(/[1-5]️⃣/g) ?? []).length).toBe(5);
   });
+
+  test("XML/HTML tags in prompt are escaped — no raw < or > in output", () => {
+    const prompt = "I have this error <log>claudeStream: exit 1 — No conversation found</log>";
+    const msg = buildConfirmationMessage(prompt, []);
+    expect(msg).not.toContain("<log>");
+    expect(msg).not.toContain("</log>");
+    expect(msg).toContain("&lt;log&gt;");
+    expect(msg).toContain("&lt;/log&gt;");
+  });
+
+  test("ampersands in prompt are escaped", () => {
+    const msg = buildConfirmationMessage("fix auth & session bugs", []);
+    expect(msg).not.toMatch(/[^&]&[^a-z#]/); // raw & not followed by entity char
+    expect(msg).toContain("&amp;");
+  });
+
+  test("XML tags in prompt escaped even with similar jobs present", () => {
+    const prompt = "analyse <error>OOM crash</error> in relay";
+    const msg = buildConfirmationMessage(prompt, [RUNNING_JOB]);
+    expect(msg).not.toContain("<error>");
+    expect(msg).toContain("&lt;error&gt;");
+  });
 });
 
 // ── Pending Schedule TTL Map ──────────────────────────────────────────────────
