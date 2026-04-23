@@ -1022,10 +1022,17 @@ async function callClaude(
     // Don't fall back to MLX for idle timeouts — stalled streams won't recover.
     const isIdleTimeout = error instanceof Error && error.message.includes("idle timeout");
 
-    // Stale session fingerprint: --resume was attempted, exit 1, empty stderr.
+    // Stale session fingerprint: --resume was attempted, exit 1, and either:
+    //   (a) empty stderr — cwd-missing or unknown hard exit, or
+    //   (b) "No conversation found with session ID" — Claude's local store evicted the session.
     // Throw StaleSessionError so the caller (processTextMessage) can rebuild the
     // prompt with full context injection before retrying without --resume.
-    if (options?.resume && error instanceof Error && /claudeStream: exit 1 —\s*$/.test(error.message)) {
+    if (
+      options?.resume &&
+      error instanceof Error &&
+      (/claudeStream: exit 1 —\s*$/.test(error.message) ||
+        error.message.includes("No conversation found with session ID"))
+    ) {
       throw new StaleSessionError();
     }
 

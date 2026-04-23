@@ -86,6 +86,11 @@ export function findSimilarJobs(
 
 // ── Message formatting ────────────────────────────────────────────────────────
 
+/** Escape user-supplied text for safe embedding in Telegram HTML messages. */
+function escapeHtml(text: string): string {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
 function formatElapsed(createdAt: string): string {
   const ms = Date.now() - new Date(createdAt).getTime();
   const mins = Math.floor(ms / 60_000);
@@ -123,6 +128,7 @@ function formatSimilarJobCard(job: Job, idx: number): string {
 export function buildConfirmationMessage(prompt: string, similar: Job[]): string {
   const lines: string[] = [];
 
+  const safePrompt = escapeHtml(prompt);
   if (similar.length > 0) {
     lines.push(`⚠️ <b>Similar jobs in pipeline (${similar.length}):</b>\n`);
     for (let i = 0; i < similar.length; i++) {
@@ -130,12 +136,12 @@ export function buildConfirmationMessage(prompt: string, similar: Job[]): string
     }
     lines.push("");
     lines.push("<b>Your new job:</b>");
-    lines.push(`"${prompt}"`);
+    lines.push(`"${safePrompt}"`);
     lines.push("");
     lines.push("Queue anyway?");
   } else {
     lines.push("📋 <b>New job:</b>");
-    lines.push(`"${prompt}"`);
+    lines.push(`"${safePrompt}"`);
     lines.push("");
     lines.push("Queue this job?");
   }
