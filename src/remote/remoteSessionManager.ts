@@ -118,8 +118,12 @@ export async function start(opts: {
 
   const sessionName = `jarvis-${Date.now()}`;
 
-  // Strip API key — claude --remote-control requires claude.ai OAuth
-  const env = { ...buildClaudeEnv(), ANTHROPIC_API_KEY: undefined };
+  // Strip API key — claude --remote-control requires claude.ai OAuth, not ANTHROPIC_API_KEY.
+  // Object spread with `undefined` does NOT remove the key in Node spawn env; filter explicitly.
+  const baseEnv = buildClaudeEnv();
+  const env = Object.fromEntries(
+    Object.entries(baseEnv).filter(([k]) => k !== "ANTHROPIC_API_KEY")
+  ) as Record<string, string>;
 
   const child = spawn(
     getClaudePath(),
@@ -132,21 +136,28 @@ export async function start(opts: {
       cwd: opts.dir,
       detached: true,
       stdio: ["ignore", "pipe", "pipe"],
-      env: env as Record<string, string>,
+      env,
     }
   );
+
+  // Collect stderr so we can include it in error messages
+  let stderrBuf = "";
+  child.stderr!.on("data", (chunk: Buffer) => {
+    stderrBuf += chunk.toString();
+    if (stderrBuf.length > 2000) stderrBuf = stderrBuf.slice(-2000); // cap at 2 KB
+  });
 
   let sessionUrl: string;
   try {
     sessionUrl = await new Promise<string>((resolve, reject) => {
       child.once("error", (err) => reject(err));
       child.once("exit", (code, signal) => {
-        if (code !== 0 || signal) {
-          reject(new Error(
-            `claude exited early (code=${code} signal=${signal}). ` +
-            `Is remote-control authenticated via claude.ai?`
-          ));
-        }
+        const hint = stderrBuf.trim()
+          ? `\nstderr: ${stderrBuf.trim().slice(0, 500)}`
+          : "\nHint: run `claude login` to authenticate via claude.ai OAuth.";
+        reject(new Error(
+          `claude exited early (code=${code} signal=${signal}).${hint}`
+        ));
       });
       waitForSessionUrl(child.stdout!, 15_000).then(resolve, reject);
     });
