@@ -176,7 +176,16 @@ export async function start(opts: {
 }
 
 export async function stop(): Promise<void> {
-  throw new Error("not yet implemented");
+  const stored = readStateFile();
+  if (!stored) return;
+  if (isAlive(stored.pid)) {
+    try {
+      process.kill(stored.pid, "SIGTERM");
+    } catch {
+      // already gone between check and kill
+    }
+  }
+  clearStateFile();
 }
 
 export function cleanup(): void {

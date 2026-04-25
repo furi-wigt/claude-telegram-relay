@@ -9,7 +9,7 @@ import { existsSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { Readable } from "stream";
-import { getStatus, writeStateFile, clearStateFile, waitForSessionUrl, start } from "./remoteSessionManager.ts";
+import { getStatus, writeStateFile, clearStateFile, waitForSessionUrl, start, stop } from "./remoteSessionManager.ts";
 
 let tmpDir: string;
 let stateFile: string;
@@ -101,6 +101,42 @@ describe("RemoteSessionManager.start() — guard", () => {
     expect((err as Error).message).not.toContain("already running");
     // State file should be cleared (stale was auto-cleaned, spawn failed before writing new state)
     expect(existsSync(stateFile)).toBe(false);
+  });
+});
+
+describe("RemoteSessionManager.stop()", () => {
+  test("resolves without error when no session exists", async () => {
+    await expect(stop()).resolves.toBeUndefined();
+  });
+
+  test("resolves and clears state file for stale PID session", async () => {
+    writeStateFile({
+      name: "jarvis-stale", pid: 99999999, dir: "/tmp",
+      startedAt: new Date().toISOString(), chatId: -1, threadId: null,
+    });
+    await stop();
+    expect(existsSync(stateFile)).toBe(false);
+  });
+
+  test("clears state when PID is live — spawns a real child to verify SIGTERM path", async () => {
+    // Spawn a long-lived child so we can safely send SIGTERM without killing the test runner.
+    const { spawn } = await import("child_process");
+    const child = spawn(process.execPath, ["-e", "setTimeout(()=>{},60000)"], {
+      detached: true,
+      stdio: "ignore",
+    });
+    child.unref();
+    const livePid = child.pid!;
+
+    writeStateFile({
+      name: "jarvis-live", pid: livePid, dir: "/tmp",
+      startedAt: new Date().toISOString(), chatId: -1, threadId: null,
+    });
+    await stop();
+    // State file must be cleared regardless of whether process is alive or dead.
+    expect(existsSync(stateFile)).toBe(false);
+    // Clean up in case SIGTERM didn't land (test isolation).
+    try { process.kill(livePid, "SIGKILL"); } catch { /* already gone */ }
   });
 });
 
