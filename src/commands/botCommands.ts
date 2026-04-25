@@ -36,7 +36,7 @@ import { searchDocumentsByTitles, type DocumentSearchResult } from "../rag/docum
 import { invalidateManifestCache } from "./tshoOtCommands.ts";
 import { listDocuments, deleteDocument, ingestText, resolveUniqueTitle } from "../documents/documentProcessor.ts";
 import { isTROQAActive } from "../tro/troQAState.ts";
-import { handleCwdCommand } from "./cwdCommand.ts";
+import { handleCwdCommand, setCwdLookup } from "./cwdCommand.ts";
 import { resolveSourceLabel } from "../utils/chatNames.ts";
 import { smartSplit } from "../utils/smartBoundary";
 import { indexCwdDocuments, getIndexStatus } from "../rag/filesystemIndex";
@@ -850,6 +850,12 @@ export async function handleDocCommand(
  */
 export function registerCommands(bot: Bot, options: CommandOptions): void {
   const { onMessage } = options;
+
+  // Wire cwd lookup so relay.ts rc handlers can read session cwd
+  setCwdLookup((chatId, threadId) => {
+    const session = getSession(chatId, threadId);
+    return session?.cwd;
+  });
 
   // /help - interactive keyboard-driven help menu
   bot.command("help", async (ctx) => {
