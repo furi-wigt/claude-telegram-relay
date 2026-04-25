@@ -247,6 +247,107 @@ interface RCState {
 }
 const rcStates = new Map<number, RCState>();
 
+// ── Remote Control helpers ────────────────────────────────────────────────────
+
+function expandTilde(dir: string): string {
+  return dir.startsWith("~/") ? dir.replace("~", homedir()) : dir;
+}
+
+async function sendPermissionPicker(chatId: number, threadId: number | null): Promise<void> {
+  await bot.api.sendMessage(
+    chatId,
+    "Select permission mode for the coding session:",
+    {
+      message_thread_id: threadId ?? undefined,
+      reply_markup: {
+        inline_keyboard: [[
+          { text: "📋 Plan", callback_data: "rc_mode:plan" },
+          { text: "✏️ Accept Edits", callback_data: "rc_mode:acceptEdits" },
+          { text: "🤖 Auto", callback_data: "rc_mode:auto" },
+        ]],
+      },
+    } as Parameters<typeof bot.api.sendMessage>[2]
+  );
+  // 30s timeout → default to plan
+  setTimeout(async () => {
+    const state = rcStates.get(chatId);
+    if (state?.step === "await_permission") {
+      console.log(`[rc] permission picker timed out for chatId=${chatId} — defaulting to plan`);
+      await launchRCSession(chatId, state.threadId, "plan", state.dir!, state.specPath);
+    }
+  }, 30_000);
+}
+
+async function handleRcDir(
+  chatId: number,
+  threadId: number | null,
+  rawDir: string,
+  specPath?: string
+): Promise<void> {
+  const dir = expandTilde(rawDir);
+  if (existsSync(dir)) {
+    rcStates.set(chatId, { specPath, dir, step: "await_permission", threadId });
+    await sendPermissionPicker(chatId, threadId);
+  } else {
+    rcStates.set(chatId, { specPath, proposedDir: dir, step: "await_create_confirm", threadId });
+    await bot.api.sendMessage(
+      chatId,
+      `📁 Path does not exist: \`${rawDir}\`\n\nWhat would you like to do?`,
+      {
+        message_thread_id: threadId ?? undefined,
+        parse_mode: "Markdown",
+        reply_markup: {
+          inline_keyboard: [[
+            { text: `📁 Create ${rawDir}`, callback_data: "rc_mkdir" },
+            { text: "✏️ Enter different path", callback_data: "rc_repath" },
+          ]],
+        },
+      } as Parameters<typeof bot.api.sendMessage>[2]
+    );
+  }
+}
+
+async function launchRCSession(
+  chatId: number,
+  threadId: number | null,
+  permissionMode: string,
+  dir: string,
+  specPath?: string
+): Promise<void> {
+  if (rcStartLocks.has(chatId)) return;
+  rcStartLocks.add(chatId);
+  rcStates.delete(chatId);
+
+  const sendMsg = (text: string) =>
+    bot.api.sendMessage(chatId, text, {
+      message_thread_id: threadId ?? undefined,
+      disable_web_page_preview: true,
+    } as Parameters<typeof bot.api.sendMessage>[2]);
+
+  try {
+    await sendMsg("⏳ Starting remote coding session…");
+
+    const { name, sessionUrl } = await startRC({
+      dir,
+      specPath,
+      permissionMode,
+      chatId,
+      threadId,
+    });
+
+    await sendMsg(`🖥️ Session *${name}* started\n→ ${sessionUrl}`);
+
+    if (specPath) {
+      await sendMsg(`📋 Spec: \`${specPath}\`\n\nRead this spec before starting work.`);
+    }
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await sendMsg(`❌ Failed to start remote session:\n${msg}`);
+  } finally {
+    rcStartLocks.delete(chatId);
+  }
+}
+
 // ============================================================
 // DOC INGEST STATE
 // Tracks /doc ingest flow state per chat (await-content, await-title, etc.)
@@ -1697,6 +1798,75 @@ bot.on("callback_query:data", async (ctx, next) => {
       pendingResumeContextTimestamps.delete(resumeCtxKey(chatId, threadId));
       // no-op — user wants a fresh start
     }
+  } else if (data === "rc_edit") {
+    // ── rc_edit: dismiss keyboard, no side effects ──────────────────────────
+    await ctx.answerCallbackQuery("Continue editing — reply when ready to save a new version.");
+    return;
+  } else if (data === "rc_start") {
+    // ── rc_start: begin session-start flow ───────────────────────────────────
+    await ctx.answerCallbackQuery();
+    const chatId = ctx.chat?.id;
+    if (!chatId) return;
+    const threadId = ctx.callbackQuery?.message?.message_thread_id ?? null;
+
+    if (rcStartLocks.has(chatId)) {
+      await ctx.reply("⏳ Already starting a session…", { message_thread_id: threadId ?? undefined } as Parameters<typeof bot.api.sendMessage>[2]);
+      return;
+    }
+
+    const spec = pendingSpecs.get(chatId);
+    const candidateDir = spec?.dir ?? getCwdForChat(chatId, threadId);
+
+    if (candidateDir) {
+      await handleRcDir(chatId, threadId, candidateDir, spec?.specPath);
+    } else {
+      rcStates.set(chatId, { specPath: spec?.specPath, step: "await_dir", threadId });
+      await bot.api.sendMessage(
+        chatId,
+        "📁 Reply with the project directory path for this coding session:",
+        { message_thread_id: threadId ?? undefined, reply_markup: { force_reply: true, selective: true } } as Parameters<typeof bot.api.sendMessage>[2]
+      );
+    }
+    return;
+  } else if (data === "rc_mkdir") {
+    // ── rc_mkdir: create the proposed directory ───────────────────────────────
+    await ctx.answerCallbackQuery();
+    const chatId = ctx.chat?.id;
+    if (!chatId) return;
+    const state = rcStates.get(chatId);
+    if (!state?.proposedDir) return;
+    try {
+      mkdirSync(state.proposedDir, { recursive: true });
+    } catch (err: unknown) {
+      await ctx.reply(`❌ Cannot create directory: ${(err as NodeJS.ErrnoException).message}. Try a different path.`);
+      return;
+    }
+    rcStates.set(chatId, { ...state, dir: state.proposedDir, step: "await_permission" });
+    await sendPermissionPicker(chatId, state.threadId);
+    return;
+  } else if (data === "rc_repath") {
+    // ── rc_repath: ask for a different path ──────────────────────────────────
+    await ctx.answerCallbackQuery();
+    const chatId = ctx.chat?.id;
+    if (!chatId) return;
+    const state = rcStates.get(chatId);
+    if (!state) return;
+    rcStates.set(chatId, { ...state, step: "await_dir" });
+    await ctx.reply("📁 Reply with the project directory path:", {
+      message_thread_id: state.threadId ?? undefined,
+      reply_markup: { force_reply: true, selective: true },
+    } as Parameters<typeof bot.api.sendMessage>[2]);
+    return;
+  } else if (data.startsWith("rc_mode:")) {
+    // ── rc_mode:<mode>: permission mode selected ──────────────────────────────
+    await ctx.answerCallbackQuery();
+    const chatId = ctx.chat?.id;
+    if (!chatId) return;
+    const mode = data.slice("rc_mode:".length);
+    const state = rcStates.get(chatId);
+    if (!state?.dir) return;
+    await launchRCSession(chatId, state.threadId, mode, state.dir, state.specPath);
+    return;
   } else {
     // Unrecognised prefix — let specific bot.callbackQuery() handlers take over
     return next();
@@ -2561,6 +2731,15 @@ bot.on("message:text", async (ctx) => {
 
   // Priority 2: Interactive Q&A free-text answer (when user is mid-plan session)
   if (await interactive.handleFreeText(ctx, text)) return;
+
+  // Priority 2.5: RC dir prompt reply
+  {
+    const rcState = rcStates.get(chatId);
+    if (rcState?.step === "await_dir" && !text.startsWith("/")) {
+      await handleRcDir(chatId, threadId, text.trim(), rcState.specPath);
+      return;
+    }
+  }
 
   // Priority 3: Inline tshoot capture (!finding / !discovery)
   if (await handleTshoOtCapture(ctx, text, chatId, threadId, (id) => getAgentForChat(id).id)) return;
