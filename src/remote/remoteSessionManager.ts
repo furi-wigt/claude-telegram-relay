@@ -128,7 +128,8 @@ export async function start(opts: {
   const child = spawn(
     getClaudePath(),
     [
-      "--remote-control",
+      "remote-control",
+      "--spawn", "session",
       "--permission-mode", opts.permissionMode,
       "--name", sessionName,
     ],
