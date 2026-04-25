@@ -9,7 +9,7 @@
 >
 > **For LLM agents writing or reviewing E2E/integration tests:** Read `CLAUDE.e2e.md` before writing any test that touches Telegram bot behavior.
 >
-> **Todos/specs location:** Save all plans and todos to `~/.claude-relay/todos/` and all specs to `~/.claude-relay/specs/`. Do NOT write to `.claude/todos/` or `.claude/specs/` — the Claude Code harness blocks writes to `.claude/**` in non-interactive (bot) sessions. This project uses `~/.claude-relay/todos/` as the single source of truth for all plans and task tracking.
+> **Todos/specs location (this project only):** When working inside the `claude-telegram-relay` repo, save plans/todos to `~/.claude-relay/todos/` and specs to `~/.claude-relay/specs/`. Do NOT write to `.claude/todos/` or `.claude/specs/` within this repo — the Claude Code harness blocks `.claude/**` writes in non-interactive (bot) sessions. This restriction applies **only when CWD is the relay project itself**. When working in any other target project directory (e.g. via `/code` remote session), use that project's own `.claude/todos/` and `.claude/specs/` paths normally.
 >
 > **Service restart confirmation (MANDATORY):** Before executing any command that restarts or reloads the `telegram-relay` service (e.g. `npx pm2 restart telegram-relay`, `npx pm2 reload telegram-relay`), you MUST ask the user for explicit confirmation via Telegram inline keyboard — two buttons: Confirm restart and Cancel. Do NOT restart without a confirmed Yes. This applies to Claude Code agents operating in this project.
 >
