@@ -86,7 +86,7 @@ import { USER_NAME, USER_TIMEZONE } from "./config/userConfig.ts";
 import { buildFooter, extractNextStep, type FooterData } from "./utils/footer.ts";
 import { getPm2LogsDir } from "../config/observability.ts";
 import { getCwdForChat } from "./commands/cwdCommand.ts";
-import { getStatus as getRCStatus, start as startRC, stop as stopRC } from "./remote/remoteSessionManager.ts";
+import { getStatus as getRCStatus, start as startRC, stop as stopRC, cleanup as rcCleanup } from "./remote/remoteSessionManager.ts";
 import { parseCodeCommand, buildStatusCard } from "./commands/codeCommand.ts";
 
 /**
@@ -4126,6 +4126,7 @@ if (_isEntry) {
     for (const [key, acc] of textBurstAccumulators) { clearTimeout(acc.timer); flushTextBurst(key); }
     await queueManager.shutdown(QUEUE_SHUTDOWN_GRACE);
     await jobSystem.stop();
+    rcCleanup(); // Clean up RemoteSessionManager state file (does NOT kill detached process)
     bot.stop();
     process.exit(0);
   });
@@ -4136,6 +4137,7 @@ if (_isEntry) {
     for (const [key, acc] of textBurstAccumulators) { clearTimeout(acc.timer); flushTextBurst(key); }
     await queueManager.shutdown(QUEUE_SHUTDOWN_GRACE);
     await jobSystem.stop();
+    rcCleanup(); // Clean up RemoteSessionManager state file (does NOT kill detached process)
     bot.stop();
     process.exit(0);
   });
