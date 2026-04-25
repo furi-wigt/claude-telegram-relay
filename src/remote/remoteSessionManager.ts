@@ -167,9 +167,11 @@ export async function start(opts: {
     throw err;
   }
 
-  // Detach — process survives relay restarts
-  child.stdout!.destroy();
-  child.stderr!.destroy();
+  // Detach — process survives relay restarts.
+  // resume() drains output to /dev/null without closing the pipe.
+  // destroy() would send SIGPIPE to the child the next time it writes, killing it.
+  child.stdout!.resume();
+  child.stderr!.resume();
   child.unref();
 
   writeStateFile({
