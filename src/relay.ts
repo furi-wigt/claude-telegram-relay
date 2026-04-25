@@ -9,7 +9,7 @@
 
 import { Bot, Context, InlineKeyboard } from "grammy";
 import { writeFile, mkdir, readFile, unlink, appendFile } from "fs/promises";
-import { readFileSync, existsSync } from "fs";
+import { readFileSync, existsSync, mkdirSync } from "fs";
 import { join, dirname, basename, extname } from "path";
 import { homedir } from "os";
 import { insertMessageRecord, deleteDocumentRecords } from "./local/storageBackend";
@@ -85,6 +85,9 @@ import { analyzeDiagnosticImages } from "./documents/diagnosticAnalyzer.ts";
 import { USER_NAME, USER_TIMEZONE } from "./config/userConfig.ts";
 import { buildFooter, extractNextStep, type FooterData } from "./utils/footer.ts";
 import { getPm2LogsDir } from "../config/observability.ts";
+import { getCwdForChat } from "./commands/cwdCommand.ts";
+import { getStatus as getRCStatus, start as startRC, stop as stopRC } from "./remote/remoteSessionManager.ts";
+import { parseCodeCommand, buildStatusCard } from "./commands/codeCommand.ts";
 
 /**
  * Build an enriched search query by prepending recent user messages for domain context.
@@ -228,6 +231,21 @@ function deletePendingKBSave(key: string): void {
   const t = pendingKBSaveTimers.get(key);
   if (t) { clearTimeout(t); pendingKBSaveTimers.delete(key); }
 }
+
+// ── Remote control state ──────────────────────────────────────────────────────
+interface PendingSpec { specPath: string; dir?: string; }
+const pendingSpecs = new Map<number, PendingSpec>();
+const rcStartLocks = new Set<number>(); // guard against double-tap race
+
+type RCStep = "await_dir" | "await_permission" | "await_create_confirm";
+interface RCState {
+  specPath?: string;
+  dir?: string;
+  proposedDir?: string;
+  step: RCStep;
+  threadId: number | null;
+}
+const rcStates = new Map<number, RCState>();
 
 // ============================================================
 // DOC INGEST STATE
@@ -2383,6 +2401,16 @@ async function processTextMessage(
     // The actual DB/Qdrant work runs in the background after sendResponse.
     const displayResponse = stripMemoryTags(rawWithoutNext);
 
+    // ── [SPEC_SAVED:] tag detection ───────────────────────────────────────────────
+    const SPEC_TAG_RE = /\[SPEC_SAVED:\s*path=([^\s,\]]+)(?:,\s*dir=([^\s\]]+))?\]/;
+    const specTagMatch = SPEC_TAG_RE.exec(rawWithoutNext);
+    if (specTagMatch) {
+      pendingSpecs.set(chatId, {
+        specPath: specTagMatch[1],
+        dir: specTagMatch[2] ?? undefined,
+      });
+    }
+
     // ── Detect resume failure ─────────────────────────────────────────
     // session.sessionId was updated in-memory by onSessionId callback above.
     const resumeFailed = !staleCorrected && didResumeFail(triedResume, prevSessionId, session.sessionId);
@@ -2427,6 +2455,29 @@ async function processTextMessage(
     setImmediate(async () => {
       try {
         await processMemoryIntents(rawWithoutNext, chatId, threadId);
+
+        // Send [🚀 Start Coding Session] keyboard if SPEC_SAVED tag was detected
+        if (specTagMatch) {
+          const specName = specTagMatch[1].split("/").pop() ?? specTagMatch[1];
+          try {
+            await bot.api.sendMessage(
+              chatId,
+              `✅ Spec saved: ${specName}`,
+              {
+                message_thread_id: threadId ?? undefined,
+                reply_markup: {
+                  inline_keyboard: [[
+                    { text: "🚀 Start Coding Session", callback_data: "rc_start" },
+                    { text: "📝 Edit Spec First", callback_data: "rc_edit" },
+                  ]],
+                },
+              } as Parameters<typeof bot.api.sendMessage>[2]
+            );
+          } catch (err) {
+            console.error("[SPEC_SAVED] failed to send keyboard:", err);
+          }
+        }
+
         await saveSession(session);
         await saveMessage("user", text, undefined, chatId, agent.id, threadId);
         await saveMessage("assistant", displayResponse, undefined, chatId, agent.id, threadId);
