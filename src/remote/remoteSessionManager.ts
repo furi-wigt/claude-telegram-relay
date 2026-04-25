@@ -1,5 +1,5 @@
 // src/remote/remoteSessionManager.ts
-import { existsSync, readFileSync, writeFileSync, renameSync, unlinkSync } from "fs";
+import { readFileSync, writeFileSync, renameSync, unlinkSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 
@@ -33,11 +33,12 @@ function isAlive(pid: number): boolean {
 
 function readStateFile(): RemoteSession | null {
   const path = getStateFilePath();
-  if (!existsSync(path)) return null;
   try {
     return JSON.parse(readFileSync(path, "utf8")) as RemoteSession;
-  } catch {
-    console.warn("[RemoteSessionManager] state file corrupt — ignoring");
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      console.warn("[RemoteSessionManager] state file corrupt — ignoring");
+    }
     return null;
   }
 }
