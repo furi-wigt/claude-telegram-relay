@@ -15,7 +15,7 @@
  * Config env vars (all optional):
  *   VISION_BACKEND      "anthropic" (default) | "local" — set to "local" to try LM Studio first
  *   LOCAL_VISION_URL    Base URL for OpenAI-compat server  (default: http://localhost:1234)
- *   LOCAL_VISION_MODEL  Model identifier                   (default: gemma-4-e4b-it)
+ *   LOCAL_VISION_MODEL  Model identifier                   (default: gemma-4-e4b-it-mlx)
  */
 
 import Anthropic from "@anthropic-ai/sdk";
@@ -42,7 +42,7 @@ const localVisionUrl = (): string =>
 
 /** Model identifier for LM Studio — override with LOCAL_VISION_MODEL. */
 const localVisionModel = (): string =>
-  process.env.LOCAL_VISION_MODEL ?? "gemma-4-e4b-it";
+  process.env.LOCAL_VISION_MODEL ?? "gemma-4-e4b-it-mlx";
 
 /**
  * Call a local OpenAI-compatible LLM (LM Studio) for vision analysis.

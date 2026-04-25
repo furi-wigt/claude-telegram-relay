@@ -49,6 +49,7 @@ import { isCommandCenter, orchestrateMessage, rerouteToAgent, lookupAgentReply, 
 // Router removed: always use Sonnet for simplicity and predictable latency
 import { loadSession as loadGroupSession, updateSessionIdGuarded, initSessions, loadAllSessions, saveSession, isResumeReliable, didResumeFail, lockActiveCwd, resetSession, renewSession, getSessionSince, getSession } from "./session/groupSessions.ts";
 import { buildAgentPrompt } from "./agents/promptBuilder.ts";
+import { getAgent } from "./agents/config.ts";
 import { GroupQueueManager } from "./queue/groupQueueManager.ts";
 import { registerCommands, registerContextSwitchCallbackHandler, registerRebootCallbackHandler } from "./commands/botCommands.ts";
 import { registerTshoOtCommands, handleTshoOtCapture } from "./commands/tshoOtCommands.ts";
@@ -237,7 +238,7 @@ interface PendingSpec { specPath: string; dir?: string; }
 const pendingSpecs = new Map<number, PendingSpec>();
 const rcStartLocks = new Set<number>(); // guard against double-tap race
 
-type RCStep = "await_dir" | "await_permission" | "await_create_confirm";
+type RCStep = "await_dir" | "await_spec_dir" | "await_permission" | "await_create_confirm";
 interface RCState {
   specPath?: string;
   dir?: string;
@@ -1683,6 +1684,85 @@ bot.command("code", async (ctx) => {
   }
 });
 
+// /spec — generate a feature spec via Engineering agent, then show session launcher
+const SPEC_TAG_RE_CMD = /\[SPEC_SAVED:\s*path=([^\s,\]]+)(?:,\s*dir=([^\s\]]+))?\]/;
+
+async function generateSpec(chatId: number, threadId: number | null, rawDir: string): Promise<void> {
+  const dir = expandTilde(rawDir);
+  const engineeringAgent = getAgent("engineering");
+  const timeStr = new Date().toLocaleString("en-SG", { timeZone: USER_TIMEZONE });
+  const prompt = buildAgentPrompt(engineeringAgent, `generate spec for ${dir}`, {
+    timeStr,
+    userName: USER_NAME,
+  });
+
+  const statusMsg = await bot.api.sendMessage(chatId, "⏳ Generating spec…", {
+    message_thread_id: threadId ?? undefined,
+  } as Parameters<typeof bot.api.sendMessage>[2]);
+
+  let specResponse: string;
+  try {
+    specResponse = await claudeText(prompt, { cwd: dir });
+  } catch (err) {
+    await bot.api.editMessageText(chatId, statusMsg.message_id,
+      `❌ Spec generation failed: ${err instanceof Error ? err.message : String(err)}`);
+    return;
+  }
+
+  const match = SPEC_TAG_RE_CMD.exec(specResponse);
+  if (!match) {
+    // Agent responded but didn't emit [SPEC_SAVED:] — show response as-is
+    await bot.api.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
+    await bot.api.sendMessage(chatId, specResponse.slice(0, 4000), {
+      message_thread_id: threadId ?? undefined,
+      parse_mode: "Markdown",
+    } as Parameters<typeof bot.api.sendMessage>[2]);
+    return;
+  }
+
+  const specPath = match[1];
+  const specDir = match[2] ?? dir;
+  pendingSpecs.set(chatId, { specPath, dir: specDir });
+
+  const displayResponse = specResponse.replace(SPEC_TAG_RE_CMD, "").trim();
+  await bot.api.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
+  if (displayResponse) {
+    await bot.api.sendMessage(chatId, displayResponse.slice(0, 4000), {
+      message_thread_id: threadId ?? undefined,
+      parse_mode: "Markdown",
+    } as Parameters<typeof bot.api.sendMessage>[2]);
+  }
+
+  const specName = specPath.split("/").pop() ?? specPath;
+  await bot.api.sendMessage(chatId, `✅ Spec saved: ${specName}`, {
+    message_thread_id: threadId ?? undefined,
+    reply_markup: {
+      inline_keyboard: [[
+        { text: "🚀 Start Coding Session", callback_data: "rc_start" },
+        { text: "📝 Edit Spec First", callback_data: "rc_edit" },
+      ]],
+    },
+  } as Parameters<typeof bot.api.sendMessage>[2]);
+}
+
+bot.command("spec", async (ctx) => {
+  const chatId = ctx.chat?.id;
+  if (!chatId) return;
+  const threadId = ctx.message?.message_thread_id ?? null;
+
+  const rawDir = (ctx.message?.text ?? "").replace(/^\/spec\S*\s*/, "").trim();
+  const candidateDir = rawDir || getCwdForChat(chatId, threadId);
+
+  if (candidateDir) {
+    await generateSpec(chatId, threadId, candidateDir);
+  } else {
+    rcStates.set(chatId, { step: "await_spec_dir", threadId });
+    await ctx.reply("📁 Reply with the project directory path for spec generation:", {
+      reply_markup: { force_reply: true, selective: true },
+    });
+  }
+});
+
 // Handle iq: and cancel: callback queries.
 bot.on("callback_query:data", async (ctx, next) => {
   if (process.env.E2E_DEBUG) console.log("[e2e:callback_query]", JSON.stringify({ callbackQuery: ctx.callbackQuery, chat: ctx.chat, from: ctx.from }));
@@ -2800,6 +2880,11 @@ bot.on("message:text", async (ctx) => {
     const rcState = rcStates.get(chatId);
     if (rcState?.step === "await_dir" && !text.startsWith("/")) {
       await handleRcDir(chatId, threadId, text.trim(), rcState.specPath);
+      return;
+    }
+    if (rcState?.step === "await_spec_dir" && !text.startsWith("/")) {
+      rcStates.delete(chatId);
+      await generateSpec(chatId, rcState.threadId, text.trim());
       return;
     }
   }
