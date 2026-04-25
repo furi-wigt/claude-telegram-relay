@@ -1631,6 +1631,58 @@ bot.command("cancel-dispatch", async (ctx) => {
   await handleCancelDispatchCommand(ctx, bot);
 });
 
+// /code — remote coding session management
+bot.command("code", async (ctx) => {
+  const chatId = ctx.chat?.id;
+  if (!chatId) return;
+  const threadId = ctx.message?.message_thread_id ?? null;
+
+  const { subcommand, dir } = parseCodeCommand(ctx.message?.text ?? "/code");
+
+  if (subcommand === "status") {
+    const session = getRCStatus();
+    const card = buildStatusCard(session);
+    const keyboard = session
+      ? {
+          inline_keyboard: [[
+            ...(session.sessionUrl
+              ? [{ text: "🔗 Open Session", url: session.sessionUrl }]
+              : []),
+            { text: "⛔ Stop Session", callback_data: "rc_stop" },
+          ]],
+        }
+      : undefined;
+    await ctx.reply(card, { reply_markup: keyboard });
+    return;
+  }
+
+  if (subcommand === "stop") {
+    const existing = getRCStatus();
+    if (!existing) {
+      await ctx.reply("No active session to stop.");
+      return;
+    }
+    await stopRC();
+    await ctx.reply(`⛔ Session ${existing.name} stopped.`);
+    return;
+  }
+
+  // subcommand === "start"
+  const candidateDir = dir ?? getCwdForChat(chatId, threadId);
+  if (candidateDir) {
+    await handleRcDir(chatId, threadId, candidateDir, pendingSpecs.get(chatId)?.specPath);
+  } else {
+    rcStates.set(chatId, {
+      step: "await_dir",
+      threadId,
+      specPath: pendingSpecs.get(chatId)?.specPath,
+    });
+    await ctx.reply("📁 Reply with the project directory path:", {
+      reply_markup: { force_reply: true, selective: true },
+    });
+  }
+});
+
 // Handle iq: and cancel: callback queries.
 bot.on("callback_query:data", async (ctx, next) => {
   if (process.env.E2E_DEBUG) console.log("[e2e:callback_query]", JSON.stringify({ callbackQuery: ctx.callbackQuery, chat: ctx.chat, from: ctx.from }));
@@ -1798,6 +1850,17 @@ bot.on("callback_query:data", async (ctx, next) => {
       pendingResumeContextTimestamps.delete(resumeCtxKey(chatId, threadId));
       // no-op — user wants a fresh start
     }
+  } else if (data === "rc_stop") {
+    // ── rc_stop: stop active session from status card ─────────────────────────────
+    await ctx.answerCallbackQuery();
+    const existing = getRCStatus();
+    if (!existing) {
+      await ctx.reply("No active session.");
+      return;
+    }
+    await stopRC();
+    await ctx.reply(`⛔ Session ${existing.name} stopped.`);
+    return;
   } else if (data === "rc_edit") {
     // ── rc_edit: dismiss keyboard, no side effects ──────────────────────────
     await ctx.answerCallbackQuery("Continue editing — reply when ready to save a new version.");
@@ -4195,6 +4258,16 @@ if (_isEntry) {
     }
   }, 60_000).unref();
 
+
+  // Probe remote session state on startup — auto-cleans stale PIDs
+  {
+    const existingSession = getRCStatus();
+    if (existingSession) {
+      console.log(`[remote] Active session on startup: ${existingSession.name} (PID ${existingSession.pid})`);
+    } else {
+      console.log("[remote] No active remote session on startup.");
+    }
+  }
 
   // Start bot without await so launchd doesn't time out
   bot.start({
