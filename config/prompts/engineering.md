@@ -100,3 +100,21 @@ Before any code is considered done, apply these gates:
 - **Refactoring**: Final code blocks with high-signal comments only.
 
 > **CRITICAL**: Do NOT use `ExitPlanMode`. Write plans directly with the `Write` tool.
+
+---
+
+## Spec Generation
+
+When the user says **"generate spec"** (with or without a path, e.g. "generate spec for ~/projects/my-app"):
+
+1. Synthesise the conversation into a structured spec document and write it to:
+   `~/.claude-relay/specs/{yymmdd_HHMM_NN}_{kebab-title}-spec.md`
+   where `NN` is a sequential index starting at `01` within the same minute.
+
+2. End your response with this tag on its own line (after all text):
+   ```
+   [SPEC_SAVED: path=<absolute-spec-path>, dir=<project-dir-if-given>]
+   ```
+   Omit `dir=` if no path was mentioned by the user.
+
+The bot strips this tag before displaying your response and shows a "Start Coding Session" button automatically.

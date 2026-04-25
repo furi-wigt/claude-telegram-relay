@@ -150,6 +150,8 @@ All user data lives outside the project directory in `~/.claude-relay/`:
 | **Contract Loader** | `src/orchestration/contractLoader.ts` | Load `~/.claude-relay/contracts/<intent>.md`, parse steps |
 | **NLAH Harness** | `src/orchestration/harness.ts` | Execute contract steps sequentially; write state JSON; post to CC thread. `DispatchState` carries `attachmentPaths?` so attachment context survives suspend/resume. Prefixes `imageContext` then `documentContext` (stable order) into every step's task description |
 | **Dispatch Engine** | `src/orchestration/dispatchEngine.ts` | Send task prompt to agent group, stream and collect response |
+| **Remote Session Manager** | `src/remote/remoteSessionManager.ts` | Detached `claude --remote-control` lifecycle: start (guard + spawn + URL parse), stop (SIGTERM), status (PID probe), cleanup. State persisted atomically to `~/.claude-relay/remote-sessions.json` |
+| **Code Command** | `src/commands/codeCommand.ts` | Pure `/code` handler: `parseCodeCommand` (subcommand + path parse), `buildStatusCard` (status message formatter) |
 
 ### Session Lifecycle
 
@@ -592,6 +594,10 @@ Summarise what was set up and what is running. Remind the user:
 | `/cancel` | Cancel in-progress Claude response. In Command Center with a harness in flight, cancels the dispatch instead. |
 | `/cancel-dispatch` | Command Center only — kill the in-flight NLAH dispatch (also available as ❌ button on the status message) |
 | `/cwd [path]` | Set or show working directory for coding sessions |
+| `/code` | Start a remote coding session (prompts for dir + permission mode via inline keyboard) |
+| `/code [path]` | Start session with explicit project path |
+| `/code stop` | Stop the active remote session (sends SIGTERM to the detached process) |
+| `/code status` | Show active session info, session URL, and Stop button |
 | `/memory` | Browse your memory (goals, facts, prefs, dates) |
 | `/remember [text]` | Save something to memory |
 | `/forget [text]` | Remove something from memory |
@@ -628,6 +634,8 @@ Summarise what was set up and what is running. Remind the user:
 | Wrong group / agent not responding | Group not registered | Check `GROUP_*_CHAT_ID` or re-run `bun run test:groups` |
 | Session resume fails every time | Stale session file | `/new` to reset, or delete `~/.claude-relay/sessions/{chatId}*.json` |
 | Routine messages not arriving | routine-scheduler down | `npx pm2 logs routine-scheduler --lines 50` |
+| `/code start` hangs on "⏳ Starting…" | claude not authenticated for remote-control | Run `claude auth` and ensure claude.ai OAuth is active; `ANTHROPIC_API_KEY` is stripped intentionally for remote-control |
+| Remote session survives relay restart unexpectedly | Correct — detached by design | Use `/code stop` to terminate; state in `~/.claude-relay/remote-sessions.json` |
 
 For deeper diagnostics, see [docs/observability.md](docs/observability.md).
 

@@ -85,3 +85,26 @@ describe("/cwd command — set path", () => {
     expect(reply).toContain("/new");
   });
 });
+
+import { getCwdForChat, setCwdLookup } from "./cwdCommand.ts";
+
+describe("getCwdForChat()", () => {
+  test("returns undefined when no resolver installed", () => {
+    setCwdLookup(undefined);
+    expect(getCwdForChat(100, null)).toBeUndefined();
+  });
+
+  test("returns cwd from installed resolver", () => {
+    setCwdLookup((chatId, _threadId) => chatId === 42 ? "/projects/foo" : undefined);
+    expect(getCwdForChat(42, null)).toBe("/projects/foo");
+    expect(getCwdForChat(99, null)).toBeUndefined();
+    // Clean up
+    setCwdLookup(undefined);
+  });
+
+  test("returns undefined when resolver returns undefined", () => {
+    setCwdLookup(() => undefined);
+    expect(getCwdForChat(1, null)).toBeUndefined();
+    setCwdLookup(undefined);
+  });
+});

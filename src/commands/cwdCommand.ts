@@ -74,3 +74,19 @@ export async function handleCwdCommand(
   );
   return { ok: true, newCwd: arg };
 }
+
+// ── CWD lookup hook (injected by botCommands.ts at startup) ──────────────────
+
+type CwdLookupFn = (chatId: number, threadId: number | null) => string | undefined;
+
+let _cwdLookup: CwdLookupFn | undefined;
+
+/** Inject the session-based cwd resolver at startup (called from botCommands.ts). */
+export function setCwdLookup(fn: CwdLookupFn | undefined): void {
+  _cwdLookup = fn;
+}
+
+/** Return the configured cwd for this chat/thread, or undefined. */
+export function getCwdForChat(chatId: number, threadId: number | null): string | undefined {
+  return _cwdLookup?.(chatId, threadId);
+}

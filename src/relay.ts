@@ -9,7 +9,7 @@
 
 import { Bot, Context, InlineKeyboard } from "grammy";
 import { writeFile, mkdir, readFile, unlink, appendFile } from "fs/promises";
-import { readFileSync, existsSync } from "fs";
+import { readFileSync, existsSync, mkdirSync } from "fs";
 import { join, dirname, basename, extname } from "path";
 import { homedir } from "os";
 import { insertMessageRecord, deleteDocumentRecords } from "./local/storageBackend";
@@ -85,6 +85,9 @@ import { analyzeDiagnosticImages } from "./documents/diagnosticAnalyzer.ts";
 import { USER_NAME, USER_TIMEZONE } from "./config/userConfig.ts";
 import { buildFooter, extractNextStep, type FooterData } from "./utils/footer.ts";
 import { getPm2LogsDir } from "../config/observability.ts";
+import { getCwdForChat } from "./commands/cwdCommand.ts";
+import { getStatus as getRCStatus, start as startRC, stop as stopRC, cleanup as rcCleanup } from "./remote/remoteSessionManager.ts";
+import { parseCodeCommand, buildStatusCard } from "./commands/codeCommand.ts";
 
 /**
  * Build an enriched search query by prepending recent user messages for domain context.
@@ -227,6 +230,122 @@ function deletePendingKBSave(key: string): void {
   pendingKBSaves.delete(key);
   const t = pendingKBSaveTimers.get(key);
   if (t) { clearTimeout(t); pendingKBSaveTimers.delete(key); }
+}
+
+// ── Remote control state ──────────────────────────────────────────────────────
+interface PendingSpec { specPath: string; dir?: string; }
+const pendingSpecs = new Map<number, PendingSpec>();
+const rcStartLocks = new Set<number>(); // guard against double-tap race
+
+type RCStep = "await_dir" | "await_permission" | "await_create_confirm";
+interface RCState {
+  specPath?: string;
+  dir?: string;
+  proposedDir?: string;
+  step: RCStep;
+  threadId: number | null;
+}
+const rcStates = new Map<number, RCState>();
+
+// ── Remote Control helpers ────────────────────────────────────────────────────
+
+function expandTilde(dir: string): string {
+  return dir.startsWith("~/") ? dir.replace("~", homedir()) : dir;
+}
+
+async function sendPermissionPicker(chatId: number, threadId: number | null): Promise<void> {
+  await bot.api.sendMessage(
+    chatId,
+    "Select permission mode for the coding session:",
+    {
+      message_thread_id: threadId ?? undefined,
+      reply_markup: {
+        inline_keyboard: [[
+          { text: "📋 Plan", callback_data: "rc_mode:plan" },
+          { text: "✏️ Accept Edits", callback_data: "rc_mode:acceptEdits" },
+          { text: "🤖 Auto", callback_data: "rc_mode:auto" },
+        ]],
+      },
+    } as Parameters<typeof bot.api.sendMessage>[2]
+  );
+  // 30s timeout → default to plan
+  setTimeout(async () => {
+    const state = rcStates.get(chatId);
+    if (state?.step === "await_permission") {
+      console.log(`[rc] permission picker timed out for chatId=${chatId} — defaulting to plan`);
+      await launchRCSession(chatId, state.threadId, "plan", state.dir!, state.specPath);
+    }
+  }, 30_000);
+}
+
+async function handleRcDir(
+  chatId: number,
+  threadId: number | null,
+  rawDir: string,
+  specPath?: string
+): Promise<void> {
+  const dir = expandTilde(rawDir);
+  if (existsSync(dir)) {
+    rcStates.set(chatId, { specPath, dir, step: "await_permission", threadId });
+    await sendPermissionPicker(chatId, threadId);
+  } else {
+    rcStates.set(chatId, { specPath, proposedDir: dir, step: "await_create_confirm", threadId });
+    await bot.api.sendMessage(
+      chatId,
+      `📁 Path does not exist: \`${rawDir}\`\n\nWhat would you like to do?`,
+      {
+        message_thread_id: threadId ?? undefined,
+        parse_mode: "Markdown",
+        reply_markup: {
+          inline_keyboard: [[
+            { text: `📁 Create ${rawDir}`, callback_data: "rc_mkdir" },
+            { text: "✏️ Enter different path", callback_data: "rc_repath" },
+          ]],
+        },
+      } as Parameters<typeof bot.api.sendMessage>[2]
+    );
+  }
+}
+
+async function launchRCSession(
+  chatId: number,
+  threadId: number | null,
+  permissionMode: string,
+  dir: string,
+  specPath?: string
+): Promise<void> {
+  if (rcStartLocks.has(chatId)) return;
+  rcStartLocks.add(chatId);
+  rcStates.delete(chatId);
+
+  const sendMsg = (text: string) =>
+    bot.api.sendMessage(chatId, text, {
+      message_thread_id: threadId ?? undefined,
+      disable_web_page_preview: true,
+    } as Parameters<typeof bot.api.sendMessage>[2]);
+
+  try {
+    await sendMsg("⏳ Starting remote coding session…");
+
+    const { name, sessionUrl } = await startRC({
+      dir,
+      specPath,
+      permissionMode,
+      chatId,
+      threadId,
+    });
+
+    await sendMsg(`🖥️ Session *${name}* started\n→ ${sessionUrl}`);
+
+    if (specPath) {
+      await sendMsg(`📋 Spec: \`${specPath}\`\n\nRead this spec before starting work.`);
+    }
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await sendMsg(`❌ Failed to start remote session:\n${msg}`);
+  } finally {
+    rcStartLocks.delete(chatId);
+  }
 }
 
 // ============================================================
@@ -1512,6 +1631,58 @@ bot.command("cancel-dispatch", async (ctx) => {
   await handleCancelDispatchCommand(ctx, bot);
 });
 
+// /code — remote coding session management
+bot.command("code", async (ctx) => {
+  const chatId = ctx.chat?.id;
+  if (!chatId) return;
+  const threadId = ctx.message?.message_thread_id ?? null;
+
+  const { subcommand, dir } = parseCodeCommand(ctx.message?.text ?? "/code");
+
+  if (subcommand === "status") {
+    const session = getRCStatus();
+    const card = buildStatusCard(session);
+    const keyboard = session
+      ? {
+          inline_keyboard: [[
+            ...(session.sessionUrl
+              ? [{ text: "🔗 Open Session", url: session.sessionUrl }]
+              : []),
+            { text: "⛔ Stop Session", callback_data: "rc_stop" },
+          ]],
+        }
+      : undefined;
+    await ctx.reply(card, { reply_markup: keyboard });
+    return;
+  }
+
+  if (subcommand === "stop") {
+    const existing = getRCStatus();
+    if (!existing) {
+      await ctx.reply("No active session to stop.");
+      return;
+    }
+    await stopRC();
+    await ctx.reply(`⛔ Session ${existing.name} stopped.`);
+    return;
+  }
+
+  // subcommand === "start"
+  const candidateDir = dir ?? getCwdForChat(chatId, threadId);
+  if (candidateDir) {
+    await handleRcDir(chatId, threadId, candidateDir, pendingSpecs.get(chatId)?.specPath);
+  } else {
+    rcStates.set(chatId, {
+      step: "await_dir",
+      threadId,
+      specPath: pendingSpecs.get(chatId)?.specPath,
+    });
+    await ctx.reply("📁 Reply with the project directory path:", {
+      reply_markup: { force_reply: true, selective: true },
+    });
+  }
+});
+
 // Handle iq: and cancel: callback queries.
 bot.on("callback_query:data", async (ctx, next) => {
   if (process.env.E2E_DEBUG) console.log("[e2e:callback_query]", JSON.stringify({ callbackQuery: ctx.callbackQuery, chat: ctx.chat, from: ctx.from }));
@@ -1679,6 +1850,86 @@ bot.on("callback_query:data", async (ctx, next) => {
       pendingResumeContextTimestamps.delete(resumeCtxKey(chatId, threadId));
       // no-op — user wants a fresh start
     }
+  } else if (data === "rc_stop") {
+    // ── rc_stop: stop active session from status card ─────────────────────────────
+    await ctx.answerCallbackQuery();
+    const existing = getRCStatus();
+    if (!existing) {
+      await ctx.reply("No active session.");
+      return;
+    }
+    await stopRC();
+    await ctx.reply(`⛔ Session ${existing.name} stopped.`);
+    return;
+  } else if (data === "rc_edit") {
+    // ── rc_edit: dismiss keyboard, no side effects ──────────────────────────
+    await ctx.answerCallbackQuery("Continue editing — reply when ready to save a new version.");
+    return;
+  } else if (data === "rc_start") {
+    // ── rc_start: begin session-start flow ───────────────────────────────────
+    await ctx.answerCallbackQuery();
+    const chatId = ctx.chat?.id;
+    if (!chatId) return;
+    const threadId = ctx.callbackQuery?.message?.message_thread_id ?? null;
+
+    if (rcStartLocks.has(chatId)) {
+      await ctx.reply("⏳ Already starting a session…", { message_thread_id: threadId ?? undefined } as Parameters<typeof bot.api.sendMessage>[2]);
+      return;
+    }
+
+    const spec = pendingSpecs.get(chatId);
+    const candidateDir = spec?.dir ?? getCwdForChat(chatId, threadId);
+
+    if (candidateDir) {
+      await handleRcDir(chatId, threadId, candidateDir, spec?.specPath);
+    } else {
+      rcStates.set(chatId, { specPath: spec?.specPath, step: "await_dir", threadId });
+      await bot.api.sendMessage(
+        chatId,
+        "📁 Reply with the project directory path for this coding session:",
+        { message_thread_id: threadId ?? undefined, reply_markup: { force_reply: true, selective: true } } as Parameters<typeof bot.api.sendMessage>[2]
+      );
+    }
+    return;
+  } else if (data === "rc_mkdir") {
+    // ── rc_mkdir: create the proposed directory ───────────────────────────────
+    await ctx.answerCallbackQuery();
+    const chatId = ctx.chat?.id;
+    if (!chatId) return;
+    const state = rcStates.get(chatId);
+    if (!state?.proposedDir) return;
+    try {
+      mkdirSync(state.proposedDir, { recursive: true });
+    } catch (err: unknown) {
+      await ctx.reply(`❌ Cannot create directory: ${(err as NodeJS.ErrnoException).message}. Try a different path.`);
+      return;
+    }
+    rcStates.set(chatId, { ...state, dir: state.proposedDir, step: "await_permission" });
+    await sendPermissionPicker(chatId, state.threadId);
+    return;
+  } else if (data === "rc_repath") {
+    // ── rc_repath: ask for a different path ──────────────────────────────────
+    await ctx.answerCallbackQuery();
+    const chatId = ctx.chat?.id;
+    if (!chatId) return;
+    const state = rcStates.get(chatId);
+    if (!state) return;
+    rcStates.set(chatId, { ...state, step: "await_dir" });
+    await ctx.reply("📁 Reply with the project directory path:", {
+      message_thread_id: state.threadId ?? undefined,
+      reply_markup: { force_reply: true, selective: true },
+    } as Parameters<typeof bot.api.sendMessage>[2]);
+    return;
+  } else if (data.startsWith("rc_mode:")) {
+    // ── rc_mode:<mode>: permission mode selected ──────────────────────────────
+    await ctx.answerCallbackQuery();
+    const chatId = ctx.chat?.id;
+    if (!chatId) return;
+    const mode = data.slice("rc_mode:".length);
+    const state = rcStates.get(chatId);
+    if (!state?.dir) return;
+    await launchRCSession(chatId, state.threadId, mode, state.dir, state.specPath);
+    return;
   } else {
     // Unrecognised prefix — let specific bot.callbackQuery() handlers take over
     return next();
@@ -2383,6 +2634,16 @@ async function processTextMessage(
     // The actual DB/Qdrant work runs in the background after sendResponse.
     const displayResponse = stripMemoryTags(rawWithoutNext);
 
+    // ── [SPEC_SAVED:] tag detection ───────────────────────────────────────────────
+    const SPEC_TAG_RE = /\[SPEC_SAVED:\s*path=([^\s,\]]+)(?:,\s*dir=([^\s\]]+))?\]/;
+    const specTagMatch = SPEC_TAG_RE.exec(rawWithoutNext);
+    if (specTagMatch) {
+      pendingSpecs.set(chatId, {
+        specPath: specTagMatch[1],
+        dir: specTagMatch[2] ?? undefined,
+      });
+    }
+
     // ── Detect resume failure ─────────────────────────────────────────
     // session.sessionId was updated in-memory by onSessionId callback above.
     const resumeFailed = !staleCorrected && didResumeFail(triedResume, prevSessionId, session.sessionId);
@@ -2427,6 +2688,29 @@ async function processTextMessage(
     setImmediate(async () => {
       try {
         await processMemoryIntents(rawWithoutNext, chatId, threadId);
+
+        // Send [🚀 Start Coding Session] keyboard if SPEC_SAVED tag was detected
+        if (specTagMatch) {
+          const specName = specTagMatch[1].split("/").pop() ?? specTagMatch[1];
+          try {
+            await bot.api.sendMessage(
+              chatId,
+              `✅ Spec saved: ${specName}`,
+              {
+                message_thread_id: threadId ?? undefined,
+                reply_markup: {
+                  inline_keyboard: [[
+                    { text: "🚀 Start Coding Session", callback_data: "rc_start" },
+                    { text: "📝 Edit Spec First", callback_data: "rc_edit" },
+                  ]],
+                },
+              } as Parameters<typeof bot.api.sendMessage>[2]
+            );
+          } catch (err) {
+            console.error("[SPEC_SAVED] failed to send keyboard:", err);
+          }
+        }
+
         await saveSession(session);
         await saveMessage("user", text, undefined, chatId, agent.id, threadId);
         await saveMessage("assistant", displayResponse, undefined, chatId, agent.id, threadId);
@@ -2510,6 +2794,15 @@ bot.on("message:text", async (ctx) => {
 
   // Priority 2: Interactive Q&A free-text answer (when user is mid-plan session)
   if (await interactive.handleFreeText(ctx, text)) return;
+
+  // Priority 2.5: RC dir prompt reply
+  {
+    const rcState = rcStates.get(chatId);
+    if (rcState?.step === "await_dir" && !text.startsWith("/")) {
+      await handleRcDir(chatId, threadId, text.trim(), rcState.specPath);
+      return;
+    }
+  }
 
   // Priority 3: Inline tshoot capture (!finding / !discovery)
   if (await handleTshoOtCapture(ctx, text, chatId, threadId, (id) => getAgentForChat(id).id)) return;
@@ -3833,6 +4126,7 @@ if (_isEntry) {
     for (const [key, acc] of textBurstAccumulators) { clearTimeout(acc.timer); flushTextBurst(key); }
     await queueManager.shutdown(QUEUE_SHUTDOWN_GRACE);
     await jobSystem.stop();
+    rcCleanup(); // Clean up RemoteSessionManager state file (does NOT kill detached process)
     bot.stop();
     process.exit(0);
   });
@@ -3843,6 +4137,7 @@ if (_isEntry) {
     for (const [key, acc] of textBurstAccumulators) { clearTimeout(acc.timer); flushTextBurst(key); }
     await queueManager.shutdown(QUEUE_SHUTDOWN_GRACE);
     await jobSystem.stop();
+    rcCleanup(); // Clean up RemoteSessionManager state file (does NOT kill detached process)
     bot.stop();
     process.exit(0);
   });
@@ -3965,6 +4260,16 @@ if (_isEntry) {
     }
   }, 60_000).unref();
 
+
+  // Probe remote session state on startup — auto-cleans stale PIDs
+  {
+    const existingSession = getRCStatus();
+    if (existingSession) {
+      console.log(`[remote] Active session on startup: ${existingSession.name} (PID ${existingSession.pid})`);
+    } else {
+      console.log("[remote] No active remote session on startup.");
+    }
+  }
 
   // Start bot without await so launchd doesn't time out
   bot.start({
