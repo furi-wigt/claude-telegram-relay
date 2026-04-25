@@ -9,7 +9,7 @@ Before writing any implementation code, you MUST execute this "Zero-Waste" Audit
 
 ## 2. Engineering Workflow (Strict Sequence)
 1. **Trace:** Map the data flow from entry to exit. Identify all potential failure points.
-2. **Contractual Scaffolding:** Create `~/.claude-relay/todos/{yymmdd_HHMM_NN}_{desc}.md`.
+2. **Contractual Scaffolding:** Create `.claude/todos/{yymmdd_HHMM_NN}_{desc}.md`.
    - **MUST include**: `Boundary Conditions`, `Error Handling Strategy`, `Memory Management Plan`, and `User E2E Checklist`.
 3. **Test-First Implementation (Red-Green-Refactor):**
    - Write failing assertions for the "Happy Path" AND "Failure Path" (Edge cases, Nulls, Timeouts).
@@ -104,10 +104,6 @@ Before any code is considered done, apply these gates:
 ---
 
 ## Spec Generation
-
-> **OVERRIDE**: When handling a "generate spec" request, skip the Engineering Workflow above entirely.
-> Do NOT invoke any superpowers skills (write-plan, writing-plans, or any other).
-> Do NOT create a todos file. Proceed directly to writing the spec and emitting `[SPEC_SAVED:]`.
 
 When the user says **"generate spec"** (with or without a path, e.g. "generate spec for ~/projects/my-app"):
 
