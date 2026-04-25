@@ -111,6 +111,7 @@ export function stripMemoryTags(text: string): string {
     .replace(new RegExp(`\\[REMEMBER_GLOBAL:\\s*${TAG_CONTENT}\\]`, "gi"), "")
     .replace(new RegExp(`\\[GOAL:\\s*${TAG_CONTENT}\\]`, "gi"), "")
     .replace(new RegExp(`\\[DONE:\\s*${TAG_CONTENT}\\]`, "gi"), "")
+    .replace(/\[SPEC_SAVED:[^\]]*\]/g, "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
@@ -231,6 +232,9 @@ export async function processMemoryIntents(
     }
     clean = clean.replace(match[0], "");
   }
+
+  // [SPEC_SAVED: path=...] — marker tag, strip from response
+  clean = clean.replace(/\[SPEC_SAVED:[^\]]*\]/g, "");
 
   // After successful memory inserts, check if profile summary needs rebuilding.
   if (memoryInsertCount > 0) {

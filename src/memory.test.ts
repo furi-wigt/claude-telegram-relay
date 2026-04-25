@@ -99,7 +99,7 @@ mock.module("./utils/chatNames", () => ({
   resolveSourceLabel: mock(() => "DM"),
 }));
 
-const { getMemoryContext, processMemoryIntents, detectMemoryCategory, getRelevantContext, extractContentSnippet } = await import("./memory.ts");
+const { getMemoryContext, processMemoryIntents, detectMemoryCategory, getRelevantContext, extractContentSnippet, stripMemoryTags } = await import("./memory.ts");
 const { isJunkMemoryContent } = await import("./memory/junkFilter.ts");
 
 // ============================================================
@@ -737,5 +737,71 @@ describe("extractContentSnippet", () => {
     const content = "x".repeat(200);
     expect(extractContentSnippet(content, 200)).toBe(content);
     expect(extractContentSnippet(content, 200).endsWith("…")).toBe(false);
+  });
+});
+
+// ============================================================
+// stripMemoryTags — [SPEC_SAVED:] tag stripping
+// ============================================================
+
+describe("stripMemoryTags — [SPEC_SAVED:]", () => {
+  test("strips [SPEC_SAVED:] tag with path and dir", () => {
+    const input = "Here is your spec.\n[SPEC_SAVED: path=~/.claude-relay/specs/260425_1034_01_feature-spec.md, dir=~/projects/my-app]";
+    const result = stripMemoryTags(input);
+    expect(result).not.toContain("[SPEC_SAVED:");
+    expect(result).toContain("Here is your spec.");
+  });
+
+  test("strips [SPEC_SAVED:] tag without dir", () => {
+    const input = "Spec saved.\n[SPEC_SAVED: path=~/.claude-relay/specs/260425_01_foo.md]";
+    const result = stripMemoryTags(input);
+    expect(result).not.toContain("[SPEC_SAVED:");
+    expect(result).toContain("Spec saved.");
+  });
+
+  test("strips [SPEC_SAVED:] tag with complex path containing slashes", () => {
+    const input = "Documentation created [SPEC_SAVED: path=/home/user/.claude-relay/specs/my-spec.md]";
+    const result = stripMemoryTags(input);
+    expect(result).not.toContain("[SPEC_SAVED:");
+    expect(result).toBe("Documentation created");
+  });
+
+  test("leaves response unchanged when no SPEC_SAVED tag", () => {
+    const input = "Regular response with no tags.";
+    expect(stripMemoryTags(input)).toBe("Regular response with no tags.");
+  });
+
+  test("handles multiple [SPEC_SAVED:] tags in single response", () => {
+    const input = "First spec [SPEC_SAVED: path=~/specs/1.md] and second [SPEC_SAVED: path=~/specs/2.md] saved.";
+    const result = stripMemoryTags(input);
+    expect(result).not.toContain("[SPEC_SAVED:");
+    expect(result).toContain("First spec");
+    expect(result).toContain("and second");
+    expect(result).toContain("saved.");
+  });
+
+  test("strips [SPEC_SAVED:] alongside other memory tags", async () => {
+    const input = "Done [REMEMBER: User saved specs] [SPEC_SAVED: path=~/.claude-relay/specs/test.md] and ready.";
+    const result = await processMemoryIntents(input, 12345);
+    expect(result).not.toContain("[SPEC_SAVED:");
+    expect(result).not.toContain("[REMEMBER:");
+    expect(result).toContain("Done");
+    expect(result).toContain("and ready.");
+  });
+
+  test("preserves whitespace structure after stripping tag", () => {
+    const input = "Line 1\n[SPEC_SAVED: path=~/test.md]\nLine 2";
+    const result = stripMemoryTags(input);
+    expect(result).toContain("Line 1");
+    expect(result).toContain("Line 2");
+    // Should not have excessive whitespace from tag removal
+    expect(result).not.toContain("[SPEC_SAVED:");
+  });
+
+  test("handles [SPEC_SAVED:] tag with equals signs in path values", () => {
+    const input = "Created [SPEC_SAVED: path=/home/user/.conf/a=1/spec.md, dir=/tmp]";
+    const result = stripMemoryTags(input);
+    expect(result).not.toContain("[SPEC_SAVED:");
+    expect(result).toContain("Created");
   });
 });
