@@ -592,6 +592,10 @@ Summarise what was set up and what is running. Remind the user:
 | `/cancel` | Cancel in-progress Claude response. In Command Center with a harness in flight, cancels the dispatch instead. |
 | `/cancel-dispatch` | Command Center only — kill the in-flight NLAH dispatch (also available as ❌ button on the status message) |
 | `/cwd [path]` | Set or show working directory for coding sessions |
+| `/code` | Start a remote coding session (prompts for dir + permission mode via inline keyboard) |
+| `/code [path]` | Start session with explicit project path |
+| `/code stop` | Stop the active remote session (sends SIGTERM to the detached process) |
+| `/code status` | Show active session info, session URL, and Stop button |
 | `/memory` | Browse your memory (goals, facts, prefs, dates) |
 | `/remember [text]` | Save something to memory |
 | `/forget [text]` | Remove something from memory |
