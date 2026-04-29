@@ -145,6 +145,23 @@ export async function orchestrateMessage(
   threadId: number | null,
   attachmentContext?: AttachmentContext,
 ): Promise<void> {
+  try {
+    await _orchestrateMessage(bot, ctx, text, chatId, threadId, attachmentContext);
+  } catch (err) {
+    console.error("[commandCenter] orchestrateMessage unhandled error:", err);
+    ctx.reply("⚠️ Something went wrong while routing your message. Check logs.").catch(() => {});
+    throw err; // re-throw so queue logs [task failed]
+  }
+}
+
+async function _orchestrateMessage(
+  bot: Bot,
+  ctx: Context,
+  text: string,
+  chatId: number,
+  threadId: number | null,
+  attachmentContext?: AttachmentContext,
+): Promise<void> {
   const { label: modelLabel, text: classifyText } = resolveModelPrefix(text);
   let effectiveText = classifyText.trim() || text;
 

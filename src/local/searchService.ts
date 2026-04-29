@@ -197,8 +197,9 @@ export function bm25SearchDocuments(
   // Sanitize query for FTS5: remove special characters that break MATCH syntax.
   // '?' is a FTS5 wildcard (0-or-1 token) — trailing '?' in natural language questions causes parse errors.
   // ',' and '.' break FTS5 syntax (e.g. "e.g.", "LM Studio, Ollama").
+  // '-' is the FTS5 NOT operator — "bge-m3" becomes "bge NOT m3" → "no such column: m3" crash.
   const sanitized = query
-    .replace(/['"(){}[\]*:^~!@#$%&?,\.]/g, " ")
+    .replace(/['"(){}[\]*:^~!@#$%&?,\.\-]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
   if (!sanitized) return [];
