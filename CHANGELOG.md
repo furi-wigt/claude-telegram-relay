@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased] / 2026-04-30 — Immediate typing indicator for CC messages
+
+### Fixed
+- **`src/relay.ts`**: CC messages now fire a Telegram typing action immediately at intercept time — before the message enters the queue — so users get instant feedback even when a long-running task is queued ahead.
+- **`src/orchestration/commandCenter.ts`**: A second typing action fires at dequeue time (start of `_orchestrateMessage`) to cover queue waits longer than Telegram's 5-second indicator TTL. Previously, sending a message to CC was silent until the dispatch plan appeared.
+
 ## [Unreleased] / 2026-04-30 — Fix session resume failure detection for stale sessions
 
 ### Fixed

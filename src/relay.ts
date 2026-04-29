@@ -417,6 +417,10 @@ function flushTextBurst(burstKey: string): void {
 
   // Command Center intercept — route through orchestration layer instead of normal Claude flow
   if (isCommandCenter(chatId)) {
+    // Immediate feedback — fires before the message hits the queue so the user
+    // never sees a silent gap, even when a long-running Claude session is queued ahead.
+    void ctx.replyWithChatAction("typing");
+
     // Priority 1: explicit Telegram reply → always treat as follow-up
     const replyToMsgId = ctx.message?.reply_to_message?.message_id;
     if (replyToMsgId) {

@@ -673,3 +673,5 @@ For deeper diagnostics, see [docs/observability.md](docs/observability.md).
 - Edit `~/.claude-relay/prompts/*.md` to change each agent's persona, domain focus, or save paths
 - Edit `config/profile.md` to update your profile (the bot reads this on every message)
 - Add new agents by creating entries in `config/agents.json` and prompts in `~/.claude-relay/prompts/`
+
+<!-- 2026-04-30: CC messages now fire typing indicator immediately at intercept (relay.ts) and at dequeue (_orchestrateMessage) for instant UX feedback -->
