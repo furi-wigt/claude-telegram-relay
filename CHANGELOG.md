@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased] / 2026-04-30 — Fix session resume failure detection for stale sessions
+
+### Fixed
+- **`src/relay.ts`**: `triedResume` was set via `isResumeReliable()` (false when session >4h old), but `callClaude` always passes `resume: !!session.sessionId` regardless of age. Mismatch caused `didResumeFail()` to return false when Claude silently created a new session after server-side expiry — failure went undetected, no warning shown, and a new Claude project-level session accumulated on disk per conversation. Fix: `triedResume = !!session.sessionId` (aligns with actual `--resume` attempt). `isResumeReliable()` is unchanged and still gates context injection.
+
 ## [Unreleased] / 2026-04-22 — CC attachment UX hardening (G1/G2/I1/I2/I3)
 
 ### Added

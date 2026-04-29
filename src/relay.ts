@@ -2349,7 +2349,9 @@ async function processTextMessage(
     // ── Capture resume state BEFORE calling Claude ────────────────────
     const prevSessionId = session.sessionId;
     const capturedGen = session.resetGen;  // guard against stale onSessionId after /new
-    const triedResume = isResumeReliable(session);
+    // Track whether a --resume was actually attempted (matches callClaude's resume: !!session.sessionId).
+    // isResumeReliable() is used separately for context-injection decisions, NOT for failure detection.
+    const triedResume = !!session.sessionId;
     let staleCorrected = false;  // set true when StaleSessionError retry succeeds — skips resumeFailed check
     // Consume pendingContextInjection flag (set when user tapped "Inject context"
     // after a previous resume failure). Suppresses isResumedSession hint to Claude.
