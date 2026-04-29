@@ -162,6 +162,10 @@ async function _orchestrateMessage(
   threadId: number | null,
   attachmentContext?: AttachmentContext,
 ): Promise<void> {
+  // Refresh typing at dequeue time — the pre-queue fire in relay.ts expires after
+  // 5 seconds, so any queue wait beyond that leaves the user with no indicator.
+  void ctx.replyWithChatAction("typing");
+
   const { label: modelLabel, text: classifyText } = resolveModelPrefix(text);
   let effectiveText = classifyText.trim() || text;
 
