@@ -51,11 +51,16 @@ export class ModelRegistry {
     return new ModelRegistry(result.data as ModelsConfig);
   }
 
-  /** Sanitized model name + dimensions for versioned Qdrant collection names. */
+  /**
+   * Stable suffix for versioned Qdrant collection names.
+   * Prefers `embeddingFamily` (a stable identity for the embedding space) over
+   * `model` (a provider-facing label that can change on rename/relabel).
+   */
   embedCollectionSuffix(): string {
     const embedId = this.config.slots.embed[0];
     const provider = this.providerMap.get(embedId)!;
-    const sanitized = provider.model.replace(/[^a-zA-Z0-9._-]/g, "-");
+    const stable = provider.embeddingFamily ?? provider.model;
+    const sanitized = stable.replace(/[^a-zA-Z0-9._-]/g, "-");
     const dims = provider.dimensions ?? 1024;
     return `${sanitized}_${dims}`;
   }

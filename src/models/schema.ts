@@ -12,6 +12,7 @@ const ProviderSchema = z.object({
   type: z.enum(["openai-compat", "claude"]),
   url: z.string().url().optional(),
   model: z.string().min(1),
+  embeddingFamily: z.string().min(1).optional(),
   dimensions: z.number().int().positive().optional(),
   timeoutMs: z.number().int().positive().optional(),
   chunkTimeoutMs: z.number().int().positive().optional(),

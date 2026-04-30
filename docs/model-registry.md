@@ -87,6 +87,26 @@ The registry is configured in `~/.claude-relay/models.json` (copy from `config/m
 - **classify** -- Used for message classification and routing
 - **embed** -- Used for semantic embeddings (always MLX bge-m3)
 
+### Embed collection suffix (`embeddingFamily`)
+
+Qdrant collections are versioned by suffix derived from the embed provider, e.g. `memory_bge-m3_1024`. By default the suffix uses `provider.model`, but `model` is a *provider-facing label* — renaming it (provider switch, LM Studio relabel) silently orphans existing collections.
+
+To decouple the suffix from the label, set the optional `embeddingFamily` field on the embed provider:
+
+```json
+{
+  "id": "lms-embed",
+  "type": "openai-compat",
+  "url": "http://localhost:1234",
+  "model": "bge-m3-mlx",          // can change freely
+  "embeddingFamily": "bge-m3",     // stable identity → collection suffix
+  "dimensions": 1024
+}
+```
+
+When `embeddingFamily` is present it wins; otherwise `model` is used (backwards compatible). Keep `embeddingFamily` stable across provider/model renames to preserve the historical vector store.
+
+
 ### Providers
 
 Any OpenAI-compatible server works. Common setups:

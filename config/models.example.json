@@ -13,11 +13,12 @@
       "circuitBreaker": { "enabled": true, "failureThreshold": 3, "resetAfterMs": 60000 }
     },
     {
-      "_comment": "LM Studio embed model — must be simultaneously loaded in LM Studio UI",
+      "_comment": "LM Studio embed model — must be simultaneously loaded in LM Studio UI. Set embeddingFamily to a stable identity for the embedding space (collections are suffixed by it); changing 'model' alone won't orphan Qdrant collections.",
       "id": "lms-embed",
       "type": "openai-compat",
       "url": "http://localhost:1234",
       "model": "text-embedding-nomic-embed-text-v1.5",
+      "embeddingFamily": "nomic-embed-text-v1.5",
       "dimensions": 768,
       "timeoutMs": 15000
     },
@@ -27,6 +28,7 @@
       "type": "openai-compat",
       "url": "http://localhost:8801",
       "model": "bge-m3",
+      "embeddingFamily": "bge-m3",
       "dimensions": 1024,
       "timeoutMs": 15000
     },
