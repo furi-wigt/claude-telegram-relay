@@ -56,4 +56,19 @@ describe("ModelRegistry.embedCollectionSuffix", () => {
     const r = ModelRegistry.fromConfig(cfg as any);
     expect(r.embedCollectionSuffix()).toBe("org-bge-m3-fp16_1024");
   });
+
+  test("uses embeddingFamily when set, ignoring model rename", () => {
+    const cfg = structuredClone(VALID_CONFIG);
+    cfg.providers[1].model = "bge-m3-mlx";
+    (cfg.providers[1] as any).embeddingFamily = "bge-m3";
+    const r = ModelRegistry.fromConfig(cfg as any);
+    expect(r.embedCollectionSuffix()).toBe("bge-m3_1024");
+  });
+
+  test("embeddingFamily is sanitized like model", () => {
+    const cfg = structuredClone(VALID_CONFIG);
+    (cfg.providers[1] as any).embeddingFamily = "BAAI/bge-m3";
+    const r = ModelRegistry.fromConfig(cfg as any);
+    expect(r.embedCollectionSuffix()).toBe("BAAI-bge-m3_1024");
+  });
 });

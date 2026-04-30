@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased] / 2026-04-30 — Stable embed collection suffix via `embeddingFamily`
+
+### Added
+- **`src/models/schema.ts`**: optional `embeddingFamily` field on provider config — a stable identity for the embedding space, decoupled from the provider-facing `model` label.
+- **`src/models/registry.ts`**: `embedCollectionSuffix()` now prefers `embeddingFamily` over `model` when computing the Qdrant collection suffix. Renaming the `model` field (provider switch, LM Studio relabel, typo fix) no longer orphans existing collections.
+- **`config/models.example.json`**: shows `embeddingFamily` on both `lms-embed` and `mlx-embed` example providers.
+- **`tests/models/registry.test.ts`**: covers `embeddingFamily` override and sanitisation.
+
+### Why
+Suffix was derived from `provider.model`, which is a label, not a stable identity. Switching the LM Studio embed model id from `bge-m3` → `bge-m3-mlx` silently moved writes into a fresh collection and stranded 3623 historical points. `embeddingFamily` is the explicit knob.
+
 ## [Unreleased] / 2026-04-30 — Immediate typing indicator for CC messages
 
 ### Fixed
